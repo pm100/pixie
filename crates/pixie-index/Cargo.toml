@@ -1,0 +1,15 @@
+[package]
+name = "pixie-index"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pixie-core = { path = "../pixie-core" }
+pixie-image = { path = "../pixie-image" }
+rusqlite = { workspace = true }
+walkdir = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+pixie-testutil = { path = "../pixie-testutil" }
+tempfile = { workspace = true }
