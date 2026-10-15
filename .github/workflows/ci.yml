@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKGRS_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: libheif (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install libheif:x64-windows-static-md
+      - name: libheif (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libheif pkg-config
+
+      - run: npm install
+      - run: npm --prefix ui install
+      - run: npm --prefix ui test
+      - run: npm --prefix ui run check
+      - run: npm --prefix ui run build
+      - run: cargo test --workspace
+      - run: cargo build -p pixie-app
