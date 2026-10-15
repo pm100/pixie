@@ -1,0 +1,8 @@
+[package]
+name = "pixie-testutil"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+image = { workspace = true }

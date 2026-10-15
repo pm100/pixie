@@ -1,0 +1,17 @@
+[package]
+name = "pixie-image"
+version.workspace = true
+edition.workspace = true
+
+[features]
+heic = ["dep:libheif-rs"]
+
+[dependencies]
+pixie-core = { path = "../pixie-core" }
+image = { workspace = true }
+kamadak-exif = { workspace = true }
+libheif-rs = { version = "1", optional = true, default-features = false }
+
+[dev-dependencies]
+pixie-testutil = { path = "../pixie-testutil" }
+tempfile = { workspace = true }
