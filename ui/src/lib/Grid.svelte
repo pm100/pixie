@@ -1,36 +1,35 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { listPhotos, type Photo } from './api';
   import { columnsFor, visibleRange } from './gridMath';
+  import { PageCache } from './pageCache';
   import { thumbUrl } from './url';
 
   let { total, version, onopen }: { total: number; version: number; onopen: (index: number) => void } = $props();
 
   const CELL = 180, GAP = 6, PAGE = 200, ROW_H = CELL + GAP;
   let width = $state(800), height = $state(600), scrollTop = $state(0);
-  let cache = $state<Record<number, Photo>>({});
+  let tick = $state(0); // bumped whenever the page cache changes
   let broken = $state<Record<number, boolean>>({});
-  const requested = new Set<number>();
+  const cache = new PageCache<Photo>(listPhotos, PAGE, () => tick++);
+
+  // `_` is read only so the template re-renders when the cache changes.
+  const item = (i: number, _: number) => cache.items[i];
 
   const cols = $derived(columnsFor(width, CELL, GAP));
   const range = $derived(visibleRange(total, cols, ROW_H, scrollTop, height));
   const indices = $derived(Array.from({ length: range.endIndex - range.firstIndex }, (_, i) => range.firstIndex + i));
 
+  // Reset first, then load: both depend on `version`, and effects run in order,
+  // so a version bump always refetches the visible pages.
   $effect(() => {
-    version; // reset when the library changes
-    cache = {}; broken = {}; requested.clear();
+    version;
+    untrack(() => { cache.reset(); broken = {}; });
   });
 
   $effect(() => {
-    if (range.endIndex === 0) return;
-    for (let page = Math.floor(range.firstIndex / PAGE); page <= Math.floor((range.endIndex - 1) / PAGE); page++) {
-      if (requested.has(page)) continue;
-      requested.add(page);
-      listPhotos(page * PAGE, PAGE).then((photos) => {
-        const next = { ...cache };
-        photos.forEach((p, i) => (next[page * PAGE + i] = p));
-        cache = next;
-      }).catch(() => requested.delete(page));
-    }
+    version;
+    cache.ensure(range.firstIndex, range.endIndex);
   });
 </script>
 
@@ -38,11 +37,11 @@
      onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}>
   <div class="inner" style:height="{range.rows * ROW_H}px">
     {#each indices as i (i)}
-      {@const p = cache[i]}
+      {@const p = item(i, tick)}
       <button class="cell" style:top="{Math.floor(i / cols) * ROW_H}px" style:left="{(i % cols) * (CELL + GAP)}px"
               onclick={() => onopen(i)} aria-label={p ? p.path : 'photo'}>
         {#if p && !broken[i]}
-          <img loading="lazy" alt="" src={thumbUrl('grid', p.id, p.mtime)} onerror={() => (broken[i] = true)} />
+          <img loading="lazy" alt="" src={thumbUrl('grid', p.id, p.mtime, p.size)} onerror={() => (broken[i] = true)} />
         {:else if broken[i]}
           <span class="ph">⚠︎</span>
         {/if}

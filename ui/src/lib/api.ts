@@ -9,7 +9,7 @@ export interface Folder { id: number; path: string }
 
 export const listFolders = () => invoke<Folder[]>('list_folders');
 export const addFolder = (path: string) => invoke<number>('add_folder', { path });
-export const startScan = (folderId: number) => invoke<void>('start_scan', { folderId });
+export const startScan = (folderId: number | null) => invoke<void>('start_scan', { folderId });
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (offset: number, limit: number) => invoke<Photo[]>('list_photos', { offset, limit });
 export const countPhotos = () => invoke<number>('count_photos');

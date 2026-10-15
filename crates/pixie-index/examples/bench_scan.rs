@@ -31,7 +31,7 @@ fn main() {
     let t = Instant::now();
     let rxs: Vec<_> = photos
         .iter()
-        .map(|p| svc.request(ThumbClass::Grid, p.id, p.mtime, PathBuf::from(&p.path)))
+        .map(|p| svc.request(ThumbClass::Grid, p.id, p.mtime, p.size, PathBuf::from(&p.path)))
         .collect();
     for rx in rxs {
         rx.recv().unwrap().unwrap();

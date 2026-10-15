@@ -20,7 +20,7 @@ fn heic_decodes_and_metadata_matches_decoded_dimensions() {
 #[test]
 fn heic_thumbnail_is_generated() {
     let dir = tempfile::tempdir().unwrap();
-    let t = ensure_thumbnail(dir.path(), ThumbClass::Grid, 1, 1, Path::new(SAMPLE)).unwrap();
+    let t = ensure_thumbnail(dir.path(), ThumbClass::Grid, 1, 1, 0, Path::new(SAMPLE)).unwrap();
     let (w, h) = image::open(&t).unwrap().dimensions();
     assert!(w.max(h) <= 256 && w.max(h) > 0);
 }

@@ -18,18 +18,29 @@
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== 'string') return;
     const id = await addFolder(dir);
-    scanning = true; seen = 0; message = '';
-    await startScan(id);
+    message = '';
+    scanning = true; seen = 0; // before the call, so a fast scan-done cannot be overwritten
+    try {
+      await startScan(id);
+    } catch (e) {
+      message = String(e);
+      if (!/already running/.test(message)) scanning = false; // busy => the other scan is still going
+    }
   }
 
   onMount(() => {
     refresh();
-    // Re-scan known folders on launch to pick up changes.
-    listFolders().then((fs) => { if (fs[0]) { scanning = true; startScan(fs[0].id); } });
+    // Re-scan all known folders on launch to pick up changes.
+    listFolders().then((fs) => {
+      if (!fs.length) return;
+      scanning = true;
+      startScan(null).catch(() => (scanning = false));
+    });
     const subs = [
-      listen<{ seen: number }>('scan-progress', (e) => { seen = e.payload.seen; refresh(); }),
+      // During a scan only the count is refreshed; the grid resets on scan-done.
+      listen<{ seen: number }>('scan-progress', (e) => { seen = e.payload.seen; countPhotos().then((n) => (total = n)); }),
       listen('scan-done', () => { scanning = false; refresh(); }),
-      listen<{ message: string }>('scan-error', (e) => { scanning = false; message = e.payload.message; }),
+      listen<{ message: string }>('scan-error', (e) => { message = e.payload.message; /* scan-done always follows */ }),
     ];
     return () => subs.forEach((s) => s.then((un) => un()));
   });

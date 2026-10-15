@@ -8,4 +8,5 @@ pub struct AppState {
     pub db: Db,
     pub thumbs: ThumbService,
     pub cancel_scan: Arc<AtomicBool>,
+    pub gate: pixie_index::ScanGate,
 }

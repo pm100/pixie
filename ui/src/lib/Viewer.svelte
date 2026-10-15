@@ -25,7 +25,7 @@
 <div class="overlay" role="dialog" aria-label="Photo viewer">
   <button class="close" onclick={onclose} aria-label="Close">✕</button>
   {#if photo && !failed}
-    <img alt="" src={thumbUrl('view', photo.id, photo.mtime)} onerror={() => (failed = true)} />
+    <img alt="" src={thumbUrl('view', photo.id, photo.mtime, photo.size)} onerror={() => (failed = true)} />
   {:else if failed}
     <p>This photo couldn't be opened. It may be damaged.</p>
   {/if}

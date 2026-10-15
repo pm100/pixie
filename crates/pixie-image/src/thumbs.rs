@@ -31,8 +31,8 @@ impl ThumbClass {
     }
 }
 
-pub fn thumb_path(cache_dir: &Path, class: ThumbClass, photo_id: i64, mtime: i64) -> PathBuf {
-    cache_dir.join(class.dir()).join(format!("{photo_id}-{mtime}.jpg"))
+pub fn thumb_path(cache_dir: &Path, class: ThumbClass, photo_id: i64, mtime: i64, size: i64) -> PathBuf {
+    cache_dir.join(class.dir()).join(format!("{photo_id}-{mtime}-{size}.jpg"))
 }
 
 /// Returns the cached thumbnail, generating it atomically if missing.
@@ -41,9 +41,10 @@ pub fn ensure_thumbnail(
     class: ThumbClass,
     photo_id: i64,
     mtime: i64,
+    size: i64,
     src: &Path,
 ) -> Result<PathBuf> {
-    let dst = thumb_path(cache_dir, class, photo_id, mtime);
+    let dst = thumb_path(cache_dir, class, photo_id, mtime, size);
     if dst.exists() {
         return Ok(dst);
     }
@@ -75,17 +76,17 @@ mod tests {
         std::fs::write(&src, jpeg(1000, 500)).unwrap();
         let cache = dir.path().join("cache");
 
-        let t1 = ensure_thumbnail(&cache, ThumbClass::Grid, 7, 111, &src).unwrap();
+        let t1 = ensure_thumbnail(&cache, ThumbClass::Grid, 7, 111, 0, &src).unwrap();
         assert!(t1.starts_with(&cache) && t1.exists());
         let (w, h) = image::open(&t1).unwrap().dimensions();
         assert_eq!((w, h), (256, 128));
 
         // Same key -> same file, not regenerated even if the source vanishes.
         std::fs::remove_file(&src).unwrap();
-        assert_eq!(ensure_thumbnail(&cache, ThumbClass::Grid, 7, 111, &src).unwrap(), t1);
+        assert_eq!(ensure_thumbnail(&cache, ThumbClass::Grid, 7, 111, 0, &src).unwrap(), t1);
 
         // New mtime -> different path (replaced file gets a fresh thumbnail).
-        assert_ne!(thumb_path(&cache, ThumbClass::Grid, 7, 222), t1);
+        assert_ne!(thumb_path(&cache, ThumbClass::Grid, 7, 222, 0), t1);
     }
 
     #[test]
@@ -93,7 +94,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("s.jpg");
         std::fs::write(&src, jpeg(100, 50)).unwrap();
-        let t = ensure_thumbnail(&dir.path().join("c"), ThumbClass::Grid, 1, 1, &src).unwrap();
+        let t = ensure_thumbnail(&dir.path().join("c"), ThumbClass::Grid, 1, 1, 0, &src).unwrap();
         assert_eq!(image::open(&t).unwrap().dimensions(), (100, 50));
     }
 
@@ -102,7 +103,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("r.jpg");
         std::fs::write(&src, jpeg_with_exif(400, 200, 6, None)).unwrap();
-        let t = ensure_thumbnail(&dir.path().join("c"), ThumbClass::Grid, 2, 1, &src).unwrap();
+        let t = ensure_thumbnail(&dir.path().join("c"), ThumbClass::Grid, 2, 1, 0, &src).unwrap();
         let img = image::open(&t).unwrap();
         let (w, h) = img.dimensions();
         assert!(h > w, "expected portrait after rotation, got {w}x{h}");
@@ -118,7 +119,18 @@ mod tests {
         let src = dir.path().join("bad.jpg");
         std::fs::write(&src, b"junk").unwrap();
         let cache = dir.path().join("c");
-        assert!(ensure_thumbnail(&cache, ThumbClass::Grid, 3, 1, &src).is_err());
-        assert!(!thumb_path(&cache, ThumbClass::Grid, 3, 1).exists());
+        assert!(ensure_thumbnail(&cache, ThumbClass::Grid, 3, 1, 0, &src).is_err());
+        assert!(!thumb_path(&cache, ThumbClass::Grid, 3, 1, 0).exists());
+    }
+
+    #[test]
+    fn cache_key_changes_when_size_changes_with_same_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.jpg");
+        std::fs::write(&src, jpeg(100, 50)).unwrap();
+        let cache = dir.path().join("c");
+        let a = ensure_thumbnail(&cache, ThumbClass::Grid, 1, 5, 1000, &src).unwrap();
+        let b = ensure_thumbnail(&cache, ThumbClass::Grid, 1, 5, 2000, &src).unwrap();
+        assert_ne!(a, b);
     }
 }

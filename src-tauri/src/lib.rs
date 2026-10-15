@@ -8,6 +8,7 @@ use state::AppState;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager};
 
@@ -33,8 +34,7 @@ fn count_photos(state: tauri::State<AppState>) -> Result<i64, PixieError> {
 
 #[derive(Serialize, Clone)]
 struct ScanDone {
-    folder_id: i64,
-    stats: pixie_index::ScanStats,
+    folders: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -44,22 +44,37 @@ struct ScanErrorEvent {
 }
 
 #[tauri::command]
-fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: i64) -> Result<(), PixieError> {
+fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: Option<i64>) -> Result<(), PixieError> {
+    // Only one scan job at a time; a second request is refused, not queued.
+    let guard = state
+        .gate
+        .try_start()
+        .ok_or_else(|| PixieError::Busy("a scan is already running".into()))?;
     let db = state.db.clone();
     let cancel = state.cancel_scan.clone();
     cancel.store(false, Ordering::Relaxed);
+    let ids: Vec<i64> = match folder_id {
+        Some(id) => vec![id],
+        None => db.list_folders()?.into_iter().map(|f| f.id).collect(),
+    };
     std::thread::spawn(move || {
-        let progress_app = app.clone();
-        match scan_folder(&db, folder_id, &cancel, |p| {
-            let _ = progress_app.emit("scan-progress", p);
-        }) {
-            Ok(stats) => {
-                let _ = app.emit("scan-done", ScanDone { folder_id, stats });
+        let _guard = guard; // released when the job ends
+        let mut scanned = 0;
+        for id in ids {
+            if cancel.load(Ordering::Relaxed) {
+                break;
             }
-            Err(e) => {
-                let _ = app.emit("scan-error", ScanErrorEvent { folder_id, message: e.user_message() });
+            let progress_app = app.clone();
+            match scan_folder(&db, id, &cancel, |p| {
+                let _ = progress_app.emit("scan-progress", p);
+            }) {
+                Ok(_) => scanned += 1,
+                Err(e) => {
+                    let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
+                }
             }
         }
+        let _ = app.emit("scan-done", ScanDone { folders: scanned });
     });
     Ok(())
 }
@@ -94,8 +109,8 @@ fn handle_thumb(state: &AppState, path: &str) -> Response<Vec<u8>> {
         Ok(None) => return status(StatusCode::NOT_FOUND),
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let rx = state.thumbs.request(class, photo.id, photo.mtime, PathBuf::from(&photo.path));
-    match rx.recv() {
+    let rx = state.thumbs.request(class, photo.id, photo.mtime, photo.size, PathBuf::from(&photo.path));
+    match rx.recv_timeout(Duration::from_secs(120)) {
         Ok(Ok(file)) => match std::fs::read(file) {
             Ok(bytes) => Response::builder()
                 .status(StatusCode::OK)
@@ -125,7 +140,7 @@ pub fn run() {
             let db = Db::open(&dir.join("pixie.db"))?;
             let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
             let thumbs = pixie_image::service::ThumbService::new(dir.join("thumbs"), workers);
-            app.manage(AppState { db, thumbs, cancel_scan: Arc::new(Default::default()) });
+            app.manage(AppState { db, thumbs, cancel_scan: Arc::new(Default::default()), gate: Default::default() });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

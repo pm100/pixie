@@ -1,12 +1,15 @@
 use crate::thumbs::{ensure_thumbnail, ThumbClass};
-use pixie_core::Result;
+use pixie_core::{PixieError, Result};
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
 type Reply = Sender<Result<PathBuf>>;
-type Key = (ThumbClass, i64, i64);
+type Key = (ThumbClass, i64, i64, i64);
+type Generator = fn(&Path, ThumbClass, i64, i64, i64, &Path) -> Result<PathBuf>;
 
 struct Pending {
     src: PathBuf,
@@ -22,6 +25,7 @@ struct State {
 
 struct Inner {
     cache_dir: PathBuf,
+    generate: Generator,
     state: Mutex<State>,
     cv: Condvar,
 }
@@ -43,7 +47,12 @@ impl Drop for Guard {
 
 impl ThumbService {
     pub fn new(cache_dir: PathBuf, workers: usize) -> ThumbService {
-        let inner = Arc::new(Inner { cache_dir, state: Mutex::new(State::default()), cv: Condvar::new() });
+        Self::with_generator(cache_dir, workers, ensure_thumbnail)
+    }
+
+    /// Test seam: lets tests inject a generator that fails or panics.
+    fn with_generator(cache_dir: PathBuf, workers: usize, generate: Generator) -> ThumbService {
+        let inner = Arc::new(Inner { cache_dir, generate, state: Mutex::new(State::default()), cv: Condvar::new() });
         for _ in 0..workers.max(1) {
             let inner = inner.clone();
             std::thread::spawn(move || worker(inner));
@@ -51,9 +60,9 @@ impl ThumbService {
         ThumbService { _guard: Arc::new(Guard(inner.clone())), inner }
     }
 
-    pub fn request(&self, class: ThumbClass, photo_id: i64, mtime: i64, src: PathBuf) -> Receiver<Result<PathBuf>> {
+    pub fn request(&self, class: ThumbClass, photo_id: i64, mtime: i64, size: i64, src: PathBuf) -> Receiver<Result<PathBuf>> {
         let (tx, rx) = channel();
-        let key = (class, photo_id, mtime);
+        let key = (class, photo_id, mtime, size);
         let mut st = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
         match st.pending.get_mut(&key) {
             Some(p) => p.replies.push(tx),
@@ -82,8 +91,12 @@ fn worker(inner: Arc<Inner>) {
                 st = inner.cv.wait(st).unwrap_or_else(|p| p.into_inner());
             }
         };
-        let (class, id, mtime) = key;
-        let result = ensure_thumbnail(&inner.cache_dir, class, id, mtime, &src);
+        let (class, id, mtime, size) = key;
+        // A panicking decoder must not strand waiting requests or kill the worker.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            (inner.generate)(&inner.cache_dir, class, id, mtime, size, &src)
+        }))
+        .unwrap_or_else(|_| Err(PixieError::Image("decoder crashed".into())));
         let replies = inner
             .state
             .lock()
@@ -114,7 +127,7 @@ mod tests {
         let src = dir.path().join("a.jpg");
         std::fs::write(&src, jpeg(600, 300)).unwrap();
         let svc = ThumbService::new(dir.path().join("cache"), 2);
-        let out = wait(svc.request(ThumbClass::Grid, 1, 1, src)).unwrap();
+        let out = wait(svc.request(ThumbClass::Grid, 1, 1, 0, src)).unwrap();
         assert!(out.exists());
     }
 
@@ -124,8 +137,8 @@ mod tests {
         let src = dir.path().join("a.jpg");
         std::fs::write(&src, jpeg(600, 300)).unwrap();
         let svc = ThumbService::new(dir.path().join("cache"), 1);
-        let a = svc.request(ThumbClass::Grid, 1, 1, src.clone());
-        let b = svc.request(ThumbClass::Grid, 1, 1, src);
+        let a = svc.request(ThumbClass::Grid, 1, 1, 0, src.clone());
+        let b = svc.request(ThumbClass::Grid, 1, 1, 0, src);
         assert_eq!(wait(a).unwrap(), wait(b).unwrap());
     }
 
@@ -137,8 +150,8 @@ mod tests {
         let good = dir.path().join("good.jpg");
         std::fs::write(&good, jpeg(100, 100)).unwrap();
         let svc = ThumbService::new(dir.path().join("cache"), 1);
-        assert!(wait(svc.request(ThumbClass::Grid, 1, 1, bad)).is_err());
-        assert!(wait(svc.request(ThumbClass::Grid, 2, 1, good)).is_ok());
+        assert!(wait(svc.request(ThumbClass::Grid, 1, 1, 0, bad)).is_err());
+        assert!(wait(svc.request(ThumbClass::Grid, 2, 1, 0, good)).is_ok());
     }
 
     #[test]
@@ -149,10 +162,23 @@ mod tests {
         for i in 0..40 {
             let p = dir.path().join(format!("{i}.jpg"));
             std::fs::write(&p, jpeg(300, 200)).unwrap();
-            rxs.push(svc.request(ThumbClass::Grid, i, 1, p));
+            rxs.push(svc.request(ThumbClass::Grid, i, 1, 0, p));
         }
         for rx in rxs {
             assert!(wait(rx).is_ok());
         }
+    }
+
+    #[test]
+    fn decoder_panic_returns_error_and_worker_survives() {
+        fn boom(_: &std::path::Path, _: ThumbClass, id: i64, _: i64, _: i64, _: &std::path::Path) -> Result<PathBuf> {
+            if id == 1 { panic!("decoder blew up"); }
+            Ok(PathBuf::from("ok"))
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ThumbService::with_generator(dir.path().to_path_buf(), 1, boom);
+        assert!(wait(svc.request(ThumbClass::Grid, 1, 1, 0, PathBuf::from("x"))).is_err());
+        // the single worker must still be alive
+        assert!(wait(svc.request(ThumbClass::Grid, 2, 1, 0, PathBuf::from("x"))).is_ok());
     }
 }

@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
@@ -15,7 +16,30 @@ pub struct ScanStats {
     pub unchanged: usize,
     pub unreadable: usize,
     pub marked_missing: usize,
+    /// Directory entries the walk could not read (drive unplugged, permissions...).
+    pub walk_errors: usize,
     pub cancelled: bool,
+}
+
+/// Allows one scan job at a time.
+#[derive(Clone, Default)]
+pub struct ScanGate(Arc<AtomicBool>);
+
+pub struct ScanGuard(Arc<AtomicBool>);
+
+impl ScanGate {
+    pub fn try_start(&self) -> Option<ScanGuard> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ScanGuard(self.0.clone()))
+    }
+}
+
+impl Drop for ScanGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,7 +75,14 @@ pub fn scan_folder(
     let mut stats = ScanStats::default();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => {
+                stats.walk_errors += 1;
+                continue;
+            }
+        };
         if cancel.load(Ordering::Relaxed) {
             stats.cancelled = true;
             return Ok(stats);
@@ -91,7 +122,14 @@ pub fn scan_folder(
         }
     }
 
-    stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
+    if !root.is_dir() {
+        stats.walk_errors += 1; // root vanished during the walk
+    }
+    // Only mark photos missing after a fully clean walk: an unreadable subfolder
+    // or unplugged drive must not make its photos disappear.
+    if stats.walk_errors == 0 {
+        stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
+    }
     on_progress(&ScanProgress { folder_id, seen: seen.len() });
     Ok(stats)
 }
@@ -230,5 +268,38 @@ mod tests {
         let mut last = 0;
         scan_folder(&db, f, &AtomicBool::new(false), |p| last = p.seen).unwrap();
         assert_eq!(last, 250);
+    }
+
+    #[test]
+    fn walk_error_mid_scan_marks_nothing_missing() {
+        let (dir, db, f) = setup();
+        for i in 0..150 {
+            fs::write(dir.path().join(format!("f{i:03}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let z = dir.path().join("z");
+        fs::create_dir_all(&z).unwrap();
+        fs::write(z.join("deep.jpg"), jpeg(8, 8)).unwrap();
+        scan(&db, f);
+        assert_eq!(db.count_photos().unwrap(), 151);
+        // "Unplug" the subfolder part-way through the rescan.
+        let zc = z.clone();
+        let s = scan_folder(&db, f, &AtomicBool::new(false), |p| {
+            if p.seen == 100 {
+                let _ = fs::remove_dir_all(&zc);
+            }
+        })
+        .unwrap();
+        assert!(s.walk_errors > 0, "{s:?}");
+        assert_eq!(s.marked_missing, 0);
+        assert_eq!(db.count_photos().unwrap(), 151);
+    }
+
+    #[test]
+    fn scan_gate_allows_one_scan_at_a_time() {
+        let gate = ScanGate::default();
+        let a = gate.try_start().expect("first start");
+        assert!(gate.try_start().is_none());
+        drop(a);
+        assert!(gate.try_start().is_some());
     }
 }

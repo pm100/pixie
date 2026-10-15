@@ -61,6 +61,8 @@ pub enum PixieError {
     Unsupported(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("busy: {0}")]
+    Busy(String),
 }
 
 impl PixieError {
@@ -72,6 +74,7 @@ impl PixieError {
             PixieError::Image(_) => "This photo couldn't be opened. It may be damaged.".into(),
             PixieError::Unsupported(_) => "This kind of file isn't supported yet.".into(),
             PixieError::NotFound(_) => "Pixie couldn't find that folder or photo. It may have been moved or the drive disconnected.".into(),
+            PixieError::Busy(_) => "A photo scan is already running. Please wait for it to finish.".into(),
         }
     }
 }
@@ -112,6 +115,12 @@ mod tests {
     #[test]
     fn handles_unicode_and_spaces() {
         assert!(is_supported_image(Path::new("Ferien 2024/Café ☕.JPG")));
+    }
+
+    #[test]
+    fn busy_error_has_friendly_message() {
+        let e = PixieError::Busy("scan".into());
+        assert!(e.user_message().contains("already running"));
     }
 
     #[test]
