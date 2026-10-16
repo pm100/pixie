@@ -53,7 +53,7 @@
 </div>
 
 <style>
-  .wrap { position: relative; margin: 0 0 8px; }
+  .wrap { position: relative; margin: 0 0 8px; isolation: isolate; /* Leaflet panes use z-index up to 1000 */ }
   .map { height: 220px; border-radius: 6px; overflow: hidden; background: #e8e8e8; }
   .off { position: absolute; inset: 0 0 18px 0; display: grid; place-items: center; color: #666; font-size: 13px; pointer-events: none; }
   .attr { font-size: 11px; color: #888; margin-top: 2px; }

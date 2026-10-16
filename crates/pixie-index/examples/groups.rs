@@ -1,6 +1,6 @@
 //! Time the day-group and paging queries on a real folder (in-memory database).
 //! Usage: cargo run --release -p pixie-index --example groups --features pixie-image/heic -- <folder>
-use pixie_core::{MediaKind, PhotoQuery, SortOrder};
+use pixie_core::{Bounds, MediaKind, PhotoQuery, SortOrder};
 use pixie_index::{scan_folder, Db};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -25,8 +25,18 @@ fn main() {
             }
         }
     }
+    let t = Instant::now();
+    let points = db.list_geo_points(None, None).unwrap();
+    println!("geo points: {} in {:.1} ms", points.len(), t.elapsed().as_secs_f64() * 1000.0);
+    // A box around the Bay Area, as the map would send for a zoomed-in view.
+    let bay = PhotoQuery { bounds: Some(Bounds { south: 36.0, west: -123.0, north: 38.5, east: -121.0 }), ..Default::default() };
+    let t = Instant::now();
+    let n = db.count_photos_in(&bay).unwrap();
+    let groups = db.day_groups(&bay).unwrap().len();
+    let page = db.list_photos_in(&bay, 0, 200).unwrap().len();
+    println!("bay box: {n} items, {groups} day groups, page of {page}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
     for order in [SortOrder::Newest, SortOrder::Oldest] {
-        let q = PhotoQuery { order, folder_id: None, kind: None };
+        let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None };
         let t = Instant::now();
         let groups = db.day_groups(&q).unwrap();
         println!("{order:?}: day_groups {:.1} ms, {} groups, {} photos", t.elapsed().as_secs_f64() * 1000.0, groups.len(), groups.iter().map(|g| g.count).sum::<i64>());

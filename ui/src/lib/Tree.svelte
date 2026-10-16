@@ -4,13 +4,15 @@
   import { basename } from './format';
   import { activeKeys, buildDateTree, type TreeNode } from './tree';
 
-  let { groups, folders, activeGroup, folderId, ongroup, onfolder }: {
+  let { groups, folders, activeGroup, folderId, mapActive, ongroup, onfolder, onmap }: {
     groups: DayGroup[];
     folders: Folder[];
     activeGroup: number;
     folderId: number | null;
+    mapActive: boolean;
     ongroup: (group: number) => void;
     onfolder: (id: number | null) => void;
+    onmap: () => void;
   } = $props();
 
   const tree = $derived(buildDateTree(groups));
@@ -59,7 +61,7 @@
   {/each}
 
   <h3>Map</h3>
-  <button class="item" disabled title="Coming soon">Map</button>
+  <button class="item" class:active={mapActive} onclick={onmap}>Map</button>
 </nav>
 
 <style>
@@ -72,6 +74,5 @@
   .n { color: #888; font-size: 12px; }
   .item { display: block; width: 100%; text-align: left; padding: 3px 12px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item.active { background: #e3ecff; }
-  .item:disabled { color: #aaa; cursor: default; }
   .none { margin: 6px 12px; color: #888; }
 </style>

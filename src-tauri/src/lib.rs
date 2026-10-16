@@ -1,6 +1,6 @@
 mod state;
 
-use pixie_core::{DayGroup, Folder, MediaKind, Photo, PhotoQuery, PixieError, SortOrder};
+use pixie_core::{Bounds, DayGroup, Folder, GeoPoint, MediaKind, Photo, PhotoQuery, PixieError, SortOrder};
 use pixie_geo::{GeoError, HttpFetcher, Place, PlaceCache, PlaceService, TileService};
 use pixie_image::posters::{poster_path, save_poster as write_poster, validate_poster};
 use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
@@ -26,8 +26,13 @@ fn list_folders(state: tauri::State<AppState>) -> Result<Vec<Folder>, PixieError
     state.db.list_folders()
 }
 
-fn query_of(order: Option<SortOrder>, folder_id: Option<i64>, kind: Option<MediaKind>) -> PhotoQuery {
-    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind }
+fn query_of(
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+) -> PhotoQuery {
+    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind, bounds }
 }
 
 #[tauri::command]
@@ -38,8 +43,9 @@ fn list_photos(
     order: Option<SortOrder>,
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.list_photos_in(&query_of(order, folder_id, kind), offset.max(0), limit.clamp(1, 1000))
+    state.db.list_photos_in(&query_of(order, folder_id, kind, bounds), offset.max(0), limit.clamp(1, 1000))
 }
 
 #[tauri::command]
@@ -47,8 +53,9 @@ fn count_photos(
     state: tauri::State<AppState>,
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
 ) -> Result<i64, PixieError> {
-    state.db.count_photos_in(&query_of(None, folder_id, kind))
+    state.db.count_photos_in(&query_of(None, folder_id, kind, bounds))
 }
 
 #[tauri::command]
@@ -57,8 +64,25 @@ fn list_day_groups(
     order: Option<SortOrder>,
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
 ) -> Result<Vec<DayGroup>, PixieError> {
-    state.db.day_groups(&query_of(order, folder_id, kind))
+    state.db.day_groups(&query_of(order, folder_id, kind, bounds))
+}
+
+/// One item by id (the photo behind a pin on the map).
+#[tauri::command]
+fn get_photo(state: tauri::State<AppState>, id: i64) -> Result<Option<Photo>, PixieError> {
+    state.db.get_photo(id)
+}
+
+/// Id and position of every located item, for the map.
+#[tauri::command]
+fn list_geo_points(
+    state: tauri::State<AppState>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+) -> Result<Vec<GeoPoint>, PixieError> {
+    state.db.list_geo_points(folder_id, kind)
 }
 
 #[derive(Serialize, Clone)]
@@ -379,7 +403,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_photos, count_photos, list_day_groups, start_scan, cancel_scan, print_page, place_for, save_poster,
+            add_folder, list_folders, list_photos, count_photos, list_day_groups, list_geo_points, get_photo, start_scan, cancel_scan, print_page, place_for, save_poster,
             open_in_default_player
         ])
         .run(tauri::generate_context!())

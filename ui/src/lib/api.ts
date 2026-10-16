@@ -1,4 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { Bounds, GeoPoint } from './geo';
+
+export type { Bounds, GeoPoint } from './geo';
 
 export interface Photo {
   id: number; folder_id: number; path: string; size: number; mtime: number;
@@ -9,8 +12,8 @@ export interface Photo {
 export type MediaKind = 'photo' | 'video';
 export interface Folder { id: number; path: string }
 export type SortOrder = 'newest' | 'oldest';
-/** What the library is showing: a sort order and optional folder and kind filters. */
-export interface View { order: SortOrder; folderId: number | null; kind: MediaKind | null }
+/** What the library is showing: a sort order and optional folder, kind and map-area filters. */
+export interface View { order: SortOrder; folderId: number | null; kind: MediaKind | null; bounds: Bounds | null }
 /** Photos taken on one day ("YYYY-MM-DD"; null = no date), in listing order. */
 export interface DayGroup { day: string | null; count: number; first_index: number }
 
@@ -19,12 +22,17 @@ export const addFolder = (path: string) => invoke<number>('add_folder', { path }
 export const startScan = (folderId: number | null) => invoke<void>('start_scan', { folderId });
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
-  offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null,
-) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind });
-export const countPhotos = (folderId: number | null = null, kind: MediaKind | null = null) =>
-  invoke<number>('count_photos', { folderId, kind });
-export const listDayGroups = (order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null) =>
-  invoke<DayGroup[]>('list_day_groups', { order, folderId, kind });
+  offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,
+  kind: MediaKind | null = null, bounds: Bounds | null = null,
+) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds });
+export const countPhotos = (folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null) =>
+  invoke<number>('count_photos', { folderId, kind, bounds });
+export const listDayGroups = (
+  order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null,
+) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds });
+export const getPhoto = (id: number) => invoke<Photo | null>('get_photo', { id });
+export const listGeoPoints = (folderId: number | null = null, kind: MediaKind | null = null) =>
+  invoke<GeoPoint[]>('list_geo_points', { folderId, kind });
 export const printPage = () => invoke<void>('print_page');
 
 export interface Place { landmark: string | null; locality: string | null }

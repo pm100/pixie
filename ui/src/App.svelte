@@ -3,12 +3,14 @@
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
-    addFolder, cancelScan, countPhotos, listDayGroups, listFolders, listPhotos, startScan,
+    addFolder, cancelScan, countPhotos, listDayGroups, listFolders, listGeoPoints, listPhotos, startScan,
     type DayGroup, type Folder, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
+  import PhotoMap from './lib/PhotoMap.svelte';
   import PrintTest from './lib/PrintTest.svelte';
+  import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
   import { parseKindFilter } from './lib/kind';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
@@ -21,8 +23,10 @@
     order: loadPref<SortOrder>('order', 'newest'),
     folderId: null,
     kind: parseKindFilter(loadPref<unknown>('kind', null)),
+    bounds: null,
   };
-  const same = (a: View, b: View) => a.order === b.order && a.folderId === b.folderId && a.kind === b.kind;
+  const same = (a: View, b: View) =>
+    a.order === b.order && a.folderId === b.folderId && a.kind === b.kind && sameBounds(a.bounds, b.bounds);
   let view = $state<View>({ ...initial });
   // The view the loaded groups/pages belong to. It trails `view` by one round trip, so the grid,
   // details and viewer never mix the new order with old data.
@@ -45,7 +49,7 @@
   /** Reload the count and day groups for the current view; the grid refetches on `version`. */
   async function refresh(toTop = false) {
     const v = { ...view };
-    const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind), listDayGroups(v.order, v.folderId, v.kind)]);
+    const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind, v.bounds), listDayGroups(v.order, v.folderId, v.kind, v.bounds)]);
     if (!same(v, view)) return; // a newer request owns the screen
     total = n;
     groups = g;
@@ -62,7 +66,7 @@
     liveBusy = true;
     try {
       const v = { ...view };
-      const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind), listDayGroups(v.order, v.folderId, v.kind)]);
+      const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind, v.bounds), listDayGroups(v.order, v.folderId, v.kind, v.bounds)]);
       if (!same(v, view) || !same(v, shown)) return;
       total = n;
       if (!sameGroups(groups, g)) { groups = g; version++; }
@@ -84,6 +88,7 @@
     view = { ...view, folderId };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
   }
 
   function setKind(kind: MediaKind | null) {
@@ -92,9 +97,88 @@
     savePref('kind', kind);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
   }
 
   const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
+
+  // Map mode: a map above the grid; the grid shows what is inside the visible map area.
+  let mode = $state<'library' | 'map'>('library');
+  let points = $state<GeoPoint[]>([]);
+  let mapResetKey = $state(0); // bumped when Map is clicked again: back to the whole map
+  let soloPhoto = $state<Photo | null>(null); // a photo opened from the map's popup
+  let lastMap: MapView | null = parseMapView(loadPref<unknown>('mapView', null)); // latest position, kept for the next opening
+  let mapStart = $state<MapView | null>(lastMap); // where the map opens; read once by the map
+
+  /** Points for the map follow the folder and kind filters; the map's own area is not part of them. */
+  async function loadPoints() {
+    const { folderId, kind } = view;
+    try {
+      const pts = await listGeoPoints(folderId, kind);
+      if (folderId !== view.folderId || kind !== view.kind) return; // the filters moved on
+      points = pts;
+    } catch (e) {
+      message = String(e);
+    }
+  }
+
+  // A resize (or any move) of the map while the viewer is open must not swap the photo under it:
+  // the new area is held until the viewer closes.
+  let pendingBounds: { b: Bounds | null } | null = null;
+
+  function setBounds(bounds: Bounds | null) {
+    if (mode !== 'map') return;
+    if (openIndex !== null || soloPhoto !== null) { pendingBounds = { b: bounds }; return; }
+    if (sameBounds(bounds, view.bounds)) return;
+
+    view = { ...view, bounds };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+  }
+
+  /**
+   * A red dot was clicked: the grid shows just what is at that spot and the photo is selected, so the
+   * details pane shows it. The next pan or zoom of the map goes back to showing the visible area.
+   */
+  async function focusPhoto(p: Photo) {
+    if (mode !== 'map' || p.gps_lat === null || p.gps_lon === null) return;
+    const d = 0.00002; // about 2 m
+    view = { ...view, bounds: { south: p.gps_lat - d, west: p.gps_lon - d, north: p.gps_lat + d, east: p.gps_lon + d } };
+    selection = emptySelection;
+    try {
+      await refresh(true);
+    } catch (e) {
+      message = String(e);
+      return;
+    }
+    if (total > 0) selection = click(emptySelection, 0, { ctrl: false, shift: false });
+  }
+
+  function closeViewer() {
+    openIndex = null;
+    soloPhoto = null;
+    if (pendingBounds) {
+      const p = pendingBounds;
+      pendingBounds = null;
+      setBounds(p.b);
+    }
+  }
+
+  function leaveMap() {
+    pendingBounds = null;
+    mode = 'library';
+    points = [];
+    view = { ...view, bounds: null };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+  }
+
+  function toggleMap() {
+    if (mode === 'map') { mapResetKey++; return; } // clicking Map again shows the whole map; Close map leaves it
+    mapStart = lastMap;
+    mode = 'map';
+    loadPoints();
+  }
 
   async function chooseFolder() {
     const dir = await open({ directory: true, multiple: false });
@@ -114,10 +198,10 @@
   // Details for a single selected photo (fetched by index in the current view).
   $effect(() => {
     const i = single(selection);
-    const { order, folderId, kind } = shown;
+    const { order, folderId, kind, bounds } = shown;
     if (i === null) { selectedPhoto = null; return; }
     let live = true;
-    listPhotos(i, 1, order, folderId, kind).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
+    listPhotos(i, 1, order, folderId, kind, bounds).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
     return () => { live = false; };
   });
 
@@ -133,7 +217,11 @@
     const subs = [
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number }>('scan-progress', (e) => { seen = e.payload.seen; refreshLive(); }),
-      listen('scan-done', () => { scanning = false; refresh().catch((e) => (message = String(e))); }),
+      listen('scan-done', () => {
+        scanning = false;
+        refresh().catch((e) => (message = String(e)));
+        if (mode === 'map') loadPoints();
+      }),
       listen<{ message: string }>('scan-error', (e) => { message = e.payload.message; /* scan-done always follows */ }),
     ];
     return () => subs.forEach((s) => s.then((un) => un()));
@@ -157,7 +245,7 @@
       <span>Scanning… {seen} files</span>
       <button onclick={() => cancelScan()}>Stop</button>
     {:else}
-      <span>{total} {kindWord(view.kind)}</span>
+      <span>{total} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
     {/if}
     {#if message}<span class="err">{message}</span>{/if}
   </header>
@@ -169,10 +257,32 @@
     {:else}
       <Shell>
         {#snippet left()}
-          <Tree {groups} {folders} {activeGroup} folderId={view.folderId} ongroup={jump} onfolder={setFolder} />
+          <Tree {groups} {folders} {activeGroup} folderId={view.folderId} mapActive={mode === 'map'}
+                ongroup={jump} onfolder={setFolder} onmap={toggleMap} />
         {/snippet}
         {#snippet center()}
-          {#if total === 0 && !scanning}
+          {#if mode === 'map'}
+            <div class="mapsplit">
+              <div class="maptop">
+                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey}
+                          onbounds={setBounds}
+                          onpin={focusPhoto}
+                          onopenphoto={(p) => (soloPhoto = p)}
+                          onmove={(v) => { lastMap = v; savePref('mapView', v); }}
+                          onclose={leaveMap} />
+              </div>
+              <div class="mapbottom">
+                {#if total === 0 && !scanning}
+                  <p class="empty small">No photos or videos in this part of the map.</p>
+                {:else}
+                  <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
+                        onopen={(i) => (openIndex = i)}
+                        onselect={(i, mods) => (selection = click(selection, i, mods))}
+                        onvisiblegroup={(g) => (activeGroup = g)} />
+                {/if}
+              </div>
+            </div>
+          {:else if total === 0 && !scanning}
             <p class="empty">No {view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
@@ -187,8 +297,8 @@
       </Shell>
     {/if}
   </section>
-  {#if openIndex !== null}
-    <Viewer index={openIndex} {total} view={shown} onclose={() => (openIndex = null)} onnav={(i) => (openIndex = i)} />
+  {#if openIndex !== null || soloPhoto !== null}
+    <Viewer index={openIndex ?? 0} {total} view={shown} solo={soloPhoto} onclose={closeViewer} onnav={(i) => (openIndex = i)} />
   {/if}
 </main>
 
@@ -199,6 +309,10 @@
   section { flex: 1; min-height: 0; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }
+  .mapsplit { display: flex; flex-direction: column; height: 100%; }
+  .maptop { flex: 0 0 45%; min-height: 220px; }
+  .mapbottom { flex: 1; min-height: 0; }
+  .empty.small { margin-top: 24px; }
   .seg { display: inline-flex; }
   .seg button { border-radius: 0; margin: 0 -1px 0 0; }
   .seg button:first-child { border-radius: 4px 0 0 4px; }

@@ -100,11 +100,12 @@ pub enum SortOrder {
 }
 
 /// What the library view is showing: a sort order and an optional folder filter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PhotoQuery {
     pub order: SortOrder,
     pub folder_id: Option<FolderId>,
     pub kind: Option<MediaKind>,
+    pub bounds: Option<Bounds>,
 }
 
 /// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).
@@ -114,6 +115,46 @@ pub struct DayGroup {
     pub day: Option<String>,
     pub count: i64,
     pub first_index: i64,
+}
+
+/// A latitude/longitude rectangle. `west > east` means it crosses the antimeridian.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Bounds {
+    pub south: f64,
+    pub west: f64,
+    pub north: f64,
+    pub east: f64,
+}
+
+impl Bounds {
+    pub fn wraps(&self) -> bool {
+        self.west > self.east
+    }
+
+    /// Clamp to valid coordinates. `None` for non-finite values or `south > north`.
+    /// A rectangle 360 degrees wide or more becomes the full longitude range.
+    pub fn normalized(&self) -> Option<Bounds> {
+        let all = [self.south, self.west, self.north, self.east];
+        if all.iter().any(|v| !v.is_finite()) || self.south > self.north {
+            return None;
+        }
+        let lat = |v: f64| v.clamp(-90.0, 90.0);
+        let lon = |v: f64| v.clamp(-180.0, 180.0);
+        let (south, north) = (lat(self.south), lat(self.north));
+        let width = if self.west <= self.east { self.east - self.west } else { self.east + 360.0 - self.west };
+        if width >= 360.0 {
+            return Some(Bounds { south, west: -180.0, north, east: 180.0 });
+        }
+        Some(Bounds { south, west: lon(self.west), north, east: lon(self.east) })
+    }
+}
+
+/// Where one photo or video was taken, for the map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub id: PhotoId,
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -213,6 +254,31 @@ mod tests {
         assert_eq!(PhotoMeta::default().kind, MediaKind::Photo);
         assert_eq!(PhotoMeta::default().duration_ms, None);
         assert_eq!(PhotoQuery::default().kind, None);
+    }
+
+    #[test]
+    fn bounds_normalize_clamps_wraps_and_rejects_nonsense() {
+        let b = |s, w, n, e| Bounds { south: s, west: w, north: n, east: e };
+        assert_eq!(b(10.0, 20.0, 30.0, 40.0).normalized(), Some(b(10.0, 20.0, 30.0, 40.0)));
+        // latitudes clamp to the poles, longitudes to +-180
+        assert_eq!(b(-95.0, -200.0, 95.0, 200.0).normalized(), Some(b(-90.0, -180.0, 90.0, 180.0)));
+        // a view 360 degrees or wider means every longitude
+        assert_eq!(b(0.0, -180.0, 10.0, 180.0).normalized(), Some(b(0.0, -180.0, 10.0, 180.0)));
+        // crossing the antimeridian keeps west > east
+        let w = b(0.0, 170.0, 10.0, -170.0).normalized().unwrap();
+        assert!(w.wraps());
+        assert!(!b(0.0, -10.0, 10.0, 10.0).wraps());
+        // nonsense is rejected
+        assert_eq!(b(f64::NAN, 0.0, 1.0, 1.0).normalized(), None);
+        assert_eq!(b(0.0, 0.0, f64::INFINITY, 1.0).normalized(), None);
+        assert_eq!(b(20.0, 0.0, 10.0, 1.0).normalized(), None); // south > north
+    }
+
+    #[test]
+    fn geo_point_and_query_defaults() {
+        assert_eq!(PhotoQuery::default().bounds, None);
+        let p = GeoPoint { id: 3, lat: 1.5, lon: -2.5 };
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"id":3,"lat":1.5,"lon":-2.5}"#);
     }
 
     #[test]

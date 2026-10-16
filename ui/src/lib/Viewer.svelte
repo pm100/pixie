@@ -3,8 +3,8 @@
   import { neighbors } from './neighbors';
   import { thumbUrl, videoUrl } from './url';
 
-  let { index, total, view, onclose, onnav }: {
-    index: number; total: number; view: View; onclose: () => void; onnav: (i: number) => void;
+  let { index, total, view, solo = null, onclose, onnav }: {
+    index: number; total: number; view: View; solo?: Photo | null; onclose: () => void; onnav: (i: number) => void;
   } = $props();
 
   const PRELOAD = 3; // photos kept ready on each side of the current one
@@ -32,12 +32,24 @@
   }
 
   $effect(() => {
+    if (solo) {
+      // One photo opened from the map: no neighbours, no listing.
+      const mine = ++token;
+      if (current?.id !== solo.id) {
+        videoFailed = false;
+        videoReady = false;
+        current = solo;
+      }
+      if (solo.kind === 'photo') load(urlFor(solo), mine);
+      else { shownSrc = null; failed = false; }
+      return;
+    }
     const i = index;
     const mine = ++token;
     // One call for the whole neighbourhood instead of one per arrow press.
     const lo = Math.max(0, i - PRELOAD);
     const hi = Math.min(total, i + PRELOAD + 1);
-    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind).then((rows) => {
+    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
       if (mine !== token || !photos[i]) return;
       const here = photos[i];
@@ -79,8 +91,8 @@
 
   function key(e: KeyboardEvent) {
     if (e.key === 'Escape') onclose();
-    else if (e.key === 'ArrowRight' && index < total - 1) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index + 1); }
-    else if (e.key === 'ArrowLeft' && index > 0) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index - 1); }
+    else if (!solo && e.key === 'ArrowRight' && index < total - 1) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index + 1); }
+    else if (!solo && e.key === 'ArrowLeft' && index > 0) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index - 1); }
     else if (e.key === ' ' && current?.kind === 'video' && player && (e.target as HTMLElement | null)?.tagName !== 'BUTTON') {
       e.preventDefault();
       if (player.paused) void player.play(); else player.pause();
@@ -119,11 +131,12 @@
       <p class="msg">This photo couldn't be opened. It may be damaged.</p>
     {/if}
   {/if}
-  <div class="count">{index + 1} / {total}</div>
+  {#if !solo}<div class="count">{index + 1} / {total}</div>{/if}
 </div>
 
 <style>
-  .overlay { position: fixed; inset: 0; background: #111; overflow: hidden; color: #eee; }
+  /* Above the map: Leaflet panes and controls use z-index up to 1000. */
+  .overlay { position: fixed; inset: 0; z-index: 2000; background: #111; overflow: hidden; color: #eee; }
   /* Fill the window and let object-fit shrink the photo to fit; no dependence on the
      photo's own size (a grid/flex cell would grow to it and crop). */
   img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }

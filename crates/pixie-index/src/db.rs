@@ -1,4 +1,4 @@
-use pixie_core::{DayGroup, Folder, FolderId, MediaKind, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{Bounds, DayGroup, Folder, FolderId, GeoPoint, MediaKind, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
@@ -91,10 +91,12 @@ fn order_sql(o: SortOrder) -> &'static str {
     }
 }
 
-/// The optional folder and kind filters of a query, as SQL text and bound values.
+/// The optional folder, kind and bounding-box filters of a query, as SQL text and bound values.
 struct Filter {
     folder: Option<i64>,
     kind: Option<i64>,
+    /// `Some(None)` is an invalid box, which matches nothing.
+    bounds: Option<Option<Bounds>>,
 }
 
 impl Filter {
@@ -102,6 +104,7 @@ impl Filter {
         Filter {
             folder: q.folder_id,
             kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
+            bounds: q.bounds.map(|b| b.normalized()),
         }
     }
     fn sql(&self) -> String {
@@ -112,6 +115,14 @@ impl Filter {
         if self.kind.is_some() {
             s.push_str(" AND kind = :kind");
         }
+        match &self.bounds {
+            None => {}
+            Some(None) => s.push_str(" AND 0"),
+            Some(Some(b)) if b.wraps() => {
+                s.push_str(" AND gps_lat BETWEEN :south AND :north AND (gps_lon >= :west OR gps_lon <= :east)")
+            }
+            Some(Some(_)) => s.push_str(" AND gps_lat BETWEEN :south AND :north AND gps_lon BETWEEN :west AND :east"),
+        }
         s
     }
     fn params(&self) -> Vec<(&'static str, &dyn rusqlite::ToSql)> {
@@ -121,6 +132,12 @@ impl Filter {
         }
         if let Some(k) = &self.kind {
             v.push((":kind", k));
+        }
+        if let Some(Some(b)) = &self.bounds {
+            v.push((":south", &b.south));
+            v.push((":north", &b.north));
+            v.push((":west", &b.west));
+            v.push((":east", &b.east));
         }
         v
     }
@@ -278,6 +295,24 @@ impl Db {
             .map_err(db_err)
     }
 
+    /// Every non-missing item with a location, for the map. Honours the folder and kind filters.
+    pub fn list_geo_points(&self, folder_id: Option<FolderId>, kind: Option<MediaKind>) -> Result<Vec<GeoPoint>> {
+        let q = PhotoQuery { folder_id, kind, ..Default::default() };
+        let filter = Filter::of(&q);
+        let sql = format!(
+            "SELECT id, gps_lat, gps_lon FROM photos WHERE missing = 0 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL{} ORDER BY id",
+            filter.sql()
+        );
+        let c = self.conn();
+        let mut s = c.prepare(&sql).map_err(db_err)?;
+        let rows = s
+            .query_map(filter.params().as_slice(), |r| Ok(GeoPoint { id: r.get(0)?, lat: r.get(1)?, lon: r.get(2)? }))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
     /// One entry per calendar day (UTC, as stored), in listing order, Undated last.
     pub fn day_groups(&self, q: &PhotoQuery) -> Result<Vec<DayGroup>> {
         let dir = match q.order {
@@ -365,7 +400,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video) };
+            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let sql = list_sql(&q, &filter);
@@ -400,6 +435,132 @@ mod tests {
         let rows = db.list_photos_in(&PhotoQuery::default(), 0, 10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].meta.kind, rows[0].meta.duration_ms), (MediaKind::Photo, None));
+    }
+
+    fn geo_meta(taken: i64, lat: f64, lon: f64) -> PhotoMeta {
+        PhotoMeta { taken_at: Some(taken), gps_lat: Some(lat), gps_lon: Some(lon), ..Default::default() }
+    }
+
+    fn geo_library() -> (Db, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        db.upsert_photo(f, "/p/paris.jpg", 1, 1, &geo_meta(100, 48.86, 2.35)).unwrap();
+        db.upsert_photo(f, "/p/rome.jpg", 1, 1, &geo_meta(200, 41.90, 12.50)).unwrap();
+        db.upsert_photo(f, "/p/suva.jpg", 1, 1, &geo_meta(300, -18.14, 178.44)).unwrap(); // Fiji, east of the 180 line
+        db.upsert_photo(f, "/p/taveuni.jpg", 1, 1, &geo_meta(400, -16.85, -179.95)).unwrap(); // west of the line
+        db.upsert_photo(f, "/p/pole.jpg", 1, 1, &geo_meta(500, -89.99, 0.0)).unwrap();
+        db.upsert_photo(f, "/p/nogps.jpg", 1, 1, &meta(Some(600))).unwrap();
+        db.upsert_photo(f, "/p/clip.mp4", 1, 1, &PhotoMeta { kind: MediaKind::Video, ..geo_meta(700, 48.85, 2.34) }).unwrap();
+        (db, f)
+    }
+
+    fn bq(south: f64, west: f64, north: f64, east: f64) -> PhotoQuery {
+        PhotoQuery { bounds: Some(Bounds { south, west, north, east }), ..Default::default() }
+    }
+
+    #[test]
+    fn bounds_select_what_is_inside_edges_included_and_skip_items_without_gps() {
+        let (db, _f) = geo_library();
+        assert_eq!(file_names(&db, &bq(40.0, 0.0, 50.0, 15.0)), ["clip.mp4", "rome.jpg", "paris.jpg"]); // newest first
+        assert_eq!(file_names(&db, &bq(48.86, 2.35, 48.86, 2.35)), ["paris.jpg"]); // a point box: edges inclusive
+        assert!(file_names(&db, &bq(0.0, 0.0, 10.0, 10.0)).is_empty());
+        let all = file_names(&db, &bq(-90.0, -180.0, 90.0, 180.0));
+        assert_eq!(all.len(), 6); // everything with GPS; nogps.jpg never matches
+        assert!(!all.contains(&"nogps.jpg".to_string()));
+    }
+
+    #[test]
+    fn bounds_across_the_antimeridian_and_at_the_poles() {
+        let (db, _f) = geo_library();
+        assert_eq!(file_names(&db, &bq(-20.0, 170.0, -10.0, -170.0)), ["taveuni.jpg", "suva.jpg"]); // west > east
+        assert_eq!(file_names(&db, &bq(-20.0, -180.0, -10.0, -170.0)), ["taveuni.jpg"]); // only the western side
+        assert_eq!(file_names(&db, &bq(-95.0, -10.0, -85.0, 10.0)), ["pole.jpg"]); // latitudes clamp
+    }
+
+    #[test]
+    fn invalid_bounds_match_nothing() {
+        let (db, _f) = geo_library();
+        assert!(file_names(&db, &bq(f64::NAN, 0.0, 10.0, 10.0)).is_empty());
+        assert!(file_names(&db, &bq(20.0, 0.0, 10.0, 10.0)).is_empty()); // south > north
+        assert_eq!(db.count_photos_in(&bq(20.0, 0.0, 10.0, 10.0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn bounds_combine_with_kind_and_folder_and_counts_and_groups_agree() {
+        let (db, f) = geo_library();
+        let other = db.add_folder("/q").unwrap();
+        db.upsert_photo(other, "/q/paris2.jpg", 1, 1, &geo_meta(150, 48.9, 2.3)).unwrap();
+        let europe = Bounds { south: 40.0, west: 0.0, north: 50.0, east: 15.0 };
+        let q = |kind, folder_id| PhotoQuery { bounds: Some(europe), kind, folder_id, ..Default::default() };
+        assert_eq!(file_names(&db, &q(Some(MediaKind::Video), None)), ["clip.mp4"]);
+        assert_eq!(file_names(&db, &q(None, Some(other))), ["paris2.jpg"]);
+        assert_eq!(file_names(&db, &q(Some(MediaKind::Photo), Some(f))), ["rome.jpg", "paris.jpg"]);
+        for query in [q(None, None), q(Some(MediaKind::Photo), Some(f)), q(None, Some(other))] {
+            let listed = db.list_photos_in(&query, 0, 100).unwrap().len() as i64;
+            assert_eq!(db.count_photos_in(&query).unwrap(), listed);
+            assert_eq!(db.day_groups(&query).unwrap().iter().map(|g| g.count).sum::<i64>(), listed);
+        }
+    }
+
+    #[test]
+    fn geo_points_are_the_located_items_honouring_filters() {
+        let (db, f) = geo_library();
+        let all = db.list_geo_points(None, None).unwrap();
+        assert_eq!(all.len(), 6);
+        assert!(all.iter().all(|p| p.lat.abs() <= 90.0 && p.lon.abs() <= 180.0));
+        let paris = db.list_photos_in(&bq(48.0, 2.0, 49.0, 3.0), 0, 10).unwrap();
+        assert!(all.iter().any(|p| p.id == paris[0].id));
+        assert_eq!(db.list_geo_points(None, Some(MediaKind::Video)).unwrap().len(), 1);
+        assert_eq!(db.list_geo_points(Some(f), Some(MediaKind::Photo)).unwrap().len(), 5);
+        let other = db.add_folder("/q").unwrap();
+        assert!(db.list_geo_points(Some(other), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_items_are_not_on_the_map() {
+        let (db, f) = geo_library();
+        db.mark_missing_except(f, &HashSet::new()).unwrap();
+        assert!(db.list_geo_points(None, None).unwrap().is_empty());
+        assert!(file_names(&db, &bq(-90.0, -180.0, 90.0, 180.0)).is_empty());
+    }
+
+    /// Timing on a big library, by hand in release:
+    /// `cargo test --release -p pixie-index bounds_paging_100k -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bounds_paging_100k() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        {
+            let c = db.conn();
+            c.execute_batch("BEGIN").unwrap();
+            for i in 0..100_000i64 {
+                let (lat, lon) = (-60.0 + (i % 1000) as f64 * 0.12, -170.0 + (i / 1000) as f64 * 3.4);
+                c.execute(
+                    "INSERT INTO photos (folder_id, path, size, mtime, taken_at, gps_lat, gps_lon, missing, kind) VALUES (?1, ?2, 1, 1, ?3, ?4, ?5, 0, 0)",
+                    params![f, format!("/p/{i}.jpg"), 1_500_000_000 + i * 600, lat, lon],
+                )
+                .unwrap();
+            }
+            c.execute_batch("COMMIT").unwrap();
+        }
+        let q = bq(0.0, -50.0, 40.0, 40.0);
+        let time = |label: &str, f: &dyn Fn() -> usize| {
+            let t = std::time::Instant::now();
+            let n = f();
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            println!("{label}: {n} rows, {ms:.1} ms");
+            ms
+        };
+        let slowest = [
+            time("count in box", &|| db.count_photos_in(&q).unwrap() as usize),
+            time("day groups in box", &|| db.day_groups(&q).unwrap().len()),
+            time("page of 200 at offset 500", &|| db.list_photos_in(&q, 500, 200).unwrap().len()),
+            time("geo points", &|| db.list_geo_points(None, None).unwrap().len()),
+        ]
+        .into_iter()
+        .fold(0.0, f64::max);
+        assert!(slowest < 1500.0, "too slow: {slowest} ms");
     }
 
     #[test]
@@ -506,7 +667,7 @@ mod tests {
         (db, f, g)
     }
 
-    fn names(db: &Db, q: &PhotoQuery) -> Vec<String> {
+    fn file_names(db: &Db, q: &PhotoQuery) -> Vec<String> {
         db.list_photos_in(q, 0, 100).unwrap().into_iter().map(|p| p.path.rsplit('/').next().unwrap().to_string()).collect()
     }
 
@@ -518,7 +679,7 @@ mod tests {
     fn newest_lists_and_groups_newest_first_with_undated_last() {
         let (db, _, _) = dated_library();
         let q = PhotoQuery::default();
-        assert_eq!(names(&db, &q), ["b.jpg", "a.jpg", "f.jpg", "c.jpg", "e.jpg", "d.jpg"]);
+        assert_eq!(file_names(&db, &q), ["b.jpg", "a.jpg", "f.jpg", "c.jpg", "e.jpg", "d.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
             [group(Some("2024-06-03"), 2, 0), group(Some("2024-06-02"), 1, 2), group(Some("2024-06-01"), 1, 3), group(None, 2, 4)]
@@ -528,8 +689,8 @@ mod tests {
     #[test]
     fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
         let (db, _, _) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None };
-        assert_eq!(names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None };
+        assert_eq!(file_names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
             [group(Some("2024-06-01"), 1, 0), group(Some("2024-06-02"), 1, 1), group(Some("2024-06-03"), 2, 2), group(None, 2, 4)]
@@ -540,7 +701,7 @@ mod tests {
     fn group_counts_add_up_and_first_index_points_at_the_group() {
         let (db, _, _) = dated_library();
         for order in [SortOrder::Newest, SortOrder::Oldest] {
-            let q = PhotoQuery { order, folder_id: None, kind: None };
+            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None };
             let groups = db.day_groups(&q).unwrap();
             assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
             for g in &groups {
@@ -557,11 +718,11 @@ mod tests {
     #[test]
     fn folder_filter_applies_to_list_count_and_groups() {
         let (db, f, g) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None };
-        assert_eq!(names(&db, &q), ["f.jpg"]);
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None };
+        assert_eq!(file_names(&db, &q), ["f.jpg"]);
         assert_eq!(db.count_photos_in(&q).unwrap(), 1);
         assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None };
         assert_eq!(db.count_photos_in(&q).unwrap(), 5);
     }
 
@@ -569,7 +730,7 @@ mod tests {
     fn empty_folder_and_empty_library_have_no_groups() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/empty").unwrap();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None };
         assert!(db.day_groups(&q).unwrap().is_empty());
         assert_eq!(db.count_photos_in(&q).unwrap(), 0);
         assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
@@ -591,7 +752,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: None };
+            let q = PhotoQuery { order, folder_id, kind: None, bounds: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q, &filter))).unwrap();
