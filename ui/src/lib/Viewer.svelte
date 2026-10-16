@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { listPhotos, openInDefaultPlayer, type Photo, type View } from './api';
+  import { listPhotos, openInDefaultPlayer, placeFor, type Photo, type Place, type View } from './api';
+  import { formatDateTime, formatGps } from './format';
+  import { createLatest } from './latest';
   import { neighbors } from './neighbors';
+  import { placeLines } from './placeLines';
   import { thumbUrl, videoUrl } from './url';
 
   let { index, total, view, solo = null, onclose, onnav }: {
@@ -21,6 +24,24 @@
   let player: HTMLVideoElement | undefined = $state();
   const photos: Record<number, Photo> = {};
   let token = 0; // latest navigation wins; older loads are ignored
+
+  // Date and place of the photo on screen. The coordinates show at once; the place name replaces them
+  // when the lookup answers (it needs the network and may never). A slow answer for a photo that is no
+  // longer shown is dropped.
+  const curLat = $derived(current?.gps_lat ?? null);
+  const curLon = $derived(current?.gps_lon ?? null);
+  const coords = $derived(formatGps(curLat, curLon));
+  let place = $state<Place | null>(null);
+  const placeToken = createLatest();
+  const lines = $derived(placeLines(place));
+  $effect(() => {
+    place = null;
+    const t = placeToken.next();
+    if (curLat === null || curLon === null) return;
+    placeFor(curLat, curLon)
+      .then((p) => { if (placeToken.isCurrent(t)) place = p; })
+      .catch(() => {});
+  });
 
   const urlFor = (p: Photo) => thumbUrl('view', p.id, p.mtime, p.size);
 
@@ -131,6 +152,16 @@
       <p class="msg">This photo couldn't be opened. It may be damaged.</p>
     {/if}
   {/if}
+  {#if current}
+    <div class="cap">
+      <div class="when">{formatDateTime(current.taken_at)}</div>
+      {#if lines.primary}
+        <div class="where"><strong>{lines.primary}</strong>{#if lines.secondary}<span> · {lines.secondary}</span>{/if}</div>
+      {:else if coords}
+        <div class="where">{coords}</div>
+      {/if}
+    </div>
+  {/if}
   {#if !solo}<div class="count">{index + 1} / {total}</div>{/if}
 </div>
 
@@ -144,5 +175,8 @@
   .msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; margin: 0; padding: 24px; text-align: center; background: #111; }
   .msg p { margin: 0; max-width: 40ch; }
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: none; border: 0; color: #eee; font-size: 22px; cursor: pointer; }
+  .cap { position: absolute; z-index: 1; top: 12px; left: 16px; max-width: calc(100% - 90px); padding: 8px 12px; border-radius: 6px; background: rgba(0, 0, 0, .45); text-shadow: 0 0 4px #000; pointer-events: none; line-height: 1.35; }
+  .cap .when { font-size: 15px; font-weight: 600; }
+  .cap .where { font-size: 13px; opacity: .9; }
   .count { position: absolute; z-index: 1; text-shadow: 0 0 4px #000; bottom: 10px; font-size: 13px; opacity: .7; }
 </style>
