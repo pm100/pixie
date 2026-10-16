@@ -1,6 +1,7 @@
 mod state;
 
 use pixie_core::{Folder, Photo, PixieError};
+use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::{scan_folder, Db};
 use serde::Serialize;
@@ -8,7 +9,6 @@ use state::AppState;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager};
 
@@ -51,6 +51,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
         .try_start()
         .ok_or_else(|| PixieError::Busy("a scan is already running".into()))?;
     let db = state.db.clone();
+    let thumbs = state.thumbs.clone();
     let cancel = state.cancel_scan.clone();
     cancel.store(false, Ordering::Relaxed);
     let ids: Vec<i64> = match folder_id {
@@ -75,6 +76,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
             }
         }
         let _ = app.emit("scan-done", ScanDone { folders: scanned });
+        prefetch_all(&db, &thumbs); // build thumbnails for anything new, in the background
     });
     Ok(())
 }
@@ -93,35 +95,74 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
     Response::builder().status(code).body(Vec::new()).unwrap()
 }
 
-/// `/{grid|view}/{photo_id}` -> JPEG thumbnail bytes.
-fn handle_thumb(state: &AppState, path: &str) -> Response<Vec<u8>> {
+fn jpeg_response(bytes: Vec<u8>) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "image/jpeg")
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(bytes)
+        .unwrap()
+}
+
+/// `/{grid|view}/{photo_id}`: answers through `responder` once the thumbnail is
+/// ready. No thread is parked per request; the worker that finishes it replies.
+fn handle_thumb(state: &AppState, path: &str, responder: tauri::UriSchemeResponder) {
     let mut parts = path.trim_matches('/').split('/');
     let class = match parts.next() {
         Some("grid") => ThumbClass::Grid,
         Some("view") => ThumbClass::Viewer,
-        _ => return status(StatusCode::NOT_FOUND),
+        _ => return responder.respond(status(StatusCode::NOT_FOUND)),
     };
     let Some(id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        return status(StatusCode::NOT_FOUND);
+        return responder.respond(status(StatusCode::NOT_FOUND));
     };
     let photo = match state.db.get_photo(id) {
         Ok(Some(p)) => p,
-        Ok(None) => return status(StatusCode::NOT_FOUND),
-        Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(None) => return responder.respond(status(StatusCode::NOT_FOUND)),
+        Err(_) => return responder.respond(status(StatusCode::INTERNAL_SERVER_ERROR)),
     };
-    let rx = state.thumbs.request(class, photo.id, photo.mtime, photo.size, PathBuf::from(&photo.path));
-    match rx.recv_timeout(Duration::from_secs(120)) {
-        Ok(Ok(file)) => match std::fs::read(file) {
-            Ok(bytes) => Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "image/jpeg")
-                .header("Cache-Control", "public, max-age=31536000, immutable")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(bytes)
-                .unwrap(),
-            Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
-        },
-        _ => status(StatusCode::INTERNAL_SERVER_ERROR),
+    let shown = photo.path.clone();
+    state.thumbs.request_with(
+        class,
+        photo.id,
+        photo.mtime,
+        photo.size,
+        PathBuf::from(&photo.path),
+        Box::new(move |result| {
+            let resp = match result {
+                Ok(file) => match std::fs::read(&file) {
+                    Ok(bytes) => jpeg_response(bytes),
+                    Err(e) => {
+                        eprintln!("[thumb] cannot read {}: {e}", file.display());
+                        status(StatusCode::INTERNAL_SERVER_ERROR)
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[thumb] FAILED {shown}: {e}");
+                    status(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            };
+            responder.respond(resp);
+        }),
+    );
+}
+
+/// Queue grid thumbnails for the whole library (newest first, the order the grid
+/// shows them) at the lowest priority, so scrolling finds them already built.
+fn prefetch_all(db: &Db, thumbs: &ThumbService) {
+    let mut offset = 0;
+    loop {
+        let Ok(page) = db.list_photos(offset, 1000) else { return };
+        if page.is_empty() {
+            return;
+        }
+        offset += page.len() as i64;
+        thumbs.prefetch(
+            page.into_iter()
+                .map(|p| (ThumbClass::Grid, p.id, p.mtime, p.size, PathBuf::from(p.path)))
+                .collect(),
+        );
     }
 }
 
@@ -130,16 +171,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("pixie", |ctx, request, responder| {
             let state = ctx.app_handle().state::<AppState>().inner().clone();
-            let path = request.uri().path().to_string();
-            // Generation can take a while; never block the protocol thread.
-            std::thread::spawn(move || responder.respond(handle_thumb(&state, &path)));
+            handle_thumb(&state, request.uri().path(), responder);
         })
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db = Db::open(&dir.join("pixie.db"))?;
-            let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
-            let thumbs = pixie_image::service::ThumbService::new(dir.join("thumbs"), workers);
+            // Leave one core for the UI; decoding is the heavy part.
+            let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).clamp(2, 6);
+            let thumbs = ThumbService::new(dir.join("thumbs"), workers);
+            let (pdb, pthumbs) = (db.clone(), thumbs.clone());
+            std::thread::spawn(move || prefetch_all(&pdb, &pthumbs));
             app.manage(AppState { db, thumbs, cancel_scan: Arc::new(Default::default()), gate: Default::default() });
             Ok(())
         })

@@ -8,4 +8,8 @@ describe('thumbUrl', () => {
   it('uses the custom scheme elsewhere', () => {
     expect(thumbUrl('view', 7, 1, 2, false)).toBe('pixie://localhost/view/7?v=1-2');
   });
+  it('adds a cache-busting retry counter only when retrying', () => {
+    expect(thumbUrl('grid', 1, 2, 3, true, 0)).toBe('http://pixie.localhost/grid/1?v=2-3');
+    expect(thumbUrl('grid', 1, 2, 3, true, 2)).toBe('http://pixie.localhost/grid/1?v=2-3&r=2');
+  });
 });

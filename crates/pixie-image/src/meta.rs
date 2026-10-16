@@ -75,6 +75,31 @@ fn gps_coord(e: &exif::Exif, tag: exif::Tag, ref_tag: exif::Tag) -> Option<f64> 
     Some(v * sign).filter(|v| v.is_finite())
 }
 
+/// JPEG width/height by reading only the header. (The `image` crate's JPEG
+/// decoder reads the whole file into memory to answer the same question.)
+fn jpeg_dimensions_from<R: std::io::Read>(reader: R) -> Option<(u32, u32)> {
+    let mut dec = jpeg_decoder::Decoder::new(std::io::BufReader::new(reader));
+    dec.read_info().ok()?;
+    let info = dec.info()?;
+    Some((info.width as u32, info.height as u32))
+}
+
+fn is_jpeg(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("jpg") | Some("jpeg")
+    )
+}
+
+fn raw_dimensions(path: &Path) -> Option<(u32, u32)> {
+    if is_jpeg(path) {
+        if let Some(d) = std::fs::File::open(path).ok().and_then(jpeg_dimensions_from) {
+            return Some(d);
+        }
+    }
+    image::image_dimensions(path).ok()
+}
+
 /// Best-effort metadata; never fails. Dimensions are as displayed (after orientation).
 pub fn read_meta(path: &Path) -> PhotoMeta {
     let mut meta = PhotoMeta::default();
@@ -87,7 +112,7 @@ pub fn read_meta(path: &Path) -> PhotoMeta {
             meta.width = Some(w);
             meta.height = Some(h);
         }
-    } else if let Ok((w, h)) = image::image_dimensions(path) {
+    } else if let Some((w, h)) = raw_dimensions(path) {
         let o = read_orientation(path);
         let (w, h) = if o >= 5 { (h, w) } else { (w, h) };
         meta.width = Some(w);
@@ -154,5 +179,31 @@ mod tests {
         let empty = dir.path().join("empty.jpg");
         std::fs::write(&empty, b"").unwrap();
         assert_eq!(read_meta(&empty), PhotoMeta::default());
+    }
+
+    /// Counts bytes handed out, to prove only the header is read.
+    struct Counting<R>(R, std::rc::Rc<std::cell::Cell<usize>>);
+    impl<R: std::io::Read> std::io::Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(buf)?;
+            self.1.set(self.1.get() + n);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn jpeg_dimensions_read_only_the_header_not_the_whole_file() {
+        let mut data = jpeg(3000, 2000);
+        let image_len = data.len();
+        data.extend(std::iter::repeat(0u8).take(5_000_000)); // a "large file": junk after the image
+        let read = std::rc::Rc::new(std::cell::Cell::new(0));
+        let dims = jpeg_dimensions_from(Counting(std::io::Cursor::new(data), read.clone()));
+        assert_eq!(dims, Some((3000, 2000)));
+        assert!(read.get() < 64 * 1024, "read {} bytes (image is {image_len}); must only read the header", read.get());
+    }
+
+    #[test]
+    fn jpeg_dimensions_is_none_for_junk() {
+        assert_eq!(jpeg_dimensions_from(std::io::Cursor::new(b"not a jpeg".to_vec())), None);
     }
 }

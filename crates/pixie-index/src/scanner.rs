@@ -1,10 +1,10 @@
 use crate::db::Db;
-use pixie_core::{is_supported_image, FolderId, PixieError, Result};
+use pixie_core::{is_supported_image, FolderId, PhotoMeta, PixieError, Result};
 use pixie_image::meta::read_meta;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
@@ -45,7 +45,10 @@ impl Drop for ScanGuard {
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanProgress {
     pub folder_id: FolderId,
+    /// Photo files found so far.
     pub seen: usize,
+    /// New or changed photos whose metadata has been stored so far.
+    pub indexed: usize,
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -56,8 +59,26 @@ fn mtime_ms(md: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+struct Candidate {
+    path: String,
+    size: i64,
+    mtime: i64,
+    is_update: bool,
+}
+
+/// Threads used to read photo metadata. First-open latency (OneDrive, antivirus,
+/// slow disks) dominates, not CPU, so use more threads than cores.
+fn metadata_workers() -> usize {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (cpus * 2).clamp(4, 32)
+}
+
 /// Incrementally scan a watched folder. Never touches originals.
 /// If the root is unreachable, returns `NotFound` and changes nothing.
+///
+/// Phase 1 walks the folder and works out which files are new or changed (cheap,
+/// sequential). Phase 2 reads metadata for those files on many threads and writes
+/// the results to the database as they arrive.
 pub fn scan_folder(
     db: &Db,
     folder_id: FolderId,
@@ -74,7 +95,9 @@ pub fn scan_folder(
 
     let mut stats = ScanStats::default();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut todo: Vec<Candidate> = Vec::new();
 
+    // Phase 1: walk.
     for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
         let entry = match entry {
             Ok(e) => e,
@@ -101,37 +124,77 @@ pub fn scan_folder(
 
         match db.find_photo_stat(&path)? {
             Some(s) if s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
-            existing => {
-                let mut meta = read_meta(entry.path());
-                if meta.width.is_none() {
-                    stats.unreadable += 1;
-                }
-                if meta.taken_at.is_none() {
-                    meta.taken_at = Some(mtime / 1000);
-                }
-                db.upsert_photo(folder_id, &path, size, mtime, &meta)?;
-                if existing.is_some() {
-                    stats.updated += 1
-                } else {
-                    stats.added += 1
-                }
-            }
+            existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some() }),
         }
         if seen.len() % 100 == 0 {
-            on_progress(&ScanProgress { folder_id, seen: seen.len() });
+            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0 });
         }
     }
 
+    // Phase 2: read metadata in parallel, store results as they arrive.
+    let next = AtomicUsize::new(0);
+    let (todo_ref, next_ref) = (&todo, &next);
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, PhotoMeta)>();
+    let mut db_error: Option<PixieError> = None;
+    let mut indexed = 0;
+    std::thread::scope(|scope| {
+        for _ in 0..metadata_workers().min(todo.len().max(1)) {
+            let tx = tx.clone();
+            scope.spawn(move || loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let i = next_ref.fetch_add(1, Ordering::Relaxed);
+                let Some(c) = todo_ref.get(i) else { break };
+                if tx.send((i, read_meta(Path::new(&c.path)))).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+        for (i, mut meta) in rx {
+            let c = &todo[i];
+            if meta.width.is_none() {
+                stats.unreadable += 1;
+            }
+            if meta.taken_at.is_none() {
+                meta.taken_at = Some(c.mtime / 1000);
+            }
+            if let Err(e) = db.upsert_photo(folder_id, &c.path, c.size, c.mtime, &meta) {
+                db_error = Some(e);
+                cancel_workers(next_ref, todo_ref.len());
+                break;
+            }
+            if c.is_update { stats.updated += 1 } else { stats.added += 1 }
+            indexed += 1;
+            if indexed % 50 == 0 {
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed });
+            }
+        }
+    });
+    if let Some(e) = db_error {
+        return Err(e);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        stats.cancelled = true;
+        return Ok(stats);
+    }
+
     if !root.is_dir() {
-        stats.walk_errors += 1; // root vanished during the walk
+        stats.walk_errors += 1; // root vanished during the scan
     }
     // Only mark photos missing after a fully clean walk: an unreadable subfolder
     // or unplugged drive must not make its photos disappear.
     if stats.walk_errors == 0 {
         stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
     }
-    on_progress(&ScanProgress { folder_id, seen: seen.len() });
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed });
     Ok(stats)
+}
+
+/// Make the remaining work items unavailable so worker threads stop.
+fn cancel_workers(next: &AtomicUsize, len: usize) {
+    next.store(len, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -265,9 +328,9 @@ mod tests {
         for i in 0..250 {
             fs::write(dir.path().join(format!("{i}.jpg")), jpeg(8, 8)).unwrap();
         }
-        let mut last = 0;
-        scan_folder(&db, f, &AtomicBool::new(false), |p| last = p.seen).unwrap();
-        assert_eq!(last, 250);
+        let mut last = (0, 0);
+        scan_folder(&db, f, &AtomicBool::new(false), |p| last = (p.seen, p.indexed)).unwrap();
+        assert_eq!(last, (250, 250), "found and indexed counts must both reach the total");
     }
 
     #[test]
@@ -301,5 +364,23 @@ mod tests {
         assert!(gate.try_start().is_none());
         drop(a);
         assert!(gate.try_start().is_some());
+    }
+
+    #[test]
+    fn cancel_during_indexing_stops_early_and_marks_nothing_missing() {
+        let (dir, db, f) = setup();
+        for i in 0..400 {
+            fs::write(dir.path().join(format!("{i}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let cancel = AtomicBool::new(false);
+        let s = scan_folder(&db, f, &cancel, |p| {
+            if p.indexed >= 50 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        assert!(s.cancelled);
+        assert_eq!(s.marked_missing, 0);
+        assert!(db.count_photos().unwrap() < 400);
     }
 }

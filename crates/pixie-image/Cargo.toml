@@ -10,6 +10,7 @@ heic = ["dep:libheif-rs"]
 pixie-core = { path = "../pixie-core" }
 image = { workspace = true }
 kamadak-exif = { workspace = true }
+jpeg-decoder = { version = "0.3", default-features = false }
 libheif-rs = { version = "1", optional = true, default-features = false }
 
 [dev-dependencies]

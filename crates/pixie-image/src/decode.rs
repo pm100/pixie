@@ -38,6 +38,43 @@ pub fn decode_oriented(path: &Path) -> Result<DynamicImage> {
     Ok(apply_orientation(img, read_orientation(path)))
 }
 
+fn is_jpeg(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("jpg") | Some("jpeg")
+    )
+}
+
+/// JPEG decoded at the smallest DCT scale (1/1, 1/2, 1/4, 1/8) that still has the
+/// requested size on at least one axis. Far cheaper than a full decode.
+/// None for anything it cannot handle (CMYK, 16-bit, corrupt...); callers fall back.
+fn decode_jpeg_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut dec = jpeg_decoder::Decoder::new(std::io::BufReader::new(file));
+    dec.read_info().ok()?;
+    let e = edge.min(u16::MAX as u32) as u16;
+    dec.scale(e, e).ok()?;
+    let pixels = dec.decode().ok()?;
+    let info = dec.info()?;
+    let (w, h) = (info.width as u32, info.height as u32);
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(w, h, pixels).map(DynamicImage::ImageLuma8),
+        jpeg_decoder::PixelFormat::RGB24 => image::RgbImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgb8),
+        _ => None,
+    }
+}
+
+/// Decode for making a thumbnail with long edge `edge`: upright, and possibly
+/// much smaller than the source (never smaller than `edge` on its long side).
+pub fn decode_scaled(path: &Path, edge: u32) -> Result<DynamicImage> {
+    if is_jpeg(path) {
+        if let Some(img) = decode_jpeg_scaled(path, edge) {
+            return Ok(apply_orientation(img, read_orientation(path)));
+        }
+    }
+    decode_oriented(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +136,31 @@ mod tests {
         let plain = dir.path().join("ok.jpg");
         std::fs::write(&plain, jpeg(8, 8)).unwrap();
         assert!(decode_oriented(&plain).is_ok());
+    }
+
+    #[test]
+    fn scaled_decode_is_at_least_target_size_and_upright() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.jpg");
+        std::fs::write(&p, jpeg_with_exif(2000, 1000, 6, None)).unwrap();
+        let img = decode_scaled(&p, 256).unwrap();
+        let (w, h) = img.dimensions();
+        assert!(h > w, "orientation 6 must come out portrait, got {w}x{h}");
+        assert!(w.max(h) >= 256, "long edge must still cover the target, got {w}x{h}");
+        assert!(w.max(h) < 2000, "must be downscaled during decode, got {w}x{h}");
+        let rgb = img.to_rgb8();
+        assert!(rgb.get_pixel(w / 2, 3)[0] > 200, "top is red");
+        assert!(rgb.get_pixel(w / 2, h - 3)[2] > 200, "bottom is blue");
+    }
+
+    #[test]
+    fn scaled_decode_falls_back_for_non_jpeg_and_errors_on_junk() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a.png");
+        image::RgbImage::new(64, 32).save(&png).unwrap();
+        assert_eq!(decode_scaled(&png, 256).unwrap().dimensions(), (64, 32));
+        let bad = dir.path().join("bad.jpg");
+        std::fs::write(&bad, b"junk").unwrap();
+        assert!(decode_scaled(&bad, 256).is_err());
     }
 }

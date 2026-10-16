@@ -1,4 +1,4 @@
-use crate::decode::decode_oriented;
+use crate::decode::decode_scaled;
 use image::{GenericImageView, ImageFormat};
 use pixie_core::{PixieError, Result};
 use std::path::{Path, PathBuf};
@@ -48,7 +48,7 @@ pub fn ensure_thumbnail(
     if dst.exists() {
         return Ok(dst);
     }
-    let img = decode_oriented(src)?;
+    let img = decode_scaled(src, class.edge())?;
     let edge = class.edge();
     let (w, h) = img.dimensions();
     let thumb = if w <= edge && h <= edge { img } else { img.thumbnail(edge, edge) };

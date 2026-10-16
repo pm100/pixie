@@ -14,3 +14,11 @@ kamadak-exif = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 tempfile = "3"
+
+# `tauri dev` builds with the dev profile; unoptimised image decoding is 10-30x
+# slower, so optimise dependencies (and lightly our own code) even in dev.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
