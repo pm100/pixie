@@ -115,9 +115,14 @@ fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
 /// Blocks on the rate limit and the network, so it runs on the blocking pool, not an
 /// async worker. A lookup overtaken by a newer one returns `Err` quickly (the UI drops it).
 #[tauri::command]
-async fn place_for(state: tauri::State<'_, AppState>, lat: f64, lon: f64) -> Result<Option<Place>, String> {
+async fn place_for(
+    state: tauri::State<'_, AppState>,
+    lat: f64,
+    lon: f64,
+    lang: String,
+) -> Result<Option<Place>, String> {
     let places = state.places.clone();
-    tauri::async_runtime::spawn_blocking(move || places.place_for(lat, lon))
+    tauri::async_runtime::spawn_blocking(move || places.place_for(lat, lon, &lang))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())

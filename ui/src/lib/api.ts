@@ -24,4 +24,6 @@ export const listDayGroups = (order: SortOrder = 'newest', folderId: number | nu
 export const printPage = () => invoke<void>('print_page');
 
 export interface Place { landmark: string | null; locality: string | null }
-export const placeFor = (lat: number, lon: number) => invoke<Place | null>('place_for', { lat, lon });
+/** The user's language(s), e.g. "en-GB,en", so place names come back in their language. */
+const userLang = () => (navigator.languages?.length ? navigator.languages.join(',') : navigator.language) || 'en';
+export const placeFor = (lat: number, lon: number) => invoke<Place | null>('place_for', { lat, lon, lang: userLang() });

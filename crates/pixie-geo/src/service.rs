@@ -1,6 +1,6 @@
 use crate::cache::PlaceCache;
 use crate::fetch::{Fetcher, GeoError};
-use crate::place::{parse_landmark, parse_locality, place_key, Place};
+use crate::place::{parse_landmark, parse_locality, place_key, Lang, Place};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,11 +20,12 @@ impl PlaceService {
         PlaceService { cache: Mutex::new(cache), fetcher, last_request: Mutex::new(None), gap, started: AtomicU64::new(0) }
     }
 
-    pub fn place_for(&self, lat: f64, lon: f64) -> Result<Option<Place>, GeoError> {
+    pub fn place_for(&self, lat: f64, lon: f64, lang: &str) -> Result<Option<Place>, GeoError> {
         if !(lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0) {
             return Ok(None);
         }
-        let key = place_key(lat, lon);
+        let lang = Lang::parse(lang);
+        let key = format!("{}|{}", place_key(lat, lon), lang.accept);
         let ticket = self.started.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(hit) = self.cache.lock().unwrap().get(&key)? {
             return Ok(hit);
@@ -49,15 +50,22 @@ impl PlaceService {
         // Wikipedia article (reverse geocoding alone returns the nearest object of any
         // kind: a clock, a clinic, a footpath).
         let address = self.fetcher.get(&format!(
-            "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat:.5}&lon={lon:.5}&zoom=14&addressdetails=1"
+            "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat:.5}&lon={lon:.5}&zoom=14&addressdetails=1&accept-language={}",
+            lang.accept
         ));
         *last = Some(Instant::now());
         let address = address?;
-        let wiki = self.fetcher.get(&format!(
-            "https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord={lat:.5}%7C{lon:.5}&gsradius=200&gslimit=10&format=json&formatversion=2"
-        ))?;
+        let wiki = |edition: &str| {
+            self.fetcher.get(&format!(
+                "https://{edition}.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord={lat:.5}%7C{lon:.5}&gsradius=200&gslimit=10&format=json&formatversion=2"
+            ))
+        };
+        let mut landmark = parse_landmark(&String::from_utf8_lossy(&wiki(&lang.wiki)?));
+        if landmark.is_none() && lang.wiki != "en" {
+            // Their edition may simply lack an article for this place.
+            landmark = parse_landmark(&String::from_utf8_lossy(&wiki("en")?));
+        }
         let locality = parse_locality(&String::from_utf8_lossy(&address));
-        let landmark = parse_landmark(&String::from_utf8_lossy(&wiki));
         let place = (locality.is_some() || landmark.is_some()).then_some(Place { landmark, locality });
         self.cache.lock().unwrap().put(&key, place.as_ref())?;
         Ok(place)
@@ -87,7 +95,7 @@ mod tests {
     #[test]
     fn combines_locality_and_landmark() {
         let f = fake(ROME, WIKI_COLOSSEUM);
-        let p = service(&f, 0).place_for(41.8902, 12.4922).unwrap().unwrap();
+        let p = service(&f, 0).place_for(41.8902, 12.4922, "en").unwrap().unwrap();
         assert_eq!(p.landmark.as_deref(), Some("Colosseum"));
         assert_eq!(p.locality.as_deref(), Some("Roma, Lazio, Italia"));
     }
@@ -95,7 +103,7 @@ mod tests {
     #[test]
     fn locality_alone_when_no_article_is_nearby() {
         let f = fake(ROME, WIKI_NONE);
-        let p = service(&f, 0).place_for(41.0, 12.0).unwrap().unwrap();
+        let p = service(&f, 0).place_for(41.0, 12.0, "en").unwrap().unwrap();
         assert_eq!(p.landmark, None);
         assert_eq!(p.locality.as_deref(), Some("Roma, Lazio, Italia"));
     }
@@ -103,7 +111,7 @@ mod tests {
     #[test]
     fn landmark_alone_when_nominatim_has_no_address() {
         let f = fake(NOTHING, WIKI_COLOSSEUM);
-        let p = service(&f, 0).place_for(41.0, 12.0).unwrap().unwrap();
+        let p = service(&f, 0).place_for(41.0, 12.0, "en").unwrap().unwrap();
         assert_eq!(p.landmark.as_deref(), Some("Colosseum"));
         assert_eq!(p.locality, None);
     }
@@ -112,8 +120,8 @@ mod tests {
     fn looks_up_once_then_serves_from_cache() {
         let f = fake(ROME, WIKI_COLOSSEUM);
         let s = service(&f, 0);
-        let a = s.place_for(41.8902, 12.4922).unwrap().unwrap();
-        assert_eq!(s.place_for(41.8902, 12.4922).unwrap(), Some(a));
+        let a = s.place_for(41.8902, 12.4922, "en").unwrap().unwrap();
+        assert_eq!(s.place_for(41.8902, 12.4922, "en").unwrap(), Some(a));
         assert_eq!(f.count_matching("nominatim"), 1);
         assert_eq!(f.count_matching("wikipedia"), 1);
     }
@@ -122,8 +130,8 @@ mod tests {
     fn points_within_rounding_share_one_lookup() {
         let f = fake(ROME, WIKI_COLOSSEUM);
         let s = service(&f, 0);
-        s.place_for(41.89021, 12.49223).unwrap();
-        s.place_for(41.89019, 12.49224).unwrap();
+        s.place_for(41.89021, 12.49223, "en").unwrap();
+        s.place_for(41.89019, 12.49224, "en").unwrap();
         assert_eq!(f.count(), 2);
     }
 
@@ -131,8 +139,8 @@ mod tests {
     fn a_miss_is_cached() {
         let f = fake(NOTHING, WIKI_NONE);
         let s = service(&f, 0);
-        assert_eq!(s.place_for(10.0, 10.0).unwrap(), None);
-        assert_eq!(s.place_for(10.0, 10.0).unwrap(), None);
+        assert_eq!(s.place_for(10.0, 10.0, "en").unwrap(), None);
+        assert_eq!(s.place_for(10.0, 10.0, "en").unwrap(), None);
         assert_eq!(f.count(), 2);
     }
 
@@ -140,9 +148,9 @@ mod tests {
     fn network_failure_is_reported_and_not_cached() {
         let f = Arc::new(FakeFetcher::new(Err(GeoError::Network("offline".into()))));
         let s = service(&f, 0);
-        assert!(s.place_for(10.0, 10.0).is_err());
+        assert!(s.place_for(10.0, 10.0, "en").is_err());
         f.set(Ok(ROME.as_bytes().to_vec()));
-        assert!(s.place_for(10.0, 10.0).unwrap().is_some());
+        assert!(s.place_for(10.0, 10.0, "en").unwrap().is_some());
     }
 
     #[test]
@@ -150,9 +158,9 @@ mod tests {
         let f = fake(ROME, WIKI_NONE);
         f.set_wiki(Err(GeoError::Network("down".into())));
         let s = service(&f, 0);
-        assert!(s.place_for(10.0, 10.0).is_err());
+        assert!(s.place_for(10.0, 10.0, "en").is_err());
         f.set_wiki(Ok(WIKI_COLOSSEUM.as_bytes().to_vec()));
-        let p = s.place_for(10.0, 10.0).unwrap().unwrap();
+        let p = s.place_for(10.0, 10.0, "en").unwrap().unwrap();
         assert_eq!(p.landmark.as_deref(), Some("Colosseum"));
     }
 
@@ -160,12 +168,43 @@ mod tests {
     fn nominatim_requests_are_spaced_by_the_gap() {
         let f = fake(ROME, WIKI_NONE);
         let s = service(&f, 80);
-        s.place_for(1.0, 1.0).unwrap();
-        s.place_for(2.0, 2.0).unwrap();
+        s.place_for(1.0, 1.0, "en").unwrap();
+        s.place_for(2.0, 2.0, "en").unwrap();
         let calls = f.calls.lock().unwrap();
         let times: Vec<_> = calls.iter().filter(|(u, _)| u.contains("nominatim")).map(|(_, t)| *t).collect();
         assert_eq!(times.len(), 2);
         assert!(times[1].duration_since(times[0]) >= Duration::from_millis(80));
+    }
+
+    #[test]
+    fn asks_in_the_users_language_and_prefers_their_wikipedia() {
+        let f = fake(ROME, WIKI_COLOSSEUM);
+        service(&f, 0).place_for(41.0, 12.0, "de-DE,de").unwrap();
+        let calls = f.calls.lock().unwrap();
+        assert!(calls[0].0.contains("accept-language=de-DE,de"), "{}", calls[0].0);
+        assert!(calls[1].0.starts_with("https://de.wikipedia.org/"), "{}", calls[1].0);
+        assert_eq!(calls.len(), 2); // found in de: no English fallback
+    }
+
+    #[test]
+    fn falls_back_to_english_wikipedia_when_their_edition_has_nothing() {
+        let f = fake(ROME, WIKI_NONE);
+        let s = service(&f, 0);
+        s.place_for(41.0, 12.0, "de").unwrap();
+        let calls = f.calls.lock().unwrap();
+        assert!(calls[1].0.starts_with("https://de.wikipedia.org/"));
+        assert!(calls[2].0.starts_with("https://en.wikipedia.org/"));
+        assert_eq!(calls.len(), 3);
+    }
+
+    #[test]
+    fn the_cache_is_per_language() {
+        let f = fake(ROME, WIKI_COLOSSEUM);
+        let s = service(&f, 0);
+        s.place_for(41.0, 12.0, "en").unwrap();
+        s.place_for(41.0, 12.0, "de").unwrap();
+        s.place_for(41.0, 12.0, "de").unwrap();
+        assert_eq!(f.count_matching("nominatim"), 2);
     }
 
     /// First Nominatim request blocks until released; counts Nominatim requests.
@@ -202,7 +241,7 @@ mod tests {
         let s = Arc::new(PlaceService::new(PlaceCache::open_in_memory().unwrap(), g.clone(), Duration::ZERO));
         let spawn = |lat: f64| {
             let s = s.clone();
-            std::thread::spawn(move || s.place_for(lat, lat))
+            std::thread::spawn(move || s.place_for(lat, lat, "en"))
         };
         let a = spawn(1.0); // blocks inside the first request
         std::thread::sleep(Duration::from_millis(150));
@@ -233,7 +272,7 @@ mod tests {
             ("Eiffel Tower", 48.8584, 2.2945),
             ("Mid-ocean", 0.0, -30.0),
         ] {
-            println!("{name}: {:?}", s.place_for(lat, lon));
+            println!("{name}: {:?}", s.place_for(lat, lon, "en"));
         }
     }
 
@@ -242,7 +281,7 @@ mod tests {
         let f = fake(ROME, WIKI_COLOSSEUM);
         let s = service(&f, 0);
         for (la, lo) in [(91.0, 0.0), (0.0, 181.0), (f64::NAN, 0.0), (0.0, f64::INFINITY)] {
-            assert_eq!(s.place_for(la, lo).unwrap(), None);
+            assert_eq!(s.place_for(la, lo, "en").unwrap(), None);
         }
         assert_eq!(f.count(), 0);
     }

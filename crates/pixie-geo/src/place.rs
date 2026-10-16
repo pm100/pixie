@@ -55,6 +55,40 @@ fn strip_disambiguator(title: &str) -> &str {
     }
 }
 
+/// The user's language(s), sanitised for use in URLs. Comes from the webview
+/// (`navigator.languages`), so it is untrusted text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lang {
+    /// For Nominatim's `accept-language`, e.g. "de-DE,de".
+    pub accept: String,
+    /// Wikipedia edition (subdomain), e.g. "de". "en" when unknown.
+    pub wiki: String,
+}
+
+impl Lang {
+    pub fn parse(raw: &str) -> Lang {
+        let valid = |t: &str| {
+            (2..=8).contains(&t.len())
+                && t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        };
+        let tags: Vec<&str> = raw
+            .split(',')
+            .map(|t| t.split(';').next().unwrap_or("").trim())
+            .filter(|t| valid(t))
+            .take(3)
+            .collect();
+        let wiki = tags
+            .first()
+            .and_then(|t| t.split('-').next())
+            .filter(|p| (2..=3).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()))
+            .map(|p| p.to_ascii_lowercase())
+            .unwrap_or_else(|| "en".into());
+        let accept = if tags.is_empty() { "en".to_string() } else { tags.join(",") };
+        Lang { accept, wiki }
+    }
+}
+
 /// Cache key: coordinates rounded to 4 decimals (about 11 m).
 pub fn place_key(lat: f64, lon: f64) -> String {
     let f = |v: f64| {
@@ -137,6 +171,25 @@ mod tests {
         assert_eq!(parse_landmark("not json"), None);
         assert_eq!(parse_landmark("{}"), None);
         assert_eq!(parse_landmark(r#"{"query":{"geosearch":[{"title":"","dist":1.0},{"dist":2.0},{"title":"No dist"}]}}"#), None);
+    }
+
+    #[test]
+    fn lang_keeps_valid_tags_and_picks_the_wikipedia_edition() {
+        let l = Lang::parse("de-DE,de;q=0.9,en;q=0.8,fr");
+        assert_eq!(l.accept, "de-DE,de,en"); // at most three tags, q-values dropped
+        assert_eq!(l.wiki, "de");
+        assert_eq!(Lang::parse("pt-BR").wiki, "pt");
+        assert_eq!(Lang::parse("EN-gb").wiki, "en");
+    }
+
+    #[test]
+    fn lang_falls_back_to_english_and_rejects_injection() {
+        for raw in ["", "  ", "x", "&evil=1", "../../etc", "12", "-de"] {
+            assert_eq!(Lang::parse(raw), Lang { accept: "en".into(), wiki: "en".into() }, "{raw:?}");
+        }
+        let l = Lang::parse("de&x=1,fr");
+        assert_eq!(l.accept, "fr");
+        assert_eq!(l.wiki, "fr");
     }
 
     #[test]
