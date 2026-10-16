@@ -1,4 +1,4 @@
-use pixie_core::{DayGroup, Folder, FolderId, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{DayGroup, Folder, FolderId, MediaKind, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
@@ -40,6 +40,11 @@ const MIGRATIONS: &[&str] = &[
       WHERE gps_lat IS NULL OR gps_lon IS NULL
          OR abs(gps_lat) > 90 OR abs(gps_lon) > 180
          OR (gps_lat = 0 AND gps_lon = 0);",
+    // V3: videos. Existing rows are photos.
+    "ALTER TABLE photos ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE photos ADD COLUMN duration_ms INTEGER;
+     CREATE INDEX idx_photos_kind_newest ON photos(kind, missing, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_kind_oldest ON photos(kind, missing, (taken_at IS NULL), taken_at ASC, id ASC);",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,7 +61,7 @@ pub struct Db {
 }
 
 const PHOTO_COLS: &str =
-    "id, folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing";
+    "id, folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms";
 
 fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -72,6 +77,8 @@ fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
             camera: r.get(8)?,
             gps_lat: r.get(9)?,
             gps_lon: r.get(10)?,
+            kind: if r.get::<_, i64>(12)? == 1 { MediaKind::Video } else { MediaKind::Photo },
+            duration_ms: r.get(13)?,
         },
         missing: r.get::<_, i64>(11)? != 0,
     })
@@ -84,21 +91,45 @@ fn order_sql(o: SortOrder) -> &'static str {
     }
 }
 
-fn folder_sql(q: &PhotoQuery) -> &'static str {
-    if q.folder_id.is_some() { " AND folder_id = :folder" } else { "" }
+/// The optional folder and kind filters of a query, as SQL text and bound values.
+struct Filter {
+    folder: Option<i64>,
+    kind: Option<i64>,
 }
 
-fn folder_param(q: &PhotoQuery) -> Vec<(&'static str, &dyn rusqlite::ToSql)> {
-    match &q.folder_id {
-        Some(f) => vec![(":folder", f as &dyn rusqlite::ToSql)],
-        None => vec![],
+impl Filter {
+    fn of(q: &PhotoQuery) -> Filter {
+        Filter {
+            folder: q.folder_id,
+            kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
+        }
+    }
+    fn sql(&self) -> String {
+        let mut s = String::new();
+        if self.folder.is_some() {
+            s.push_str(" AND folder_id = :folder");
+        }
+        if self.kind.is_some() {
+            s.push_str(" AND kind = :kind");
+        }
+        s
+    }
+    fn params(&self) -> Vec<(&'static str, &dyn rusqlite::ToSql)> {
+        let mut v: Vec<(&'static str, &dyn rusqlite::ToSql)> = Vec::new();
+        if let Some(f) = &self.folder {
+            v.push((":folder", f));
+        }
+        if let Some(k) = &self.kind {
+            v.push((":kind", k));
+        }
+        v
     }
 }
 
-fn list_sql(q: &PhotoQuery) -> String {
+fn list_sql(q: &PhotoQuery, f: &Filter) -> String {
     format!(
         "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0{} ORDER BY {} LIMIT :limit OFFSET :offset",
-        folder_sql(q),
+        f.sql(),
         order_sql(q.order)
     )
 }
@@ -173,15 +204,16 @@ impl Db {
     pub fn upsert_photo(&self, folder_id: FolderId, path: &str, size: i64, mtime: i64, meta: &PhotoMeta) -> Result<PhotoId> {
         self.conn()
             .query_row(
-                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)
                  ON CONFLICT(path) DO UPDATE SET
                     folder_id = excluded.folder_id, size = excluded.size, mtime = excluded.mtime,
                     width = excluded.width, height = excluded.height, taken_at = excluded.taken_at,
                     camera = excluded.camera, gps_lat = excluded.gps_lat, gps_lon = excluded.gps_lon,
+                    kind = excluded.kind, duration_ms = excluded.duration_ms,
                     missing = 0
                  RETURNING id",
-                params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon],
+                params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms],
                 |r| r.get(0),
             )
             .map_err(db_err)
@@ -221,8 +253,9 @@ impl Db {
 
     pub fn list_photos_in(&self, q: &PhotoQuery, offset: i64, limit: i64) -> Result<Vec<Photo>> {
         let c = self.conn();
-        let mut s = c.prepare(&list_sql(q)).map_err(db_err)?;
-        let mut params = folder_param(q);
+        let filter = Filter::of(q);
+        let mut s = c.prepare(&list_sql(q, &filter)).map_err(db_err)?;
+        let mut params = filter.params();
         params.push((":limit", &limit as &dyn rusqlite::ToSql));
         params.push((":offset", &offset as &dyn rusqlite::ToSql));
         let rows = s
@@ -238,9 +271,10 @@ impl Db {
     }
 
     pub fn count_photos_in(&self, q: &PhotoQuery) -> Result<i64> {
-        let sql = format!("SELECT COUNT(*) FROM photos WHERE missing = 0{}", folder_sql(q));
+        let filter = Filter::of(q);
+        let sql = format!("SELECT COUNT(*) FROM photos WHERE missing = 0{}", filter.sql());
         self.conn()
-            .query_row(&sql, folder_param(q).as_slice(), |r| r.get(0))
+            .query_row(&sql, filter.params().as_slice(), |r| r.get(0))
             .map_err(db_err)
     }
 
@@ -250,15 +284,16 @@ impl Db {
             SortOrder::Newest => "DESC",
             SortOrder::Oldest => "ASC",
         };
+        let filter = Filter::of(q);
         let sql = format!(
             "SELECT CASE WHEN taken_at IS NULL THEN NULL ELSE date(taken_at, 'unixepoch') END AS day, COUNT(*)
              FROM photos WHERE missing = 0{} GROUP BY day ORDER BY day IS NULL, day {dir}",
-            folder_sql(q)
+            filter.sql()
         );
         let c = self.conn();
         let mut s = c.prepare(&sql).map_err(db_err)?;
         let rows = s
-            .query_map(folder_param(q).as_slice(), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
+            .query_map(filter.params().as_slice(), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -280,6 +315,91 @@ mod tests {
 
     fn meta(taken: Option<i64>) -> PhotoMeta {
         PhotoMeta { width: Some(10), height: Some(5), taken_at: taken, ..Default::default() }
+    }
+
+    fn video_meta(taken: i64, ms: i64) -> PhotoMeta {
+        PhotoMeta { width: Some(1920), height: Some(1080), taken_at: Some(taken), kind: MediaKind::Video, duration_ms: Some(ms), ..Default::default() }
+    }
+
+    fn mixed_library() -> (Db, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(Some(100))).unwrap();
+        db.upsert_photo(f, "/p/b.mp4", 1, 1, &video_meta(200, 4000)).unwrap();
+        db.upsert_photo(f, "/p/c.jpg", 1, 1, &meta(Some(300))).unwrap();
+        db.upsert_photo(f, "/p/d.mov", 1, 1, &video_meta(400, 61_000)).unwrap();
+        (db, f)
+    }
+
+    #[test]
+    fn kind_and_duration_round_trip() {
+        let (db, _f) = mixed_library();
+        let all = db.list_photos_in(&PhotoQuery::default(), 0, 10).unwrap();
+        let v = all.iter().find(|p| p.path == "/p/d.mov").unwrap();
+        assert_eq!(v.meta.kind, MediaKind::Video);
+        assert_eq!(v.meta.duration_ms, Some(61_000));
+        let p = all.iter().find(|p| p.path == "/p/a.jpg").unwrap();
+        assert_eq!((p.meta.kind, p.meta.duration_ms), (MediaKind::Photo, None));
+    }
+
+    #[test]
+    fn kind_filter_applies_to_listing_counts_and_day_groups() {
+        let (db, f) = mixed_library();
+        let q = |kind, folder_id| PhotoQuery { kind, folder_id, ..Default::default() };
+        let videos = db.list_photos_in(&q(Some(MediaKind::Video), None), 0, 10).unwrap();
+        assert_eq!(videos.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["/p/d.mov", "/p/b.mp4"]);
+        assert_eq!(db.count_photos_in(&q(Some(MediaKind::Video), None)).unwrap(), 2);
+        assert_eq!(db.count_photos_in(&q(Some(MediaKind::Photo), None)).unwrap(), 2);
+        assert_eq!(db.count_photos_in(&q(None, None)).unwrap(), 4);
+        assert_eq!(db.count_photos_in(&q(Some(MediaKind::Video), Some(f))).unwrap(), 2);
+        let groups = db.day_groups(&q(Some(MediaKind::Video), None)).unwrap();
+        assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), 2);
+        let second = db.list_photos_in(&q(Some(MediaKind::Video), None), 1, 1).unwrap();
+        assert_eq!(second[0].path, "/p/b.mp4");
+    }
+
+    #[test]
+    fn kind_filtered_listing_is_served_from_an_index_without_sorting() {
+        let (db, f) = mixed_library();
+        for (order, folder_id) in [
+            (SortOrder::Newest, None), (SortOrder::Oldest, None),
+            (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
+        ] {
+            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video) };
+            let c = db.conn();
+            let filter = Filter::of(&q);
+            let sql = list_sql(&q, &filter);
+            let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let (limit, offset) = (10i64, 0i64);
+            let mut params = filter.params();
+            params.push((":limit", &limit as &dyn rusqlite::ToSql));
+            params.push((":offset", &offset as &dyn rusqlite::ToSql));
+            let plan: Vec<String> = s.query_map(params.as_slice(), |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect();
+            let plan = plan.join(" | ");
+            assert!(plan.contains("idx_photos_"), "{order:?} {folder_id:?}: {plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{order:?} {folder_id:?} must not sort: {plan}");
+            if folder_id.is_none() {
+                assert!(plan.contains("idx_photos_kind_"), "{order:?} should use the kind index: {plan}");
+            }
+        }
+    }
+
+    #[test]
+    fn v3_migration_keeps_existing_rows_as_photos() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v2.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(MIGRATIONS[0]).unwrap();
+            c.execute_batch(MIGRATIONS[1]).unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            c.execute("INSERT INTO photos(folder_id, path, size, mtime) VALUES (1, '/p/a.jpg', 1, 1)", []).unwrap();
+        }
+        let db = Db::open(&p).unwrap();
+        let rows = db.list_photos_in(&PhotoQuery::default(), 0, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].meta.kind, rows[0].meta.duration_ms), (MediaKind::Photo, None));
     }
 
     #[test]
@@ -408,7 +528,7 @@ mod tests {
     #[test]
     fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
         let (db, _, _) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None };
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None };
         assert_eq!(names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
@@ -420,7 +540,7 @@ mod tests {
     fn group_counts_add_up_and_first_index_points_at_the_group() {
         let (db, _, _) = dated_library();
         for order in [SortOrder::Newest, SortOrder::Oldest] {
-            let q = PhotoQuery { order, folder_id: None };
+            let q = PhotoQuery { order, folder_id: None, kind: None };
             let groups = db.day_groups(&q).unwrap();
             assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
             for g in &groups {
@@ -437,11 +557,11 @@ mod tests {
     #[test]
     fn folder_filter_applies_to_list_count_and_groups() {
         let (db, f, g) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g) };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None };
         assert_eq!(names(&db, &q), ["f.jpg"]);
         assert_eq!(db.count_photos_in(&q).unwrap(), 1);
         assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f) };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None };
         assert_eq!(db.count_photos_in(&q).unwrap(), 5);
     }
 
@@ -449,7 +569,7 @@ mod tests {
     fn empty_folder_and_empty_library_have_no_groups() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/empty").unwrap();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f) };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None };
         assert!(db.day_groups(&q).unwrap().is_empty());
         assert_eq!(db.count_photos_in(&q).unwrap(), 0);
         assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
@@ -471,11 +591,12 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id };
+            let q = PhotoQuery { order, folder_id, kind: None };
             let c = db.conn();
-            let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q))).unwrap();
+            let filter = Filter::of(&q);
+            let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q, &filter))).unwrap();
             let (limit, offset) = (10i64, 0i64);
-            let mut params = folder_param(&q);
+            let mut params = filter.params();
             params.push((":limit", &limit as &dyn rusqlite::ToSql));
             params.push((":offset", &offset as &dyn rusqlite::ToSql));
             let plan: Vec<String> = s.query_map(params.as_slice(), |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect();

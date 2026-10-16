@@ -4,11 +4,12 @@
   import { onMount } from 'svelte';
   import {
     addFolder, cancelScan, countPhotos, listDayGroups, listFolders, listPhotos, startScan,
-    type DayGroup, type Folder, type Photo, type SortOrder, type View,
+    type DayGroup, type Folder, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
   import PrintTest from './lib/PrintTest.svelte';
+  import { parseKindFilter } from './lib/kind';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { click, emptySelection, single } from './lib/selection';
@@ -16,7 +17,12 @@
   import Tree from './lib/Tree.svelte';
   import Viewer from './lib/Viewer.svelte';
 
-  const initial: View = { order: loadPref<SortOrder>('order', 'newest'), folderId: null };
+  const initial: View = {
+    order: loadPref<SortOrder>('order', 'newest'),
+    folderId: null,
+    kind: parseKindFilter(loadPref<unknown>('kind', null)),
+  };
+  const same = (a: View, b: View) => a.order === b.order && a.folderId === b.folderId && a.kind === b.kind;
   let view = $state<View>({ ...initial });
   // The view the loaded groups/pages belong to. It trails `view` by one round trip, so the grid,
   // details and viewer never mix the new order with old data.
@@ -39,8 +45,8 @@
   /** Reload the count and day groups for the current view; the grid refetches on `version`. */
   async function refresh(toTop = false) {
     const v = { ...view };
-    const [n, g] = await Promise.all([countPhotos(v.folderId), listDayGroups(v.order, v.folderId)]);
-    if (v.order !== view.order || v.folderId !== view.folderId) return; // a newer request owns the screen
+    const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind), listDayGroups(v.order, v.folderId, v.kind)]);
+    if (!same(v, view)) return; // a newer request owns the screen
     total = n;
     groups = g;
     shown = v;
@@ -56,8 +62,8 @@
     liveBusy = true;
     try {
       const v = { ...view };
-      const [n, g] = await Promise.all([countPhotos(v.folderId), listDayGroups(v.order, v.folderId)]);
-      if (v.order !== view.order || v.folderId !== view.folderId || v.order !== shown.order || v.folderId !== shown.folderId) return;
+      const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind), listDayGroups(v.order, v.folderId, v.kind)]);
+      if (!same(v, view) || !same(v, shown)) return;
       total = n;
       if (!sameGroups(groups, g)) { groups = g; version++; }
     } catch { /* the next progress tick retries */ } finally {
@@ -80,6 +86,16 @@
     refresh(true).catch((e) => (message = String(e)));
   }
 
+  function setKind(kind: MediaKind | null) {
+    if (kind === view.kind) return;
+    view = { ...view, kind };
+    savePref('kind', kind);
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+  }
+
+  const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
+
   async function chooseFolder() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== 'string') return;
@@ -98,10 +114,10 @@
   // Details for a single selected photo (fetched by index in the current view).
   $effect(() => {
     const i = single(selection);
-    const { order, folderId } = shown;
+    const { order, folderId, kind } = shown;
     if (i === null) { selectedPhoto = null; return; }
     let live = true;
-    listPhotos(i, 1, order, folderId).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
+    listPhotos(i, 1, order, folderId, kind).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
     return () => { live = false; };
   });
 
@@ -131,12 +147,17 @@
     <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
       {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
     </button>
+    <span class="seg" role="group" aria-label="Show">
+      <button aria-pressed={view.kind === null} onclick={() => setKind(null)}>All</button>
+      <button aria-pressed={view.kind === 'photo'} onclick={() => setKind('photo')}>Photos</button>
+      <button aria-pressed={view.kind === 'video'} onclick={() => setKind('video')}>Videos</button>
+    </span>
     <button onclick={() => (page = page === 'print' ? 'library' : 'print')}>Print test</button>
     {#if scanning}
-      <span>Scanning… {seen} photos</span>
+      <span>Scanning… {seen} files</span>
       <button onclick={() => cancelScan()}>Stop</button>
     {:else}
-      <span>{total} photos</span>
+      <span>{total} {kindWord(view.kind)}</span>
     {/if}
     {#if message}<span class="err">{message}</span>{/if}
   </header>
@@ -152,7 +173,7 @@
         {/snippet}
         {#snippet center()}
           {#if total === 0 && !scanning}
-            <p class="empty">No photos here yet.</p>
+            <p class="empty">No {view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={(i) => (openIndex = i)}
@@ -178,4 +199,9 @@
   section { flex: 1; min-height: 0; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }
+  .seg { display: inline-flex; }
+  .seg button { border-radius: 0; margin: 0 -1px 0 0; }
+  .seg button:first-child { border-radius: 4px 0 0 4px; }
+  .seg button:last-child { border-radius: 0 4px 4px 0; }
+  .seg button[aria-pressed='true'] { background: #2f6fed; color: #fff; border-color: #2f6fed; }
 </style>

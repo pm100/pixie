@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { thumbUrl, tileTemplate } from './url';
+import { posterUrl, thumbUrl, tileTemplate, videoUrl } from './url';
 
 describe('tileTemplate', () => {
   it('uses the windows host on windows', () => {
@@ -20,5 +20,13 @@ describe('thumbUrl', () => {
   it('adds a cache-busting retry counter only when retrying', () => {
     expect(thumbUrl('grid', 1, 2, 3, true, 0)).toBe('http://pixie.localhost/grid/1?v=2-3');
     expect(thumbUrl('grid', 1, 2, 3, true, 2)).toBe('http://pixie.localhost/grid/1?v=2-3&r=2');
+  });
+});
+
+describe('videoUrl and posterUrl', () => {
+  it('use the windows host on windows and carry the cache key', () => {
+    expect(videoUrl(5, 10, 20, true)).toBe('http://pixie.localhost/video/5?v=10-20');
+    expect(posterUrl(5, 10, 20, true)).toBe('http://pixie.localhost/poster/5?v=10-20');
+    expect(posterUrl(5, 10, 20, false, 2)).toBe('pixie://localhost/poster/5?v=10-20&r=2');
   });
 });

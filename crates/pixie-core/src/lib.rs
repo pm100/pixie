@@ -19,6 +19,43 @@ pub fn is_supported_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "m4v"];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    #[default]
+    Photo,
+    Video,
+}
+
+fn has_extension_in(path: &Path, list: &[&str]) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.starts_with("._") {
+        return false;
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| list.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// True for supported video files. Ignores macOS `._name` resource-fork files.
+pub fn is_supported_video(path: &Path) -> bool {
+    has_extension_in(path, VIDEO_EXTENSIONS)
+}
+
+/// Photo or video, by extension; `None` for anything Pixie does not index.
+pub fn media_kind(path: &Path) -> Option<MediaKind> {
+    if is_supported_image(path) {
+        Some(MediaKind::Photo)
+    } else if is_supported_video(path) {
+        Some(MediaKind::Video)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhotoMeta {
     pub width: Option<u32>,
@@ -28,6 +65,11 @@ pub struct PhotoMeta {
     pub camera: Option<String>,
     pub gps_lat: Option<f64>,
     pub gps_lon: Option<f64>,
+    #[serde(default)]
+    pub kind: MediaKind,
+    /// Videos only.
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +104,7 @@ pub enum SortOrder {
 pub struct PhotoQuery {
     pub order: SortOrder,
     pub folder_id: Option<FolderId>,
+    pub kind: Option<MediaKind>,
 }
 
 /// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).
@@ -147,6 +190,29 @@ mod tests {
         assert_eq!(serde_json::from_str::<SortOrder>("\"newest\"").unwrap(), SortOrder::Newest);
         assert_eq!(PhotoQuery::default().order, SortOrder::Newest);
         assert_eq!(PhotoQuery::default().folder_id, None);
+    }
+
+    #[test]
+    fn media_kind_detects_photos_videos_and_ignores_the_rest() {
+        assert_eq!(media_kind(Path::new("a.JPG")), Some(MediaKind::Photo));
+        assert_eq!(media_kind(Path::new("a.heic")), Some(MediaKind::Photo));
+        for n in ["a.mp4", "a.MOV", "dir/b.M4V", "Café ☕.Mp4"] {
+            assert_eq!(media_kind(Path::new(n)), Some(MediaKind::Video), "{n}");
+        }
+        for n in ["a.avi", "a.mkv", "a.txt", "noext", "._IMG_1.mp4", "dir/._x.mov"] {
+            assert_eq!(media_kind(Path::new(n)), None, "{n}");
+        }
+        assert!(is_supported_video(Path::new("x.mp4")));
+        assert!(!is_supported_video(Path::new("x.jpg")));
+    }
+
+    #[test]
+    fn media_kind_serializes_lowercase_and_photos_are_the_default() {
+        assert_eq!(serde_json::to_string(&MediaKind::Video).unwrap(), "\"video\"");
+        assert_eq!(serde_json::from_str::<MediaKind>("\"photo\"").unwrap(), MediaKind::Photo);
+        assert_eq!(PhotoMeta::default().kind, MediaKind::Photo);
+        assert_eq!(PhotoMeta::default().duration_ms, None);
+        assert_eq!(PhotoQuery::default().kind, None);
     }
 
     #[test]

@@ -1,6 +1,10 @@
 pub mod decode;
 #[cfg(feature = "heic")]
 pub mod heic;
+pub mod media;
 pub mod meta;
+pub mod posters;
+pub mod range;
 pub mod service;
 pub mod thumbs;
+pub mod video_meta;

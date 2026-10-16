@@ -1,6 +1,6 @@
 use crate::db::Db;
-use pixie_core::{is_supported_image, FolderId, PhotoMeta, PixieError, Result};
-use pixie_image::meta::read_meta;
+use pixie_core::{media_kind, FolderId, MediaKind, PhotoMeta, PixieError, Result};
+use pixie_image::media::read_media_meta;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -45,9 +45,9 @@ impl Drop for ScanGuard {
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanProgress {
     pub folder_id: FolderId,
-    /// Photo files found so far.
+    /// Media files (photos and videos) found so far.
     pub seen: usize,
-    /// New or changed photos whose metadata has been stored so far.
+    /// New or changed files whose metadata has been stored so far.
     pub indexed: usize,
 }
 
@@ -64,6 +64,7 @@ struct Candidate {
     size: i64,
     mtime: i64,
     is_update: bool,
+    kind: MediaKind,
 }
 
 /// Threads used to read photo metadata. First-open latency (OneDrive, antivirus,
@@ -110,9 +111,10 @@ pub fn scan_folder(
             stats.cancelled = true;
             return Ok(stats);
         }
-        if !entry.file_type().is_file() || !is_supported_image(entry.path()) {
+        if !entry.file_type().is_file() {
             continue;
         }
+        let Some(kind) = media_kind(entry.path()) else { continue };
         let Some(path) = entry.path().to_str().map(str::to_owned) else { continue };
         seen.insert(path.clone());
 
@@ -124,7 +126,7 @@ pub fn scan_folder(
 
         match db.find_photo_stat(&path)? {
             Some(s) if s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
-            existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some() }),
+            existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some(), kind }),
         }
         if seen.len() % 100 == 0 {
             on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0 });
@@ -146,7 +148,7 @@ pub fn scan_folder(
                 }
                 let i = next_ref.fetch_add(1, Ordering::Relaxed);
                 let Some(c) = todo_ref.get(i) else { break };
-                if tx.send((i, read_meta(Path::new(&c.path)))).is_err() {
+                if tx.send((i, read_media_meta(Path::new(&c.path), c.kind))).is_err() {
                     break;
                 }
             });
@@ -224,6 +226,38 @@ mod tests {
         let s2 = scan(&db, f);
         assert_eq!((s2.added, s2.updated, s2.unchanged), (0, 0, 1));
         assert_eq!(db.count_photos().unwrap(), 1);
+    }
+
+    #[test]
+    fn videos_are_indexed_with_kind_duration_and_dimensions() {
+        let (dir, db, f) = setup();
+        let s = pixie_testutil::Mp4Spec { width: 1080, height: 1920, duration_ms: 4200, rotation: 0, ..Default::default() };
+        fs::write(dir.path().join("clip.mp4"), pixie_testutil::mp4(&s)).unwrap();
+        fs::write(dir.path().join("a.jpg"), jpeg(8, 8)).unwrap();
+        let st = scan(&db, f);
+        assert_eq!(st.added, 2);
+        let rows = db.list_photos(0, 10).unwrap();
+        let v = rows.iter().find(|p| p.path.ends_with("clip.mp4")).unwrap();
+        assert_eq!(v.meta.kind, pixie_core::MediaKind::Video);
+        assert_eq!(v.meta.duration_ms, Some(4200));
+        assert_eq!((v.meta.width, v.meta.height), (Some(1080), Some(1920)));
+        assert!(v.meta.taken_at.is_some()); // mtime fallback
+        let p = rows.iter().find(|p| p.path.ends_with("a.jpg")).unwrap();
+        assert_eq!(p.meta.kind, pixie_core::MediaKind::Photo);
+    }
+
+    #[test]
+    fn corrupt_empty_videos_are_indexed_and_the_scan_continues() {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join("empty.mp4"), []).unwrap();
+        fs::write(dir.path().join("junk.mov"), [0xAB; 300]).unwrap();
+        fs::write(dir.path().join("._resource.mp4"), [1, 2, 3]).unwrap();
+        fs::write(dir.path().join("old.avi"), [1, 2, 3]).unwrap();
+        fs::write(dir.path().join("z.jpg"), jpeg(8, 8)).unwrap();
+        let st = scan(&db, f);
+        assert_eq!(st.added, 3); // empty.mp4, junk.mov, z.jpg
+        let q = pixie_core::PhotoQuery { kind: Some(pixie_core::MediaKind::Video), ..Default::default() };
+        assert_eq!(db.count_photos_in(&q).unwrap(), 2);
     }
 
     #[test]

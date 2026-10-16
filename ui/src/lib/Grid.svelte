@@ -1,12 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { listPhotos, type DayGroup, type Photo, type View } from './api';
-  import { formatDay } from './format';
+  import { formatDay, formatDuration } from './format';
   import { columnsFor } from './gridMath';
   import { buildLayout, groupAt, groupTop, visibleRows } from './layout';
   import { PageCache } from './pageCache';
+  import { makePoster } from './posterFrame';
+  import { createPosterQueue } from './posterQueue';
   import { retryDelay } from './retry';
-  import { thumbUrl } from './url';
+  import { posterUrl, thumbUrl } from './url';
 
   let { groups, version, view, selected, scrollTo, onopen, onselect, onvisiblegroup }: {
     groups: DayGroup[];
@@ -27,7 +29,24 @@
   let nonce = $state<Record<number, number>>({}); // bumps the URL to retry a failed thumbnail
   let attempts: Record<number, number> = {};
   // `view` is read at call time, so a fetch always uses the current order and folder.
-  const cache = new PageCache<Photo>((o, l) => listPhotos(o, l, view.order, view.folderId), PAGE, () => tick++);
+  const cache = new PageCache<Photo>((o, l) => listPhotos(o, l, view.order, view.folderId, view.kind), PAGE, () => tick++);
+
+  // Video tiles show a poster frame that the webview makes itself, one video at a time.
+  // All of this is keyed by photo id: a grid index points at a different photo after a filter or sort change.
+  let noPoster = $state<Record<number, boolean>>({}); // id -> the player cannot decode it
+  let posterNonce = $state<Record<number, number>>({}); // id -> bumped to reload a poster that now exists
+  const posterTries: Record<number, number> = {};
+  const known: Record<number, Photo> = {};
+  const posters = createPosterQueue((id) => makePoster(known[id]));
+  function onPosterMissing(p: Photo) {
+    known[p.id] = p;
+    posterTries[p.id] = (posterTries[p.id] ?? 0) + 1;
+    if (posterTries[p.id] > 2) { noPoster[p.id] = true; return; } // saved but still not served: stop
+    posters.request(p.id).then((ok) => {
+      if (ok) posterNonce[p.id] = (posterNonce[p.id] ?? 0) + 1; // reload the poster that now exists
+      else if (stillShown(p.id)) noPoster[p.id] = true; // scrolled away: it may be asked again later
+    });
+  }
 
   // `_` is read only so the template re-renders when the cache changes.
   // A failed load is often just a busy queue: retry with backoff before giving up.
@@ -46,6 +65,18 @@
   const span = $derived(visibleRows(layout, scrollTop, height));
   const shown = $derived(layout.rows.slice(span[0], span[1]));
   const current = $derived(groupAt(layout, scrollTop));
+
+  const visibleVideoIds = $derived(new Set(
+    shown.flatMap((r) => r.kind === 'cells'
+      ? Array.from({ length: r.n }, (_, k) => item(r.first + k, tick)).filter((p): p is Photo => !!p && p.kind === 'video').map((p) => p.id)
+      : []),
+  ));
+  const stillShown = (id: number) => visibleVideoIds.has(id);
+  // A tile that scrolled away no longer needs its poster made (a job already running finishes).
+  $effect(() => {
+    const keep = visibleVideoIds;
+    untrack(() => { for (const id of Object.keys(known).map(Number)) if (!keep.has(id)) posters.cancel(id); });
+  });
 
   // Reset first, then load: both depend on `version`, and effects run in order,
   // so a version bump always refetches the visible pages.
@@ -77,6 +108,11 @@
     if (current >= 0) onvisiblegroup(current);
   });
 
+  function unit(n: number): string {
+    const [one, many] = view.kind === 'photo' ? ['photo', 'photos'] : view.kind === 'video' ? ['video', 'videos'] : ['item', 'items'];
+    return n === 1 ? one : many;
+  }
+
   function key(e: KeyboardEvent, i: number) {
     if (e.key === 'Enter') { e.preventDefault(); onopen(i); }
   }
@@ -89,7 +125,7 @@
       {#if row.kind === 'heading'}
         <div class="head" style:top="{row.top}px" style:height="{row.h}px">
           <strong>{formatDay(groups[row.group].day)}</strong>
-          <span>{groups[row.group].count} {groups[row.group].count === 1 ? 'photo' : 'photos'}</span>
+          <span>{groups[row.group].count} {unit(groups[row.group].count)}</span>
         </div>
       {:else}
         {#each { length: row.n } as _, k (row.first + k)}
@@ -99,8 +135,16 @@
                   style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
                   onclick={(e) => onselect(i, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                   ondblclick={() => onopen(i)} onkeydown={(e) => key(e, i)}
-                  aria-label={p ? p.path : 'photo'} aria-pressed={selected.has(i)}>
-            {#if p && !broken[i]}
+                  aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) : 'photo'} aria-pressed={selected.has(i)}>
+            {#if p && p.kind === 'video'}
+              {#if noPoster[p.id]}
+                <span class="ph dark">▶</span>
+              {:else}
+                <img alt="" src={posterUrl(p.id, p.mtime, p.size, undefined, posterNonce[p.id] ?? 0)} onerror={() => onPosterMissing(p)} />
+              {/if}
+              <span class="badge" aria-hidden="true">▶</span>
+              {#if p.duration_ms !== null}<span class="dur">{formatDuration(p.duration_ms)}</span>{/if}
+            {:else if p && !broken[i]}
               <img loading="lazy" alt="" src={thumbUrl('grid', p.id, p.mtime, p.size, undefined, nonce[i] ?? 0)} onerror={() => onImgError(i)} />
             {:else if broken[i]}
               <span class="ph">⚠︎</span>
@@ -121,4 +165,8 @@
   .cell.sel { outline: 3px solid #2f6fed; }
   img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .ph { display: grid; place-items: center; height: 100%; color: #888; font-size: 28px; }
+  .ph.dark { background: #2a2a30; color: #bbb; }
+  .badge, .dur { position: absolute; bottom: 6px; background: rgba(0, 0, 0, .6); color: #fff; border-radius: 4px; font-size: 12px; line-height: 1; padding: 3px 5px; }
+  .badge { left: 6px; }
+  .dur { right: 6px; font-variant-numeric: tabular-nums; }
 </style>

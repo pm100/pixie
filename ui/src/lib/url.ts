@@ -17,3 +17,14 @@ export function tileTemplate(isWindows: boolean = /Windows/i.test(navigator.user
   const base = isWindows ? 'http://pixie.localhost' : 'pixie://localhost';
   return `${base}/tile/{z}/{x}/{y}`;
 }
+
+const base = (isWindows: boolean) => (isWindows ? 'http://pixie.localhost' : 'pixie://localhost');
+const win = () => /Windows/i.test(navigator.userAgent);
+
+export function videoUrl(id: number, mtime: number, size: number, isWindows: boolean = win()): string {
+  return `${base(isWindows)}/video/${id}?v=${mtime}-${size}`;
+}
+
+export function posterUrl(id: number, mtime: number, size: number, isWindows: boolean = win(), retry = 0): string {
+  return `${base(isWindows)}/poster/${id}?v=${mtime}-${size}${retry ? `&r=${retry}` : ''}`;
+}

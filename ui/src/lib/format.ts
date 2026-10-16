@@ -47,3 +47,12 @@ export function formatGps(lat: number | null, lon: number | null): string | null
   if (lat === null || lon === null) return null;
   return `${Math.abs(lat).toFixed(4)}° ${lat < 0 ? 'S' : 'N'}, ${Math.abs(lon).toFixed(4)}° ${lon < 0 ? 'W' : 'E'}`;
 }
+
+/** Milliseconds -> "0:42" or "1:03:07"; empty when unknown. */
+export function formatDuration(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return '';
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}

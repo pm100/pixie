@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basename, dirname, formatBytes, formatDateTime, formatDay, formatGps, weekday } from './format';
+import { basename, dirname, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, weekday } from './format';
 
 describe('dates', () => {
   it('knows the weekday of a day string', () => {
@@ -40,5 +40,20 @@ describe('formatGps', () => {
     expect(formatGps(-33.8688, 151.2093)).toBe('33.8688° S, 151.2093° E');
     expect(formatGps(null, 5)).toBeNull();
     expect(formatGps(5, null)).toBeNull();
+  });
+});
+
+describe('formatDuration', () => {
+  it('formats seconds, minutes and hours', () => {
+    expect(formatDuration(0)).toBe('0:00');
+    expect(formatDuration(999)).toBe('0:00');
+    expect(formatDuration(42_000)).toBe('0:42');
+    expect(formatDuration(61_500)).toBe('1:01');
+    expect(formatDuration(3_787_000)).toBe('1:03:07');
+  });
+  it('is empty for unknown or invalid durations', () => {
+    expect(formatDuration(null)).toBe('');
+    expect(formatDuration(-5)).toBe('');
+    expect(formatDuration(Number.NaN)).toBe('');
   });
 });

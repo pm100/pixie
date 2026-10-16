@@ -1,7 +1,9 @@
 mod state;
 
-use pixie_core::{DayGroup, Folder, Photo, PhotoQuery, PixieError, SortOrder};
+use pixie_core::{DayGroup, Folder, MediaKind, Photo, PhotoQuery, PixieError, SortOrder};
 use pixie_geo::{GeoError, HttpFetcher, Place, PlaceCache, PlaceService, TileService};
+use pixie_image::posters::{poster_path, save_poster as write_poster, validate_poster};
+use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::{scan_folder, Db};
@@ -24,8 +26,8 @@ fn list_folders(state: tauri::State<AppState>) -> Result<Vec<Folder>, PixieError
     state.db.list_folders()
 }
 
-fn query_of(order: Option<SortOrder>, folder_id: Option<i64>) -> PhotoQuery {
-    PhotoQuery { order: order.unwrap_or_default(), folder_id }
+fn query_of(order: Option<SortOrder>, folder_id: Option<i64>, kind: Option<MediaKind>) -> PhotoQuery {
+    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind }
 }
 
 #[tauri::command]
@@ -35,13 +37,18 @@ fn list_photos(
     limit: i64,
     order: Option<SortOrder>,
     folder_id: Option<i64>,
+    kind: Option<MediaKind>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.list_photos_in(&query_of(order, folder_id), offset.max(0), limit.clamp(1, 1000))
+    state.db.list_photos_in(&query_of(order, folder_id, kind), offset.max(0), limit.clamp(1, 1000))
 }
 
 #[tauri::command]
-fn count_photos(state: tauri::State<AppState>, folder_id: Option<i64>) -> Result<i64, PixieError> {
-    state.db.count_photos_in(&query_of(None, folder_id))
+fn count_photos(
+    state: tauri::State<AppState>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+) -> Result<i64, PixieError> {
+    state.db.count_photos_in(&query_of(None, folder_id, kind))
 }
 
 #[tauri::command]
@@ -49,8 +56,9 @@ fn list_day_groups(
     state: tauri::State<AppState>,
     order: Option<SortOrder>,
     folder_id: Option<i64>,
+    kind: Option<MediaKind>,
 ) -> Result<Vec<DayGroup>, PixieError> {
-    state.db.day_groups(&query_of(order, folder_id))
+    state.db.day_groups(&query_of(order, folder_id, kind))
 }
 
 #[derive(Serialize, Clone)]
@@ -110,6 +118,28 @@ fn cancel_scan(state: tauri::State<AppState>) {
 #[tauri::command]
 fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
     window.print().map_err(|e| e.to_string())
+}
+
+/// Stores a poster frame the webview made for a video. Looked up by id; the bytes are
+/// validated (JPEG, small) because they come from the page.
+#[tauri::command]
+fn save_poster(state: tauri::State<AppState>, id: i64, bytes: Vec<u8>) -> Result<(), String> {
+    let photo = match state.db.get_photo(id) {
+        Ok(Some(p)) if p.meta.kind == MediaKind::Video => p,
+        _ => return Err("not a video".into()),
+    };
+    validate_poster(&bytes).map_err(|e| e.to_string())?;
+    write_poster(&poster_path(&state.posters_dir, photo.id, photo.mtime, photo.size), &bytes).map_err(|e| e.to_string())
+}
+
+/// Opens a video in the default player of the system. The path comes from the database by id.
+#[tauri::command]
+fn open_in_default_player(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    let photo = match state.db.get_photo(id) {
+        Ok(Some(p)) if p.meta.kind == MediaKind::Video => p,
+        _ => return Err("not a video".into()),
+    };
+    open::that_detached(&photo.path).map_err(|e| e.to_string())
 }
 
 /// Blocks on the rate limit and the network, so it runs on the blocking pool, not an
@@ -178,6 +208,68 @@ fn handle_tile(state: &AppState, path: &str, responder: tauri::UriSchemeResponde
     );
 }
 
+fn video_response(bytes: Vec<u8>, start: u64, end: u64, size: u64) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header("Content-Type", "video/mp4")
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Range", format!("bytes {start}-{end}/{size}"))
+        .header("Access-Control-Allow-Origin", "*")
+        .body(bytes)
+        .unwrap()
+}
+
+/// `/video/{id}`: a range of the file, looked up by id only. Runs on its own thread so
+/// a slow disk or OneDrive placeholder never blocks the protocol handler.
+fn handle_video(state: &AppState, path: &str, range: Option<String>, responder: tauri::UriSchemeResponder) {
+    let Some(id) = path.trim_matches('/').split('/').nth(1).and_then(|s| s.parse::<i64>().ok()) else {
+        return responder.respond(status(StatusCode::NOT_FOUND));
+    };
+    let photo = match state.db.get_photo(id) {
+        Ok(Some(p)) if p.meta.kind == MediaKind::Video => p,
+        Ok(_) => return responder.respond(status(StatusCode::NOT_FOUND)),
+        Err(_) => return responder.respond(status(StatusCode::INTERNAL_SERVER_ERROR)),
+    };
+    std::thread::spawn(move || {
+        let size = match std::fs::metadata(&photo.path) {
+            Ok(m) => m.len(),
+            Err(_) => return responder.respond(status(StatusCode::NOT_FOUND)),
+        };
+        match plan_range(range.as_deref(), size) {
+            RangePlan::Unsatisfiable => responder.respond(
+                Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("Content-Range", format!("bytes */{size}"))
+                    .body(Vec::new())
+                    .unwrap(),
+            ),
+            RangePlan::Partial { start, end } => match read_range(std::path::Path::new(&photo.path), start, end) {
+                Ok(bytes) => match served_end(start, bytes.len()) {
+                    // Content-Range must describe the bytes actually sent (the file may have shrunk).
+                    Some(end) => responder.respond(video_response(bytes, start, end, size)),
+                    None => responder.respond(status(StatusCode::NOT_FOUND)),
+                },
+                Err(e) => {
+                    eprintln!("[video] {}: {e}", photo.path);
+                    responder.respond(status(StatusCode::INTERNAL_SERVER_ERROR));
+                }
+            },
+        }
+    });
+}
+
+/// `/poster/{id}`: the stored poster frame, or 404 until the webview has made one.
+fn handle_poster(state: &AppState, path: &str, responder: tauri::UriSchemeResponder) {
+    let Some(id) = path.trim_matches('/').split('/').nth(1).and_then(|s| s.parse::<i64>().ok()) else {
+        return responder.respond(status(StatusCode::NOT_FOUND));
+    };
+    let Ok(Some(p)) = state.db.get_photo(id) else { return responder.respond(status(StatusCode::NOT_FOUND)) };
+    match std::fs::read(poster_path(&state.posters_dir, p.id, p.mtime, p.size)) {
+        Ok(bytes) => responder.respond(jpeg_response(bytes)),
+        Err(_) => responder.respond(status(StatusCode::NOT_FOUND)),
+    }
+}
+
 /// `/{grid|view}/{photo_id}`: answers through `responder` once the thumbnail is
 /// ready. No thread is parked per request; the worker that finishes it replies.
 fn handle_thumb(state: &AppState, path: &str, responder: tauri::UriSchemeResponder) {
@@ -195,6 +287,9 @@ fn handle_thumb(state: &AppState, path: &str, responder: tauri::UriSchemeRespond
         Ok(None) => return responder.respond(status(StatusCode::NOT_FOUND)),
         Err(_) => return responder.respond(status(StatusCode::INTERNAL_SERVER_ERROR)),
     };
+    if photo.meta.kind == MediaKind::Video {
+        return responder.respond(status(StatusCode::NOT_FOUND)); // videos use /poster, not image thumbnails
+    }
     let shown = photo.path.clone();
     state.thumbs.request_with(
         class,
@@ -233,6 +328,7 @@ fn prefetch_all(db: &Db, thumbs: &ThumbService) {
         offset += page.len() as i64;
         thumbs.prefetch(
             page.into_iter()
+                .filter(|p| p.meta.kind == MediaKind::Photo)
                 .map(|p| (ThumbClass::Grid, p.id, p.mtime, p.size, PathBuf::from(p.path)))
                 .collect(),
         );
@@ -245,10 +341,14 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("pixie", |ctx, request, responder| {
             let state = ctx.app_handle().state::<AppState>().inner().clone();
             let path = request.uri().path();
-            if path.trim_matches('/').starts_with("tile/") {
-                handle_tile(&state, path, responder);
-            } else {
-                handle_thumb(&state, path, responder);
+            match path.trim_matches('/').split('/').next() {
+                Some("tile") => handle_tile(&state, path, responder),
+                Some("video") => {
+                    let range = request.headers().get("range").and_then(|v| v.to_str().ok()).map(str::to_owned);
+                    handle_video(&state, path, range, responder);
+                }
+                Some("poster") => handle_poster(&state, path, responder),
+                _ => handle_thumb(&state, path, responder),
             }
         })
         .setup(|app| {
@@ -272,13 +372,15 @@ pub fn run() {
                 thumbs,
                 tiles,
                 places,
+                posters_dir: dir.join("posters"),
                 cancel_scan: Arc::new(Default::default()),
                 gate: Default::default(),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_photos, count_photos, list_day_groups, start_scan, cancel_scan, print_page, place_for
+            add_folder, list_folders, list_photos, count_photos, list_day_groups, start_scan, cancel_scan, print_page, place_for, save_poster,
+            open_in_default_player
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pixie");

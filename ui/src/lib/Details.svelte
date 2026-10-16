@@ -1,6 +1,6 @@
 <script lang="ts">
   import { placeFor, type Photo, type Place } from './api';
-  import { basename, dirname, formatBytes, formatDateTime, formatGps } from './format';
+  import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
   import { placeLines } from './placeLines';
   import LocationMap from './LocationMap.svelte';
@@ -36,6 +36,7 @@
     <dl>
       <dt>Taken</dt><dd>{formatDateTime(photo.taken_at)}</dd>
       {#if photo.width && photo.height}<dt>Size</dt><dd>{photo.width} × {photo.height}</dd>{/if}
+      {#if photo.kind === 'video'}<dt>Duration</dt><dd>{formatDuration(photo.duration_ms)}</dd>{/if}
       <dt>File</dt><dd>{formatBytes(photo.size)}</dd>
       <dt>Folder</dt><dd class="path" title={dirname(photo.path)}>{dirname(photo.path)}</dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}

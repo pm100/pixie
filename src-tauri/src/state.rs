@@ -9,6 +9,7 @@ pub struct AppState {
     pub thumbs: ThumbService,
     pub tiles: pixie_geo::TileService,
     pub places: Arc<pixie_geo::PlaceService>,
+    pub posters_dir: std::path::PathBuf,
     pub cancel_scan: Arc<AtomicBool>,
     pub gate: pixie_index::ScanGate,
 }
