@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="1024" height="1024">
+  <title>Pixie</title>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="#ffc83d"/>
+  <ellipse cx="30" cy="46" rx="9" ry="22" transform="rotate(-42 30 46)" fill="#fff4dc"/>
+  <ellipse cx="52" cy="34" rx="9" ry="24" transform="rotate(-12 52 34)" fill="#fff4dc"/>
+  <ellipse cx="52" cy="68" rx="10" ry="14" transform="rotate(25 52 68)" fill="#1d7a7a"/>
+  <path d="M58 70 L70 80" stroke="#ffd9b8" stroke-width="6" stroke-linecap="round"/>
+  <polygon points="36,46 26,40 38,54" fill="#ffd9b8"/>
+  <circle cx="48" cy="46" r="13" fill="#ffd9b8"/>
+  <polygon points="35,42 46,12 61,40" fill="#1d7a7a"/>
+  <circle cx="44" cy="48" r="2" fill="#14303a"/><circle cx="53" cy="48" r="2" fill="#14303a"/>
+  <rect x="62" y="66" width="48" height="34" rx="9" fill="#14303a"/>
+  <rect x="74" y="60" width="16" height="9" rx="3" fill="#14303a"/>
+  <circle cx="88" cy="83" r="11" fill="#fff4dc"/>
+  <circle cx="88" cy="83" r="7" fill="#2d6b78"/>
+  <circle cx="85.5" cy="80.5" r="2.2" fill="#fff4dc"/>
+  <path d="M104 30 l3.2 9 9 3.2 -9 3.2 -3.2 9 -3.2 -9 -9 -3.2 9 -3.2z" fill="#ffffff"/>
+  <path d="M22 100 l1.8 4.6 4.6 1.8 -4.6 1.8 -1.8 4.6 -1.8 -4.6 -4.6 -1.8 4.6 -1.8z" fill="#14303a"/>
+</svg>
