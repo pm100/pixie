@@ -16,3 +16,7 @@ export function visibleRange(
   const lastRow = Math.min(rows - 1, Math.ceil((scrollTop + viewH) / rowH) + overscan);
   return { firstIndex: firstRow * cols, endIndex: Math.min(total, (lastRow + 1) * cols), rows };
 }
+
+export function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
+}

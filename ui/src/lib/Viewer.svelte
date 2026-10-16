@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { listPhotos, type Photo } from './api';
+  import { listPhotos, type Photo, type View } from './api';
   import { neighbors } from './neighbors';
   import { thumbUrl } from './url';
 
-  let { index, total, onclose, onnav }: {
-    index: number; total: number; onclose: () => void; onnav: (i: number) => void;
+  let { index, total, view, onclose, onnav }: {
+    index: number; total: number; view: View; onclose: () => void; onnav: (i: number) => void;
   } = $props();
 
   const PRELOAD = 3; // photos kept ready on each side of the current one
@@ -29,7 +29,7 @@
     // One call for the whole neighbourhood instead of one per arrow press.
     const lo = Math.max(0, i - PRELOAD);
     const hi = Math.min(total, i + PRELOAD + 1);
-    listPhotos(lo, hi - lo).then((rows) => {
+    listPhotos(lo, hi - lo, view.order, view.folderId).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
       if (mine !== token || !photos[i]) return;
       // Ask for neighbours first and the current photo last: the newest request is

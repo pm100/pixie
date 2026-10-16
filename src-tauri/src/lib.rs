@@ -1,6 +1,7 @@
 mod state;
 
-use pixie_core::{Folder, Photo, PixieError};
+use pixie_core::{DayGroup, Folder, Photo, PhotoQuery, PixieError, SortOrder};
+use pixie_geo::{GeoError, HttpFetcher, Place, PlaceCache, PlaceService, TileService};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::{scan_folder, Db};
@@ -9,6 +10,7 @@ use state::AppState;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager};
 
@@ -22,14 +24,33 @@ fn list_folders(state: tauri::State<AppState>) -> Result<Vec<Folder>, PixieError
     state.db.list_folders()
 }
 
-#[tauri::command]
-fn list_photos(state: tauri::State<AppState>, offset: i64, limit: i64) -> Result<Vec<Photo>, PixieError> {
-    state.db.list_photos(offset.max(0), limit.clamp(1, 1000))
+fn query_of(order: Option<SortOrder>, folder_id: Option<i64>) -> PhotoQuery {
+    PhotoQuery { order: order.unwrap_or_default(), folder_id }
 }
 
 #[tauri::command]
-fn count_photos(state: tauri::State<AppState>) -> Result<i64, PixieError> {
-    state.db.count_photos()
+fn list_photos(
+    state: tauri::State<AppState>,
+    offset: i64,
+    limit: i64,
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+) -> Result<Vec<Photo>, PixieError> {
+    state.db.list_photos_in(&query_of(order, folder_id), offset.max(0), limit.clamp(1, 1000))
+}
+
+#[tauri::command]
+fn count_photos(state: tauri::State<AppState>, folder_id: Option<i64>) -> Result<i64, PixieError> {
+    state.db.count_photos_in(&query_of(None, folder_id))
+}
+
+#[tauri::command]
+fn list_day_groups(
+    state: tauri::State<AppState>,
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+) -> Result<Vec<DayGroup>, PixieError> {
+    state.db.day_groups(&query_of(order, folder_id))
 }
 
 #[derive(Serialize, Clone)]
@@ -91,6 +112,17 @@ fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
     window.print().map_err(|e| e.to_string())
 }
 
+/// Blocks on the rate limit and the network, so it runs on the blocking pool, not an
+/// async worker. A lookup overtaken by a newer one returns `Err` quickly (the UI drops it).
+#[tauri::command]
+async fn place_for(state: tauri::State<'_, AppState>, lat: f64, lon: f64) -> Result<Option<Place>, String> {
+    let places = state.places.clone();
+    tauri::async_runtime::spawn_blocking(move || places.place_for(lat, lon))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     Response::builder().status(code).body(Vec::new()).unwrap()
 }
@@ -103,6 +135,42 @@ fn jpeg_response(bytes: Vec<u8>) -> Response<Vec<u8>> {
         .header("Access-Control-Allow-Origin", "*")
         .body(bytes)
         .unwrap()
+}
+
+fn png_response(bytes: Vec<u8>) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "image/png")
+        .header("Cache-Control", "public, max-age=86400")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(bytes)
+        .unwrap()
+}
+
+/// `/tile/{z}/{x}/{y}`: an OpenStreetMap tile, fetched and cached by the backend.
+fn handle_tile(state: &AppState, path: &str, responder: tauri::UriSchemeResponder) {
+    let mut parts = path.trim_matches('/').split('/').skip(1); // skip "tile"
+    let z = parts.next().and_then(|s| s.parse::<u8>().ok());
+    let x = parts.next().and_then(|s| s.parse::<u32>().ok());
+    let y = parts.next().and_then(|s| s.parse::<u32>().ok());
+    let (Some(z), Some(x), Some(y)) = (z, x, y) else {
+        return responder.respond(status(StatusCode::NOT_FOUND));
+    };
+    state.tiles.request(
+        z,
+        x,
+        y,
+        Box::new(move |result| {
+            responder.respond(match result {
+                Ok(bytes) => png_response(bytes),
+                Err(GeoError::BadTile(..)) => status(StatusCode::NOT_FOUND),
+                Err(e) => {
+                    eprintln!("[tile] {z}/{x}/{y}: {e}");
+                    status(StatusCode::BAD_GATEWAY)
+                }
+            });
+        }),
+    );
 }
 
 /// `/{grid|view}/{photo_id}`: answers through `responder` once the thumbnail is
@@ -171,7 +239,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("pixie", |ctx, request, responder| {
             let state = ctx.app_handle().state::<AppState>().inner().clone();
-            handle_thumb(&state, request.uri().path(), responder);
+            let path = request.uri().path();
+            if path.trim_matches('/').starts_with("tile/") {
+                handle_tile(&state, path, responder);
+            } else {
+                handle_thumb(&state, path, responder);
+            }
         })
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -182,11 +255,25 @@ pub fn run() {
             let thumbs = ThumbService::new(dir.join("thumbs"), workers);
             let (pdb, pthumbs) = (db.clone(), thumbs.clone());
             std::thread::spawn(move || prefetch_all(&pdb, &pthumbs));
-            app.manage(AppState { db, thumbs, cancel_scan: Arc::new(Default::default()), gate: Default::default() });
+            let fetcher: Arc<dyn pixie_geo::Fetcher> = Arc::new(HttpFetcher::new());
+            let places = Arc::new(PlaceService::new(
+                PlaceCache::open(&dir.join("places.db"))?,
+                fetcher.clone(),
+                Duration::from_millis(1100),
+            ));
+            let tiles = TileService::new(dir.join("tiles"), fetcher, 2);
+            app.manage(AppState {
+                db,
+                thumbs,
+                tiles,
+                places,
+                cancel_scan: Arc::new(Default::default()),
+                gate: Default::default(),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_photos, count_photos, start_scan, cancel_scan, print_page
+            add_folder, list_folders, list_photos, count_photos, list_day_groups, start_scan, cancel_scan, print_page, place_for
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pixie");

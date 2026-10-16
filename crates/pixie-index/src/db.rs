@@ -1,4 +1,4 @@
-use pixie_core::{Folder, FolderId, Photo, PhotoId, PhotoMeta, PixieError, Result};
+use pixie_core::{DayGroup, Folder, FolderId, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
@@ -30,6 +30,16 @@ const MIGRATIONS: &[&str] = &[
      );
      CREATE INDEX idx_photos_list   ON photos(missing, taken_at DESC, id DESC);
      CREATE INDEX idx_photos_folder ON photos(folder_id);",
+    // V2: Undated-last ordering in both directions served by an index; GPS sanity.
+    "DROP INDEX idx_photos_list;
+     CREATE INDEX idx_photos_newest ON photos(missing, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_oldest ON photos(missing, (taken_at IS NULL), taken_at ASC, id ASC);
+     CREATE INDEX idx_photos_folder_newest ON photos(folder_id, missing, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_folder_oldest ON photos(folder_id, missing, (taken_at IS NULL), taken_at ASC, id ASC);
+     UPDATE photos SET gps_lat = NULL, gps_lon = NULL
+      WHERE gps_lat IS NULL OR gps_lon IS NULL
+         OR abs(gps_lat) > 90 OR abs(gps_lon) > 180
+         OR (gps_lat = 0 AND gps_lon = 0);",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +75,32 @@ fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
         },
         missing: r.get::<_, i64>(11)? != 0,
     })
+}
+
+fn order_sql(o: SortOrder) -> &'static str {
+    match o {
+        SortOrder::Newest => "taken_at IS NULL, taken_at DESC, id DESC",
+        SortOrder::Oldest => "taken_at IS NULL, taken_at ASC, id ASC",
+    }
+}
+
+fn folder_sql(q: &PhotoQuery) -> &'static str {
+    if q.folder_id.is_some() { " AND folder_id = :folder" } else { "" }
+}
+
+fn folder_param(q: &PhotoQuery) -> Vec<(&'static str, &dyn rusqlite::ToSql)> {
+    match &q.folder_id {
+        Some(f) => vec![(":folder", f as &dyn rusqlite::ToSql)],
+        None => vec![],
+    }
+}
+
+fn list_sql(q: &PhotoQuery) -> String {
+    format!(
+        "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0{} ORDER BY {} LIMIT :limit OFFSET :offset",
+        folder_sql(q),
+        order_sql(q.order)
+    )
 }
 
 impl Db {
@@ -180,15 +216,17 @@ impl Db {
     }
 
     pub fn list_photos(&self, offset: i64, limit: i64) -> Result<Vec<Photo>> {
+        self.list_photos_in(&PhotoQuery::default(), offset, limit)
+    }
+
+    pub fn list_photos_in(&self, q: &PhotoQuery, offset: i64, limit: i64) -> Result<Vec<Photo>> {
         let c = self.conn();
-        let mut s = c
-            .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0
-                 ORDER BY taken_at DESC, id DESC LIMIT ?1 OFFSET ?2"
-            ))
-            .map_err(db_err)?;
+        let mut s = c.prepare(&list_sql(q)).map_err(db_err)?;
+        let mut params = folder_param(q);
+        params.push((":limit", &limit as &dyn rusqlite::ToSql));
+        params.push((":offset", &offset as &dyn rusqlite::ToSql));
         let rows = s
-            .query_map(params![limit, offset], row_to_photo)
+            .query_map(params.as_slice(), row_to_photo)
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -196,9 +234,43 @@ impl Db {
     }
 
     pub fn count_photos(&self) -> Result<i64> {
+        self.count_photos_in(&PhotoQuery::default())
+    }
+
+    pub fn count_photos_in(&self, q: &PhotoQuery) -> Result<i64> {
+        let sql = format!("SELECT COUNT(*) FROM photos WHERE missing = 0{}", folder_sql(q));
         self.conn()
-            .query_row("SELECT COUNT(*) FROM photos WHERE missing = 0", [], |r| r.get(0))
+            .query_row(&sql, folder_param(q).as_slice(), |r| r.get(0))
             .map_err(db_err)
+    }
+
+    /// One entry per calendar day (UTC, as stored), in listing order, Undated last.
+    pub fn day_groups(&self, q: &PhotoQuery) -> Result<Vec<DayGroup>> {
+        let dir = match q.order {
+            SortOrder::Newest => "DESC",
+            SortOrder::Oldest => "ASC",
+        };
+        let sql = format!(
+            "SELECT CASE WHEN taken_at IS NULL THEN NULL ELSE date(taken_at, 'unixepoch') END AS day, COUNT(*)
+             FROM photos WHERE missing = 0{} GROUP BY day ORDER BY day IS NULL, day {dir}",
+            folder_sql(q)
+        );
+        let c = self.conn();
+        let mut s = c.prepare(&sql).map_err(db_err)?;
+        let rows = s
+            .query_map(folder_param(q).as_slice(), |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut first_index = 0;
+        Ok(rows
+            .into_iter()
+            .map(|(day, count)| {
+                let g = DayGroup { day, count, first_index };
+                first_index += count;
+                g
+            })
+            .collect())
     }
 }
 
@@ -296,5 +368,157 @@ mod tests {
         let f = db.add_folder("/Ferien 2024").unwrap();
         let id = db.upsert_photo(f, "/Ferien 2024/Café ☕ 1.jpg", 1, 1, &meta(None)).unwrap();
         assert_eq!(db.get_photo(id).unwrap().unwrap().path, "/Ferien 2024/Café ☕ 1.jpg");
+    }
+
+    // 2024-06-01, 06-02, 06-03 at 00:00 UTC.
+    const D1: i64 = 1_717_200_000;
+    const D3: i64 = 1_717_372_800;
+
+    /// a, b on Jun 3; c on Jun 1; d, e undated. Folder /q holds f on Jun 2.
+    fn dated_library() -> (Db, FolderId, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let g = db.add_folder("/q").unwrap();
+        for (n, t) in [("a", Some(D3 + 3600)), ("b", Some(D3 + 7200)), ("c", Some(D1 + 10)), ("d", None), ("e", None)] {
+            db.upsert_photo(f, &format!("/p/{n}.jpg"), 1, 1, &meta(t)).unwrap();
+        }
+        db.upsert_photo(g, "/q/f.jpg", 1, 1, &meta(Some(D1 + 86_400 + 5))).unwrap();
+        (db, f, g)
+    }
+
+    fn names(db: &Db, q: &PhotoQuery) -> Vec<String> {
+        db.list_photos_in(q, 0, 100).unwrap().into_iter().map(|p| p.path.rsplit('/').next().unwrap().to_string()).collect()
+    }
+
+    fn group(day: Option<&str>, count: i64, first_index: i64) -> DayGroup {
+        DayGroup { day: day.map(String::from), count, first_index }
+    }
+
+    #[test]
+    fn newest_lists_and_groups_newest_first_with_undated_last() {
+        let (db, _, _) = dated_library();
+        let q = PhotoQuery::default();
+        assert_eq!(names(&db, &q), ["b.jpg", "a.jpg", "f.jpg", "c.jpg", "e.jpg", "d.jpg"]);
+        assert_eq!(
+            db.day_groups(&q).unwrap(),
+            [group(Some("2024-06-03"), 2, 0), group(Some("2024-06-02"), 1, 2), group(Some("2024-06-01"), 1, 3), group(None, 2, 4)]
+        );
+    }
+
+    #[test]
+    fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
+        let (db, _, _) = dated_library();
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None };
+        assert_eq!(names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
+        assert_eq!(
+            db.day_groups(&q).unwrap(),
+            [group(Some("2024-06-01"), 1, 0), group(Some("2024-06-02"), 1, 1), group(Some("2024-06-03"), 2, 2), group(None, 2, 4)]
+        );
+    }
+
+    #[test]
+    fn group_counts_add_up_and_first_index_points_at_the_group() {
+        let (db, _, _) = dated_library();
+        for order in [SortOrder::Newest, SortOrder::Oldest] {
+            let q = PhotoQuery { order, folder_id: None };
+            let groups = db.day_groups(&q).unwrap();
+            assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
+            for g in &groups {
+                let members = db.list_photos_in(&q, g.first_index, g.count).unwrap();
+                assert_eq!(members.len() as i64, g.count, "{g:?}");
+                let days: std::collections::HashSet<Option<i64>> =
+                    members.iter().map(|p| p.meta.taken_at.map(|t| t.div_euclid(86_400))).collect();
+                assert_eq!(days.len(), 1, "a group must be exactly one day: {g:?}");
+                assert_eq!(days.into_iter().next().unwrap().is_none(), g.day.is_none(), "{g:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn folder_filter_applies_to_list_count_and_groups() {
+        let (db, f, g) = dated_library();
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g) };
+        assert_eq!(names(&db, &q), ["f.jpg"]);
+        assert_eq!(db.count_photos_in(&q).unwrap(), 1);
+        assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f) };
+        assert_eq!(db.count_photos_in(&q).unwrap(), 5);
+    }
+
+    #[test]
+    fn empty_folder_and_empty_library_have_no_groups() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/empty").unwrap();
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f) };
+        assert!(db.day_groups(&q).unwrap().is_empty());
+        assert_eq!(db.count_photos_in(&q).unwrap(), 0);
+        assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_photos_are_left_out_of_groups() {
+        let (db, f, _) = dated_library();
+        let seen: HashSet<String> = ["/p/a.jpg".to_string()].into();
+        db.mark_missing_except(f, &seen).unwrap();
+        let total: i64 = db.day_groups(&PhotoQuery::default()).unwrap().iter().map(|g| g.count).sum();
+        assert_eq!(total, 2); // a.jpg and f.jpg (other folder)
+    }
+
+    #[test]
+    fn listing_is_served_from_an_index_in_both_directions_with_and_without_a_folder() {
+        let (db, f, _) = dated_library();
+        for (order, folder_id) in [
+            (SortOrder::Newest, None), (SortOrder::Oldest, None),
+            (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
+        ] {
+            let q = PhotoQuery { order, folder_id };
+            let c = db.conn();
+            let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q))).unwrap();
+            let (limit, offset) = (10i64, 0i64);
+            let mut params = folder_param(&q);
+            params.push((":limit", &limit as &dyn rusqlite::ToSql));
+            params.push((":offset", &offset as &dyn rusqlite::ToSql));
+            let plan: Vec<String> = s.query_map(params.as_slice(), |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect();
+            let plan = plan.join(" | ");
+            if folder_id.is_some() {
+                assert!(plan.contains("idx_photos_folder_"), "{order:?} must seek by folder first: {plan}");
+            }
+            assert!(plan.contains("idx_photos_"), "{order:?} {folder_id:?} should use an index: {plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{order:?} {folder_id:?} must not sort: {plan}");
+        }
+    }
+
+    #[test]
+    fn v2_migration_upgrades_a_v1_database_and_clears_bad_gps() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v1.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(MIGRATIONS[0]).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            for (path, lat, lon) in [
+                ("/p/good.jpg", Some(51.5), Some(-0.12)),
+                ("/p/zero.jpg", Some(0.0), Some(0.0)),
+                ("/p/range.jpg", Some(95.0), Some(10.0)),
+                ("/p/half.jpg", Some(10.0), None),
+            ] {
+                c.execute(
+                    "INSERT INTO photos(folder_id, path, size, mtime, gps_lat, gps_lon) VALUES (1, ?1, 1, 1, ?2, ?3)",
+                    params![path, lat, lon],
+                )
+                .unwrap();
+            }
+            c.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let db = Db::open(&p).unwrap();
+        let gps = |path: &str| {
+            let id = db.find_photo_stat(path).unwrap().unwrap().id;
+            let m = db.get_photo(id).unwrap().unwrap().meta;
+            (m.gps_lat, m.gps_lon)
+        };
+        assert_eq!(gps("/p/good.jpg"), (Some(51.5), Some(-0.12)));
+        assert_eq!(gps("/p/zero.jpg"), (None, None));
+        assert_eq!(gps("/p/range.jpg"), (None, None));
+        assert_eq!(gps("/p/half.jpg"), (None, None));
     }
 }

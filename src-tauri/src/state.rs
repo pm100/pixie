@@ -7,6 +7,8 @@ use std::sync::Arc;
 pub struct AppState {
     pub db: Db,
     pub thumbs: ThumbService,
+    pub tiles: pixie_geo::TileService,
+    pub places: Arc<pixie_geo::PlaceService>,
     pub cancel_scan: Arc<AtomicBool>,
     pub gate: pixie_index::ScanGate,
 }

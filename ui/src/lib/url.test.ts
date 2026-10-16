@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { thumbUrl } from './url';
+import { thumbUrl, tileTemplate } from './url';
+
+describe('tileTemplate', () => {
+  it('uses the windows host on windows', () => {
+    expect(tileTemplate(true)).toBe('http://pixie.localhost/tile/{z}/{x}/{y}');
+  });
+  it('uses the pixie scheme elsewhere', () => {
+    expect(tileTemplate(false)).toBe('pixie://localhost/tile/{z}/{x}/{y}');
+  });
+});
 
 describe('thumbUrl', () => {
   it('uses the http host form on Windows', () => {

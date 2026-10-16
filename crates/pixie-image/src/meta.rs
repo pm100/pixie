@@ -100,6 +100,19 @@ fn raw_dimensions(path: &Path) -> Option<(u32, u32)> {
     image::image_dimensions(path).ok()
 }
 
+/// Both coordinates present, finite and in range, and not the (0, 0) "no fix" value
+/// many cameras write; otherwise neither is kept.
+fn sanitize_gps(lat: Option<f64>, lon: Option<f64>) -> (Option<f64>, Option<f64>) {
+    match (lat, lon) {
+        (Some(a), Some(o))
+            if a.is_finite() && o.is_finite() && a.abs() <= 90.0 && o.abs() <= 180.0 && !(a == 0.0 && o == 0.0) =>
+        {
+            (Some(a), Some(o))
+        }
+        _ => (None, None),
+    }
+}
+
 /// Best-effort metadata; never fails. Dimensions are as displayed (after orientation).
 pub fn read_meta(path: &Path) -> PhotoMeta {
     let mut meta = PhotoMeta::default();
@@ -124,8 +137,10 @@ pub fn read_meta(path: &Path) -> PhotoMeta {
             .or_else(|| ascii(e, exif::Tag::DateTime))
             .and_then(|s| parse_exif_datetime(&s));
         meta.camera = ascii(e, exif::Tag::Model);
-        meta.gps_lat = gps_coord(e, exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef);
-        meta.gps_lon = gps_coord(e, exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef);
+        (meta.gps_lat, meta.gps_lon) = sanitize_gps(
+            gps_coord(e, exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef),
+            gps_coord(e, exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef),
+        );
     }
     meta
 }
@@ -206,4 +221,18 @@ mod tests {
     fn jpeg_dimensions_is_none_for_junk() {
         assert_eq!(jpeg_dimensions_from(std::io::Cursor::new(b"not a jpeg".to_vec())), None);
     }
+
+    #[test]
+    fn gps_must_be_a_complete_in_range_non_zero_fix() {
+        assert_eq!(sanitize_gps(Some(51.5), Some(-0.12)), (Some(51.5), Some(-0.12)));
+        assert_eq!(sanitize_gps(Some(-90.0), Some(180.0)), (Some(-90.0), Some(180.0)));
+        assert_eq!(sanitize_gps(Some(0.0), Some(0.0)), (None, None)); // camera "no fix"
+        assert_eq!(sanitize_gps(Some(0.0), Some(10.0)), (Some(0.0), Some(10.0))); // the equator is real
+        assert_eq!(sanitize_gps(Some(90.5), Some(10.0)), (None, None));
+        assert_eq!(sanitize_gps(Some(10.0), Some(-180.5)), (None, None));
+        assert_eq!(sanitize_gps(Some(10.0), None), (None, None));
+        assert_eq!(sanitize_gps(None, Some(10.0)), (None, None));
+        assert_eq!(sanitize_gps(Some(f64::NAN), Some(10.0)), (None, None));
+    }
+
 }

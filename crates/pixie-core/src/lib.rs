@@ -49,6 +49,30 @@ pub struct Folder {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    #[default]
+    Newest,
+    Oldest,
+}
+
+/// What the library view is showing: a sort order and an optional folder filter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhotoQuery {
+    pub order: SortOrder,
+    pub folder_id: Option<FolderId>,
+}
+
+/// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).
+/// `first_index` is the position of the group's first photo in the listing order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayGroup {
+    pub day: Option<String>,
+    pub count: i64,
+    pub first_index: i64,
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PixieError {
     #[error("io: {0}")]
@@ -115,6 +139,14 @@ mod tests {
     #[test]
     fn handles_unicode_and_spaces() {
         assert!(is_supported_image(Path::new("Ferien 2024/Café ☕.JPG")));
+    }
+
+    #[test]
+    fn sort_order_serializes_lowercase_and_defaults_to_newest() {
+        assert_eq!(serde_json::to_string(&SortOrder::Oldest).unwrap(), "\"oldest\"");
+        assert_eq!(serde_json::from_str::<SortOrder>("\"newest\"").unwrap(), SortOrder::Newest);
+        assert_eq!(PhotoQuery::default().order, SortOrder::Newest);
+        assert_eq!(PhotoQuery::default().folder_id, None);
     }
 
     #[test]

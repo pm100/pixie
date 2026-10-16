@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsFor, visibleRange } from './gridMath';
+import { clamp, columnsFor, visibleRange } from './gridMath';
 
 describe('columnsFor', () => {
   it('fits as many cells as possible, at least 1', () => {
@@ -21,5 +21,13 @@ describe('visibleRange', () => {
   });
   it('starts at the scrolled row', () => {
     expect(visibleRange(1000, 4, 186, 1860, 600, 0).firstIndex).toBe(40);
+  });
+});
+
+describe('clamp', () => {
+  it('limits a value to the range', () => {
+    expect(clamp(5, 1, 10)).toBe(5);
+    expect(clamp(-3, 1, 10)).toBe(1);
+    expect(clamp(99, 1, 10)).toBe(10);
   });
 });
