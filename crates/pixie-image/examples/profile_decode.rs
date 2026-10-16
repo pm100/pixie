@@ -26,7 +26,7 @@ fn main() {
         drop(bytes);
 
         let t = Instant::now();
-        let s = decode_scaled(p, 256);
+        let s = decode_scaled(p, std::env::var("EDGE").ok().and_then(|s| s.parse().ok()).unwrap_or(256));
         let scaled = t.elapsed().as_secs_f64() * 1000.0;
         let dims = s.as_ref().map(|i| i.dimensions()).unwrap_or((0, 0));
 
