@@ -19,7 +19,11 @@ jobs:
 
       - name: libheif (Windows)
         if: runner.os == 'Windows'
-        run: vcpkg install libheif:x64-windows-static-md
+        shell: pwsh
+        run: |
+          # The runner's vcpkg lives at VCPKG_INSTALLATION_ROOT; libheif-sys looks at VCPKG_ROOT.
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          vcpkg install libheif:x64-windows-static-md
       - name: libheif (macOS)
         if: runner.os == 'macOS'
         run: brew install libheif pkg-config
