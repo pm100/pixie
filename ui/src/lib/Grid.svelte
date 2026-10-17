@@ -138,11 +138,11 @@
                   aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) : 'photo'} aria-pressed={selected.has(i)}>
             {#if p && p.kind === 'video'}
               {#if noPoster[p.id]}
-                <span class="ph dark">▶</span>
+                <span class="ph dark cam"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h9A1.5 1.5 0 0 1 15 6.5v2.6l5.2-3a.5.5 0 0 1 .8.4v11a.5.5 0 0 1-.8.4l-5.2-3v2.6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 17.5z"/></svg></span>
               {:else}
                 <img alt="" src={posterUrl(p.id, p.mtime, p.size, undefined, posterNonce[p.id] ?? 0)} onerror={() => onPosterMissing(p)} />
               {/if}
-              <span class="badge" aria-hidden="true">▶</span>
+              <span class="badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h9A1.5 1.5 0 0 1 15 6.5v2.6l5.2-3a.5.5 0 0 1 .8.4v11a.5.5 0 0 1-.8.4l-5.2-3v2.6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 17.5z"/></svg></span>
               {#if p.duration_ms !== null}<span class="dur">{formatDuration(p.duration_ms)}</span>{/if}
             {:else if p && !broken[i]}
               <img loading="lazy" alt="" src={thumbUrl('grid', p.id, p.mtime, p.size, undefined, nonce[i] ?? 0)} onerror={() => onImgError(i)} />
@@ -167,6 +167,8 @@
   .ph { display: grid; place-items: center; height: 100%; color: #888; font-size: 28px; }
   .ph.dark { background: #2a2a30; color: #bbb; }
   .badge, .dur { position: absolute; bottom: 6px; background: rgba(0, 0, 0, .6); color: #fff; border-radius: 4px; font-size: 12px; line-height: 1; padding: 3px 5px; }
-  .badge { left: 6px; }
+  .badge { left: 6px; display: flex; align-items: center; padding: 3px 5px; }
+  .badge svg { width: 16px; height: 12px; }
+  .cam svg { width: 36px; height: 36px; }
   .dur { right: 6px; font-variant-numeric: tabular-nums; }
 </style>
