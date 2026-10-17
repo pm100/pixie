@@ -29,7 +29,7 @@
   let nonce = $state<Record<number, number>>({}); // bumps the URL to retry a failed thumbnail
   let attempts: Record<number, number> = {};
   // `view` is read at call time, so a fetch always uses the current order and folder.
-  const cache = new PageCache<Photo>((o, l) => listPhotos(o, l, view.order, view.folderId, view.kind, view.bounds), PAGE, () => tick++);
+  const cache = new PageCache<Photo>((o, l) => listPhotos(o, l, view.order, view.folderId, view.kind, view.bounds, view.maxId), PAGE, () => tick++);
 
   // Video tiles show a poster frame that the webview makes itself, one video at a time.
   // All of this is keyed by photo id: a grid index points at a different photo after a filter or sort change.

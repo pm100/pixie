@@ -35,8 +35,18 @@ fn main() {
     let groups = db.day_groups(&bay).unwrap().len();
     let page = db.list_photos_in(&bay, 0, 200).unwrap().len();
     println!("bay box: {n} items, {groups} day groups, page of {page}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    // Paging with and without a snapshot id: the viewer asks for 7 rows around the current position.
+    let snap = db.max_photo_id().unwrap();
+    for (label, max_id) in [("no snapshot", None), ("snapshot", Some(snap))] {
+        let q = PhotoQuery { max_id, ..Default::default() };
+        let t = Instant::now();
+        for off in [0i64, 1500, 3000, 5000, 5900] {
+            let _ = db.list_photos_in(&q, off, 7).unwrap();
+        }
+        println!("{label}: 5 viewer-sized pages in {:.1} ms total", t.elapsed().as_secs_f64() * 1000.0);
+    }
     for order in [SortOrder::Newest, SortOrder::Oldest] {
-        let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None };
+        let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None };
         let t = Instant::now();
         let groups = db.day_groups(&q).unwrap();
         println!("{order:?}: day_groups {:.1} ms, {} groups, {} photos", t.elapsed().as_secs_f64() * 1000.0, groups.len(), groups.iter().map(|g| g.count).sum::<i64>());

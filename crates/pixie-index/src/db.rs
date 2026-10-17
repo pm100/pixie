@@ -114,6 +114,7 @@ struct Filter {
     kind: Option<i64>,
     /// `Some(None)` is an invalid box, which matches nothing.
     bounds: Option<Option<Bounds>>,
+    max_id: Option<i64>,
 }
 
 impl Filter {
@@ -122,6 +123,7 @@ impl Filter {
             folder: q.folder_id,
             kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
             bounds: q.bounds.map(|b| b.normalized()),
+            max_id: q.max_id,
         }
     }
     fn sql(&self) -> String {
@@ -131,6 +133,9 @@ impl Filter {
         }
         if self.kind.is_some() {
             s.push_str(" AND kind = :kind");
+        }
+        if self.max_id.is_some() {
+            s.push_str(" AND id <= :max_id");
         }
         match &self.bounds {
             None => {}
@@ -149,6 +154,9 @@ impl Filter {
         }
         if let Some(k) = &self.kind {
             v.push((":kind", k));
+        }
+        if let Some(m) = &self.max_id {
+            v.push((":max_id", m));
         }
         if let Some(Some(b)) = &self.bounds {
             v.push((":south", &b.south));
@@ -440,6 +448,12 @@ impl Db {
         Ok(out)
     }
 
+    /// The highest photo id, or 0 for an empty library. Pass it as `PhotoQuery::max_id` to freeze a listing:
+    /// items added later (by a running scan) have higher ids and do not shift any position.
+    pub fn max_photo_id(&self) -> Result<i64> {
+        self.conn().query_row("SELECT COALESCE(MAX(id), 0) FROM photos", [], |r| r.get(0)).map_err(db_err)
+    }
+
     /// Every non-missing item with a location, for the map. Honours the folder and kind filters.
     pub fn list_geo_points(&self, folder_id: Option<FolderId>, kind: Option<MediaKind>) -> Result<Vec<GeoPoint>> {
         let q = PhotoQuery { folder_id, kind, ..Default::default() };
@@ -545,7 +559,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None };
+            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None, max_id: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let sql = list_sql(&q, &filter);
@@ -806,6 +820,44 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_keeps_the_listing_and_its_positions_stable_while_photos_are_added() {
+        let (db, f) = mixed_library(); // 4 items
+        let snap = db.max_photo_id().unwrap();
+        let q = PhotoQuery { max_id: Some(snap), ..Default::default() };
+        let before = db.list_photos_in(&q, 0, 100).unwrap();
+        assert_eq!(before.len(), 4);
+        // a scan adds a photo that sorts first (newest)
+        db.upsert_photo(f, "/p/new.jpg", 1, 1, &meta(Some(9_999_999))).unwrap();
+        // the snapshot does not see it: same items, same positions, same counts and day groups
+        let after = db.list_photos_in(&q, 0, 100).unwrap();
+        assert_eq!(after.iter().map(|p| p.id).collect::<Vec<_>>(), before.iter().map(|p| p.id).collect::<Vec<_>>());
+        assert_eq!(db.count_photos_in(&q).unwrap(), 4);
+        assert_eq!(db.day_groups(&q).unwrap().iter().map(|g| g.count).sum::<i64>(), 4);
+        assert_eq!(db.photos_at(&q, &[0]).unwrap()[0].id, before[0].id);
+        // without a snapshot the new photo is there and shifts everything down
+        assert_eq!(db.count_photos_in(&PhotoQuery::default()).unwrap(), 5);
+        assert_eq!(db.list_photos_in(&PhotoQuery::default(), 0, 1).unwrap()[0].path, "/p/new.jpg");
+        // a later snapshot includes it
+        let q2 = PhotoQuery { max_id: Some(db.max_photo_id().unwrap()), ..Default::default() };
+        assert_eq!(db.count_photos_in(&q2).unwrap(), 5);
+    }
+
+    #[test]
+    fn the_snapshot_combines_with_the_other_filters_and_an_empty_library_has_id_zero() {
+        let empty = Db::open_in_memory().unwrap();
+        assert_eq!(empty.max_photo_id().unwrap(), 0);
+        let (db, f) = geo_library();
+        let snap = db.max_photo_id().unwrap();
+        db.upsert_photo(f, "/p/later.jpg", 1, 1, &geo_meta(800, 48.86, 2.35)).unwrap(); // inside the Europe box
+        let q = PhotoQuery {
+            max_id: Some(snap),
+            bounds: Some(Bounds { south: 40.0, west: 0.0, north: 50.0, east: 15.0 }),
+            ..Default::default()
+        };
+        assert_eq!(file_names(&db, &q), ["clip.mp4", "rome.jpg", "paris.jpg"]); // not later.jpg
+    }
+
+    #[test]
     fn migrations_run_once_and_reopen_cleanly() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.db");
@@ -931,7 +983,7 @@ mod tests {
     #[test]
     fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
         let (db, _, _) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None };
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None, max_id: None };
         assert_eq!(file_names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
@@ -943,7 +995,7 @@ mod tests {
     fn group_counts_add_up_and_first_index_points_at_the_group() {
         let (db, _, _) = dated_library();
         for order in [SortOrder::Newest, SortOrder::Oldest] {
-            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None };
+            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None };
             let groups = db.day_groups(&q).unwrap();
             assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
             for g in &groups {
@@ -960,11 +1012,11 @@ mod tests {
     #[test]
     fn folder_filter_applies_to_list_count_and_groups() {
         let (db, f, g) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None, max_id: None };
         assert_eq!(file_names(&db, &q), ["f.jpg"]);
         assert_eq!(db.count_photos_in(&q).unwrap(), 1);
         assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None };
         assert_eq!(db.count_photos_in(&q).unwrap(), 5);
     }
 
@@ -972,7 +1024,7 @@ mod tests {
     fn empty_folder_and_empty_library_have_no_groups() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/empty").unwrap();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None };
         assert!(db.day_groups(&q).unwrap().is_empty());
         assert_eq!(db.count_photos_in(&q).unwrap(), 0);
         assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
@@ -994,7 +1046,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: None, bounds: None };
+            let q = PhotoQuery { order, folder_id, kind: None, bounds: None, max_id: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q, &filter))).unwrap();

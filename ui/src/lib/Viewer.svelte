@@ -70,7 +70,7 @@
     // One call for the whole neighbourhood instead of one per arrow press.
     const lo = Math.max(0, i - PRELOAD);
     const hi = Math.min(total, i + PRELOAD + 1);
-    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds).then((rows) => {
+    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
       if (mine !== token || !photos[i]) return;
       const here = photos[i];

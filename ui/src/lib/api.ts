@@ -13,7 +13,11 @@ export type MediaKind = 'photo' | 'video';
 export interface Folder { id: number; path: string }
 export type SortOrder = 'newest' | 'oldest';
 /** What the library is showing: a sort order and optional folder, kind and map-area filters. */
-export interface View { order: SortOrder; folderId: number | null; kind: MediaKind | null; bounds: Bounds | null }
+export interface View {
+  order: SortOrder; folderId: number | null; kind: MediaKind | null; bounds: Bounds | null;
+  /** Snapshot: only items with an id up to this one. Keeps positions stable while a scan adds photos. */
+  maxId: number | null;
+}
 /** Photos taken on one day ("YYYY-MM-DD"; null = no date), in listing order. */
 export interface DayGroup { day: string | null; count: number; first_index: number }
 
@@ -23,13 +27,17 @@ export const startScan = (folderId: number | null) => invoke<void>('start_scan',
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
   offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,
-  kind: MediaKind | null = null, bounds: Bounds | null = null,
-) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds });
-export const countPhotos = (folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null) =>
-  invoke<number>('count_photos', { folderId, kind, bounds });
+  kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
+) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId });
+export const countPhotos = (
+  folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
+) => invoke<number>('count_photos', { folderId, kind, bounds, maxId });
 export const listDayGroups = (
-  order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null,
-) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds });
+  order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null,
+  bounds: Bounds | null = null, maxId: number | null = null,
+) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds, maxId });
+/** The current highest photo id, to freeze a listing (see `View.maxId`). */
+export const getMaxPhotoId = () => invoke<number>('max_photo_id');
 export const getPhoto = (id: number) => invoke<Photo | null>('get_photo', { id });
 export const listGeoPoints = (folderId: number | null = null, kind: MediaKind | null = null) =>
   invoke<GeoPoint[]>('list_geo_points', { folderId, kind });
@@ -56,7 +64,7 @@ export interface NewContact { id: number | null; nickname: string; name: string 
 export interface RecipientRef { contact_id: number | null; email: string | null }
 export type SizeChoice = 'small' | 'medium' | 'original';
 export interface SendEmailRequest {
-  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null;
+  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null; max_id: number | null;
   to: RecipientRef[]; subject: string; message: string; size: SizeChoice;
 }
 
@@ -71,5 +79,5 @@ export const listContacts = () => invoke<Contact[]>('list_contacts');
 export const saveContact = (contact: NewContact) => invoke<Contact>('save_contact', { contact });
 export const deleteContact = (id: number) => invoke<void>('delete_contact', { id });
 export const photosAt = (indexes: number[], v: View) =>
-  invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds });
+  invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId });
 export const sendEmail = (request: SendEmailRequest) => invoke<string[]>('send_email', { request });

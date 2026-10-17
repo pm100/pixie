@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
-    addFolder, cancelScan, countPhotos, listDayGroups, listFolders, listGeoPoints, listPhotos, startScan,
+    addFolder, cancelScan, countPhotos, getMaxPhotoId, listDayGroups, listFolders, listGeoPoints, listPhotos, startScan,
     type DayGroup, type Folder, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import Details from './lib/Details.svelte';
@@ -24,6 +24,7 @@
     folderId: null,
     kind: parseKindFilter(loadPref<unknown>('kind', null)),
     bounds: null,
+    maxId: null,
   };
   const same = (a: View, b: View) =>
     a.order === b.order && a.folderId === b.folderId && a.kind === b.kind && sameBounds(a.bounds, b.bounds);
@@ -55,7 +56,13 @@
   /** Reload the count and day groups for the current view; the grid refetches on `version`. */
   async function refresh(toTop = false) {
     const v = { ...view };
-    const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind, v.bounds), listDayGroups(v.order, v.folderId, v.kind, v.bounds)]);
+    // The listing is frozen at this snapshot until the next refresh: photos a scan adds meanwhile have
+    // higher ids and cannot shift the positions that selection, details and the viewer rely on.
+    v.maxId = await getMaxPhotoId();
+    const [n, g] = await Promise.all([
+      countPhotos(v.folderId, v.kind, v.bounds, v.maxId),
+      listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId),
+    ]);
     if (!same(v, view)) return; // a newer request owns the screen
     total = n;
     groups = g;
@@ -65,17 +72,32 @@
     if (toTop) jump(0);
   }
 
-  /** Live update while a scan runs: new photos appear without resetting selection or scroll. */
+  /** True while the user is looking at or holding something that refers to a position in the list. */
+  const interacting = () => selection.picked.size > 0 || openIndex !== null || soloPhoto !== null;
+
+  /**
+   * Live update while a scan runs: new photos appear without resetting scroll. Only while the user is
+   * not interacting: moving the snapshot shifts positions, which would swap the photo they selected or
+   * are viewing for another one.
+   */
   let liveBusy = false;
   async function refreshLive() {
-    if (liveBusy) return;
+    if (liveBusy || interacting()) return;
     liveBusy = true;
     try {
       const v = { ...view };
-      const [n, g] = await Promise.all([countPhotos(v.folderId, v.kind, v.bounds), listDayGroups(v.order, v.folderId, v.kind, v.bounds)]);
-      if (!same(v, view) || !same(v, shown)) return;
-      total = n;
-      if (!sameGroups(groups, g)) { groups = g; version++; }
+      v.maxId = await getMaxPhotoId();
+      const [n, g] = await Promise.all([
+        countPhotos(v.folderId, v.kind, v.bounds, v.maxId),
+        listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId),
+      ]);
+      if (!same(v, view) || !same(v, shown) || interacting()) return;
+      if (!sameGroups(groups, g)) {
+        total = n;
+        groups = g;
+        shown = v; // the new snapshot, together with the new groups
+        version++;
+      }
     } catch { /* the next progress tick retries */ } finally {
       setTimeout(() => (liveBusy = false), 1500); // at most one reload every ~1.5 s
     }
@@ -160,13 +182,20 @@
     if (total > 0) selection = click(emptySelection, 0, { ctrl: false, shift: false });
   }
 
+  // A scan that finishes while the viewer is open must not swap what is on screen: the refresh waits.
+  let pendingRefresh = false;
+
   function closeViewer() {
     openIndex = null;
     soloPhoto = null;
     if (pendingBounds) {
       const p = pendingBounds;
       pendingBounds = null;
+      pendingRefresh = false; // setBounds refreshes anyway
       setBounds(p.b);
+    } else if (pendingRefresh) {
+      pendingRefresh = false;
+      refresh().catch((e) => (message = String(e)));
     }
   }
 
@@ -204,10 +233,10 @@
   // Details for a single selected photo (fetched by index in the current view).
   $effect(() => {
     const i = single(selection);
-    const { order, folderId, kind, bounds } = shown;
+    const { order, folderId, kind, bounds, maxId } = shown;
     if (i === null) { selectedPhoto = null; return; }
     let live = true;
-    listPhotos(i, 1, order, folderId, kind, bounds).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
+    listPhotos(i, 1, order, folderId, kind, bounds, maxId).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
     return () => { live = false; };
   });
 
@@ -225,7 +254,8 @@
       listen<{ seen: number }>('scan-progress', (e) => { seen = e.payload.seen; refreshLive(); }),
       listen('scan-done', () => {
         scanning = false;
-        refresh().catch((e) => (message = String(e)));
+        if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
+        else refresh().catch((e) => (message = String(e)));
         if (mode === 'map') loadPoints();
       }),
       listen<{ message: string }>('scan-error', (e) => { message = e.payload.message; /* scan-done always follows */ }),

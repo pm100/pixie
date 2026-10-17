@@ -109,6 +109,9 @@ pub struct PhotoQuery {
     pub folder_id: Option<FolderId>,
     pub kind: Option<MediaKind>,
     pub bounds: Option<Bounds>,
+    /// Snapshot: only items with `id <= max_id`. New items get higher ids, so the listing (and every
+    /// position in it) stays put while a scan adds photos.
+    pub max_id: Option<i64>,
 }
 
 /// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).

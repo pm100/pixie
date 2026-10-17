@@ -35,8 +35,15 @@ fn query_of(
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
 ) -> PhotoQuery {
-    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind, bounds }
+    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind, bounds, max_id }
+}
+
+/// The current highest photo id: the UI passes it back as `max_id` to freeze a listing while a scan adds photos.
+#[tauri::command]
+fn max_photo_id(state: tauri::State<AppState>) -> Result<i64, PixieError> {
+    state.db.max_photo_id()
 }
 
 #[tauri::command]
@@ -48,8 +55,9 @@ fn list_photos(
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.list_photos_in(&query_of(order, folder_id, kind, bounds), offset.max(0), limit.clamp(1, 1000))
+    state.db.list_photos_in(&query_of(order, folder_id, kind, bounds, max_id), offset.max(0), limit.clamp(1, 1000))
 }
 
 #[tauri::command]
@@ -58,8 +66,9 @@ fn count_photos(
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
 ) -> Result<i64, PixieError> {
-    state.db.count_photos_in(&query_of(None, folder_id, kind, bounds))
+    state.db.count_photos_in(&query_of(None, folder_id, kind, bounds, max_id))
 }
 
 #[tauri::command]
@@ -69,8 +78,9 @@ fn list_day_groups(
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
 ) -> Result<Vec<DayGroup>, PixieError> {
-    state.db.day_groups(&query_of(order, folder_id, kind, bounds))
+    state.db.day_groups(&query_of(order, folder_id, kind, bounds, max_id))
 }
 
 /// One item by id (the photo behind a pin on the map).
@@ -237,8 +247,9 @@ fn photos_at(
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.photos_at(&query_of(order, folder_id, kind, bounds), &indexes)
+    state.db.photos_at(&query_of(order, folder_id, kind, bounds, max_id), &indexes)
 }
 
 #[tauri::command]
@@ -262,6 +273,7 @@ struct SendEmailRequest {
     folder_id: Option<i64>,
     kind: Option<MediaKind>,
     bounds: Option<Bounds>,
+    max_id: Option<i64>,
     to: Vec<RecipientRef>,
     subject: String,
     message: String,
@@ -286,7 +298,7 @@ async fn send_email(app: tauri::AppHandle, state: tauri::State<'_, AppState>, re
         let mut indexes = request.indexes.clone();
         indexes.sort_unstable();
         indexes.dedup();
-        let query = query_of(request.order, request.folder_id, request.kind, request.bounds);
+        let query = query_of(request.order, request.folder_id, request.kind, request.bounds, request.max_id);
         let photos = db.photos_at(&query, &indexes).map_err(|e| e.user_message())?;
         if photos.len() != indexes.len() {
             // Selection is by position, and the library changed since it was made.
@@ -565,7 +577,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_photos, count_photos, list_day_groups, list_geo_points, get_photo, start_scan, cancel_scan, print_page, place_for, save_poster,
+            add_folder, list_folders, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])
