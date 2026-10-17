@@ -1,0 +1,19 @@
+[package]
+name = "pixie-mail"
+version.workspace = true
+edition.workspace = true
+
+[features]
+testing = []
+
+[dependencies]
+pixie-core = { path = "../pixie-core" }
+pixie-image = { path = "../pixie-image" }
+image = { workspace = true }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname"] }
+keyring = "4"
+serde = { workspace = true }
+
+[dev-dependencies]
+pixie-testutil = { path = "../pixie-testutil" }
+tempfile = { workspace = true }

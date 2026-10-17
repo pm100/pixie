@@ -8,6 +8,7 @@
   } from './lib/api';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
+  import MailSettings from './lib/MailSettings.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
   import PrintTest from './lib/PrintTest.svelte';
   import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
@@ -42,6 +43,7 @@
   let scanning = $state(false), seen = $state(0), message = $state('');
   let openIndex = $state<number | null>(null);
   let page = $state<'library' | 'print'>('library');
+  let settingsOpen = $state(false);
 
   // activeGroup is set too: near the end the list cannot scroll far enough to put a short group on top.
   const jump = (group: number) => { activeGroup = group; scrollTo = { group, n: ++jumps }; };
@@ -240,6 +242,7 @@
       <button aria-pressed={view.kind === 'photo'} onclick={() => setKind('photo')}>Photos</button>
       <button aria-pressed={view.kind === 'video'} onclick={() => setKind('video')}>Videos</button>
     </span>
+    <button onclick={() => (settingsOpen = true)}>Email settings</button>
     <button onclick={() => (page = page === 'print' ? 'library' : 'print')}>Print test</button>
     {#if scanning}
       <span>Scanning… {seen} files</span>
@@ -297,6 +300,9 @@
       </Shell>
     {/if}
   </section>
+  {#if settingsOpen}
+    <MailSettings onclose={() => (settingsOpen = false)} />
+  {/if}
   {#if openIndex !== null || soloPhoto !== null}
     <Viewer index={openIndex ?? 0} {total} view={shown} solo={soloPhoto} onclose={closeViewer} onnav={(i) => (openIndex = i)} />
   {/if}

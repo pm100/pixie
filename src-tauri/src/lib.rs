@@ -1,13 +1,17 @@
 mod state;
 
-use pixie_core::{Bounds, DayGroup, Folder, GeoPoint, MediaKind, Photo, PhotoQuery, PixieError, SortOrder};
+use pixie_core::{
+    Bounds, Contact, DayGroup, Folder, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoQuery,
+    PixieError, SortOrder,
+};
 use pixie_geo::{GeoError, HttpFetcher, Place, PlaceCache, PlaceService, TileService};
 use pixie_image::posters::{poster_path, save_poster as write_poster, validate_poster};
 use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::{scan_folder, Db};
-use serde::Serialize;
+use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
+use serde::{Deserialize, Serialize};
 use state::AppState;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -142,6 +146,162 @@ fn cancel_scan(state: tauri::State<AppState>) {
 #[tauri::command]
 fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
     window.print().map_err(|e| e.to_string())
+}
+
+// ---- email ----
+
+#[derive(Serialize)]
+struct MailInfo {
+    account: Option<MailAccount>,
+    has_password: bool,
+}
+
+#[derive(Serialize)]
+struct ProviderInfo {
+    id: &'static str,
+    label: &'static str,
+    host: &'static str,
+    port: u16,
+    security: MailSecurity,
+    limit_mb: u32,
+    hint: &'static str,
+}
+
+#[tauri::command]
+fn list_providers() -> Vec<ProviderInfo> {
+    pixie_mail::providers()
+        .iter()
+        .map(|p| ProviderInfo {
+            id: p.id, label: p.label, host: p.host, port: p.port, security: p.security, limit_mb: p.limit_mb, hint: p.hint,
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_mail_account(state: tauri::State<AppState>) -> Result<MailInfo, PixieError> {
+    let account = state.db.get_mail_account()?;
+    let has_password = match &account {
+        Some(a) => matches!(state.secrets.get(&a.email), Ok(Some(p)) if !p.is_empty()),
+        None => false,
+    };
+    Ok(MailInfo { account, has_password })
+}
+
+/// Saves the account settings. A non-empty `password` replaces the stored one; an empty or missing one
+/// keeps it. The password goes to the credential store only and is never logged.
+#[tauri::command]
+fn save_mail_account(state: tauri::State<AppState>, account: MailAccount, password: Option<String>) -> Result<(), PixieError> {
+    let old = state.db.get_mail_account()?;
+    state.db.save_mail_account(&account)?;
+    let saved = state.db.get_mail_account()?.ok_or_else(|| PixieError::NotFound("account".into()))?;
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        state.secrets.set(&saved.email, &pw)?;
+    }
+    if let Some(old) = old {
+        if !old.email.eq_ignore_ascii_case(&saved.email) {
+            state.secrets.delete(&old.email)?; // the old address's password must not linger
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_mail_account(state: tauri::State<AppState>) -> Result<(), PixieError> {
+    if let Some(a) = state.db.get_mail_account()? {
+        state.secrets.delete(&a.email)?;
+    }
+    state.db.delete_mail_account()
+}
+
+#[tauri::command]
+fn list_contacts(state: tauri::State<AppState>) -> Result<Vec<Contact>, PixieError> {
+    state.db.list_contacts()
+}
+
+#[tauri::command]
+fn save_contact(state: tauri::State<AppState>, contact: NewContact) -> Result<Contact, PixieError> {
+    state.db.save_contact(&contact)
+}
+
+#[tauri::command]
+fn delete_contact(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.delete_contact(id)
+}
+
+/// The items at these positions of the current listing (the selection is by position).
+#[tauri::command]
+fn photos_at(
+    state: tauri::State<AppState>,
+    indexes: Vec<i64>,
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+) -> Result<Vec<Photo>, PixieError> {
+    state.db.photos_at(&query_of(order, folder_id, kind, bounds), &indexes)
+}
+
+#[tauri::command]
+async fn send_test_email(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let (db, secrets, mailer) = (state.db.clone(), state.secrets.clone(), state.mailer.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let account = db
+            .get_mail_account()
+            .map_err(|e| e.user_message())?
+            .ok_or_else(|| "Set up your email account first.".to_string())?;
+        send_test(&*mailer, &*secrets, &account).map_err(|e| e.0)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Deserialize)]
+struct SendEmailRequest {
+    indexes: Vec<i64>,
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+    to: Vec<RecipientRef>,
+    subject: String,
+    message: String,
+    size: SizeChoice,
+}
+
+#[derive(Serialize, Clone)]
+struct MailProgressEvent {
+    done: usize,
+    total: usize,
+}
+
+/// Sends the selected items. Runs on the blocking pool and emits `mail-progress` while preparing.
+#[tauri::command]
+async fn send_email(app: tauri::AppHandle, state: tauri::State<'_, AppState>, request: SendEmailRequest) -> Result<Vec<String>, String> {
+    let (db, secrets, mailer) = (state.db.clone(), state.secrets.clone(), state.mailer.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let account = db
+            .get_mail_account()
+            .map_err(|e| e.user_message())?
+            .ok_or_else(|| "Set up your email account first.".to_string())?;
+        let mut indexes = request.indexes.clone();
+        indexes.sort_unstable();
+        indexes.dedup();
+        let query = query_of(request.order, request.folder_id, request.kind, request.bounds);
+        let photos = db.photos_at(&query, &indexes).map_err(|e| e.user_message())?;
+        if photos.len() != indexes.len() {
+            // Selection is by position, and the library changed since it was made.
+            return Err("Your selection changed. Please select the photos again.".to_string());
+        }
+        let contacts = db.list_contacts().map_err(|e| e.user_message())?;
+        let to = resolve_recipients(&request.to, &contacts).map_err(|e| e.user_message())?;
+        let req = SendRequest { photos, to, subject: request.subject, message: request.message, size: request.size };
+        send_photos(&*mailer, &*secrets, &account, req, &|p| {
+            let _ = app.emit("mail-progress", MailProgressEvent { done: p.done, total: p.total });
+        })
+        .map_err(|e| e.0)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Stores a poster frame the webview made for a video. Looked up by id; the bytes are
@@ -397,6 +557,8 @@ pub fn run() {
                 tiles,
                 places,
                 posters_dir: dir.join("posters"),
+                secrets: Arc::new(OsSecrets),
+                mailer: Arc::new(SmtpMailer),
                 cancel_scan: Arc::new(Default::default()),
                 gate: Default::default(),
             });
@@ -404,7 +566,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, list_folders, list_photos, count_photos, list_day_groups, list_geo_points, get_photo, start_scan, cancel_scan, print_page, place_for, save_poster,
-            open_in_default_player
+            open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            save_contact, delete_contact, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pixie");

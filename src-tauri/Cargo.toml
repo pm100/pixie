@@ -24,3 +24,4 @@ pixie-core = { path = "../crates/pixie-core" }
 pixie-geo = { path = "../crates/pixie-geo" }
 pixie-image = { path = "../crates/pixie-image" }
 pixie-index = { path = "../crates/pixie-index" }
+pixie-mail = { path = "../crates/pixie-mail" }

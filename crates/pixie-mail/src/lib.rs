@@ -1,0 +1,21 @@
+pub mod attach;
+pub mod error;
+pub mod keystore;
+pub mod message;
+pub mod providers;
+pub mod recipients;
+pub mod send;
+pub mod smtp;
+pub mod text;
+pub mod traits;
+
+pub use error::MailError;
+pub use providers::{provider, providers, Provider};
+pub use recipients::{resolve_recipients, RecipientRef, Resolved};
+pub use text::{check_body, check_limit, check_subject, encoded_size, safe_filename};
+pub use traits::{Mailer, SecretStore};
+pub use attach::{prepare_attachment, Attachment, SizeChoice};
+pub use message::build_message;
+pub use send::{send_photos, send_test, Progress, SendFailure, SendRequest};
+pub use keystore::OsSecrets;
+pub use smtp::SmtpMailer;

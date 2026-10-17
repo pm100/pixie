@@ -1,4 +1,4 @@
-use pixie_core::{Bounds, DayGroup, Folder, FolderId, GeoPoint, MediaKind, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, Folder, FolderId, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
@@ -45,6 +45,23 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE photos ADD COLUMN duration_ms INTEGER;
      CREATE INDEX idx_photos_kind_newest ON photos(kind, missing, (taken_at IS NULL), taken_at DESC, id DESC);
      CREATE INDEX idx_photos_kind_oldest ON photos(kind, missing, (taken_at IS NULL), taken_at ASC, id ASC);",
+    // V4: email contacts and the one mail account (the password is not here; it is in the OS credential store).
+    "CREATE TABLE contacts (
+        id       INTEGER PRIMARY KEY,
+        nickname TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        name     TEXT,
+        email    TEXT NOT NULL
+     );
+     CREATE TABLE mail_account (
+        id           INTEGER PRIMARY KEY CHECK (id = 1),
+        display_name TEXT,
+        email        TEXT NOT NULL,
+        provider     TEXT NOT NULL,
+        host         TEXT NOT NULL,
+        port         INTEGER NOT NULL,
+        security     TEXT NOT NULL,
+        limit_mb     INTEGER NOT NULL
+     );",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -293,6 +310,134 @@ impl Db {
         self.conn()
             .query_row(&sql, filter.params().as_slice(), |r| r.get(0))
             .map_err(db_err)
+    }
+
+    pub fn list_contacts(&self) -> Result<Vec<Contact>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare("SELECT id, nickname, name, email FROM contacts ORDER BY nickname COLLATE NOCASE")
+            .map_err(db_err)?;
+        let rows = s
+            .query_map([], |r| Ok(Contact { id: r.get(0)?, nickname: r.get(1)?, name: r.get(2)?, email: r.get(3)? }))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    pub fn get_contact(&self, id: i64) -> Result<Option<Contact>> {
+        self.conn()
+            .query_row("SELECT id, nickname, name, email FROM contacts WHERE id = ?1", params![id], |r| {
+                Ok(Contact { id: r.get(0)?, nickname: r.get(1)?, name: r.get(2)?, email: r.get(3)? })
+            })
+            .optional()
+            .map_err(db_err)
+    }
+
+    pub fn save_contact(&self, c: &NewContact) -> Result<Contact> {
+        let nickname = validate_nickname(&c.nickname)?;
+        let email = validate_email(&c.email)?;
+        let name = match c.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => Some(validate_header_text(n, 100, "name")?),
+            None => None,
+        };
+        let id = {
+            let conn = self.conn();
+            let res = match c.id {
+                Some(id) => conn
+                    .execute(
+                        "UPDATE contacts SET nickname = ?1, name = ?2, email = ?3 WHERE id = ?4",
+                        params![nickname, name, email, id],
+                    )
+                    .map(|_| id),
+                None => conn
+                    .execute("INSERT INTO contacts (nickname, name, email) VALUES (?1, ?2, ?3)", params![nickname, name, email])
+                    .map(|_| conn.last_insert_rowid()),
+            };
+            res.map_err(|e| match e {
+                rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
+                    PixieError::Invalid(format!("There is already a contact called \"{nickname}\"."))
+                }
+                other => db_err(other),
+            })?
+        };
+        self.get_contact(id)?.ok_or_else(|| PixieError::NotFound("contact".into()))
+    }
+
+    pub fn delete_contact(&self, id: i64) -> Result<()> {
+        self.conn().execute("DELETE FROM contacts WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn get_mail_account(&self) -> Result<Option<MailAccount>> {
+        self.conn()
+            .query_row(
+                "SELECT display_name, email, provider, host, port, security, limit_mb FROM mail_account WHERE id = 1",
+                [],
+                |r| {
+                    let security: String = r.get(5)?;
+                    Ok(MailAccount {
+                        display_name: r.get(0)?,
+                        email: r.get(1)?,
+                        provider: r.get(2)?,
+                        host: r.get(3)?,
+                        port: r.get::<_, i64>(4)? as u16,
+                        security: if security == "ssl" { MailSecurity::Ssl } else { MailSecurity::Starttls },
+                        limit_mb: r.get::<_, i64>(6)? as u32,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    pub fn save_mail_account(&self, a: &MailAccount) -> Result<()> {
+        let email = validate_email(&a.email)?;
+        let host = validate_host(&a.host)?;
+        let display = match a.display_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => Some(validate_header_text(n, 100, "name")?),
+            None => None,
+        };
+        if a.port == 0 {
+            return Err(PixieError::Invalid("The port must be between 1 and 65535.".into()));
+        }
+        if !(1..=100).contains(&a.limit_mb) {
+            return Err(PixieError::Invalid("The size limit must be between 1 and 100 MB.".into()));
+        }
+        let provider = validate_header_text(&a.provider, 20, "provider")?;
+        let security = if a.security == MailSecurity::Ssl { "ssl" } else { "starttls" };
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO mail_account (id, display_name, email, provider, host, port, security, limit_mb)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![display, email, provider, host, a.port as i64, security, a.limit_mb as i64],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn delete_mail_account(&self) -> Result<()> {
+        self.conn().execute("DELETE FROM mail_account WHERE id = 1", []).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The items at these positions of the current listing, in the order asked. Positions past the end
+    /// or negative are dropped, so the caller must compare the count with what it asked for (selection
+    /// is by position and the library can change underneath it). At most 200 positions.
+    pub fn photos_at(&self, q: &PhotoQuery, indexes: &[i64]) -> Result<Vec<Photo>> {
+        if indexes.len() > 200 {
+            return Err(PixieError::Invalid("Too many items selected.".into()));
+        }
+        let mut out = Vec::with_capacity(indexes.len());
+        for &i in indexes {
+            if i < 0 {
+                continue;
+            }
+            if let Some(p) = self.list_photos_in(q, i, 1)?.into_iter().next() {
+                out.push(p);
+            }
+        }
+        Ok(out)
     }
 
     /// Every non-missing item with a location, for the map. Honours the folder and kind filters.
@@ -561,6 +706,103 @@ mod tests {
         .into_iter()
         .fold(0.0, f64::max);
         assert!(slowest < 1500.0, "too slow: {slowest} ms");
+    }
+
+    fn contact(nick: &str, email: &str) -> NewContact {
+        NewContact { id: None, nickname: nick.into(), name: None, email: email.into() }
+    }
+
+    #[test]
+    fn contacts_are_saved_listed_edited_and_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        let dad = db.save_contact(&contact("dad", "dad@example.com")).unwrap();
+        let si = db.save_contact(&NewContact { name: Some("Simon Brown".into()), ..contact("Simon", "si@example.com") }).unwrap();
+        let all = db.list_contacts().unwrap();
+        assert_eq!(all.iter().map(|c| c.nickname.as_str()).collect::<Vec<_>>(), ["dad", "Simon"]); // case-insensitive order
+        assert_eq!(si.name.as_deref(), Some("Simon Brown"));
+        let edited = db.save_contact(&NewContact { id: Some(dad.id), ..contact("Dad", "dad@new.com") }).unwrap();
+        assert_eq!((edited.id, edited.nickname.as_str(), edited.email.as_str()), (dad.id, "Dad", "dad@new.com"));
+        db.delete_contact(si.id).unwrap();
+        assert_eq!(db.list_contacts().unwrap().len(), 1);
+        assert!(db.get_contact(si.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn nicknames_are_unique_ignoring_case_and_input_is_validated() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_contact(&contact("dad", "dad@example.com")).unwrap();
+        let e = db.save_contact(&contact("DAD", "other@example.com")).unwrap_err();
+        assert!(e.user_message().contains("already"), "{}", e.user_message());
+        assert!(db.save_contact(&contact("mum", "not-an-address")).is_err());
+        assert!(db.save_contact(&contact("a,b", "a@b.com")).is_err());
+        assert_eq!(db.list_contacts().unwrap().len(), 1);
+    }
+
+    fn account() -> MailAccount {
+        MailAccount {
+            display_name: Some("Paul".into()), email: "me@outlook.com".into(), provider: "outlook".into(),
+            host: "smtp-mail.outlook.com".into(), port: 587, security: MailSecurity::Starttls, limit_mb: 20,
+        }
+    }
+
+    #[test]
+    fn the_mail_account_is_one_row_that_can_be_replaced_and_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.get_mail_account().unwrap(), None);
+        db.save_mail_account(&account()).unwrap();
+        assert_eq!(db.get_mail_account().unwrap(), Some(account()));
+        db.save_mail_account(&MailAccount { limit_mb: 25, ..account() }).unwrap();
+        assert_eq!(db.get_mail_account().unwrap().unwrap().limit_mb, 25);
+        db.delete_mail_account().unwrap();
+        assert_eq!(db.get_mail_account().unwrap(), None);
+    }
+
+    #[test]
+    fn account_input_is_validated() {
+        let db = Db::open_in_memory().unwrap();
+        for bad in [
+            MailAccount { email: "nope".into(), ..account() },
+            MailAccount { host: "a b".into(), ..account() },
+            MailAccount { port: 0, ..account() },
+            MailAccount { limit_mb: 0, ..account() },
+            MailAccount { limit_mb: 500, ..account() },
+            MailAccount { display_name: Some("A\nBcc: x@y.com".into()), ..account() },
+            MailAccount { display_name: Some("x".repeat(101)), ..account() },
+        ] {
+            assert!(db.save_mail_account(&bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(db.get_mail_account().unwrap(), None);
+    }
+
+    #[test]
+    fn photos_at_returns_the_items_at_those_positions_in_the_current_order() {
+        let (db, _f) = geo_library(); // 7 items with distinct dates
+        let q = PhotoQuery::default();
+        let all = db.list_photos_in(&q, 0, 100).unwrap();
+        let got = db.photos_at(&q, &[2, 0, 5]).unwrap();
+        assert_eq!(got.iter().map(|p| p.id).collect::<Vec<_>>(), [all[2].id, all[0].id, all[5].id]);
+        assert!(db.photos_at(&q, &[99]).unwrap().is_empty()); // past the end: nothing, the caller compares counts
+        assert!(db.photos_at(&q, &[-1]).unwrap().is_empty());
+        assert!(db.photos_at(&q, &(0..201).collect::<Vec<_>>()).is_err()); // more than 200 positions
+    }
+
+    #[test]
+    fn v4_migration_keeps_existing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v3.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for m in &MIGRATIONS[..3] {
+                c.execute_batch(m).unwrap();
+            }
+            c.pragma_update(None, "user_version", 3).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            c.execute("INSERT INTO photos(folder_id, path, size, mtime) VALUES (1, '/p/a.jpg', 1, 1)", []).unwrap();
+        }
+        let db = Db::open(&p).unwrap();
+        assert_eq!(db.count_photos().unwrap(), 1);
+        assert!(db.list_contacts().unwrap().is_empty());
+        assert_eq!(db.get_mail_account().unwrap(), None);
     }
 
     #[test]

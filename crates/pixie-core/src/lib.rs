@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod mail;
+pub use mail::*;
+
 pub type PhotoId = i64;
 pub type FolderId = i64;
 
@@ -171,6 +174,9 @@ pub enum PixieError {
     NotFound(String),
     #[error("busy: {0}")]
     Busy(String),
+    /// Input the user can fix; the text is written for them.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 impl PixieError {
@@ -182,6 +188,7 @@ impl PixieError {
             PixieError::Image(_) => "This photo couldn't be opened. It may be damaged.".into(),
             PixieError::Unsupported(_) => "This kind of file isn't supported yet.".into(),
             PixieError::NotFound(_) => "Pixie couldn't find that folder or photo. It may have been moved or the drive disconnected.".into(),
+            PixieError::Invalid(m) => m.clone(),
             PixieError::Busy(_) => "A photo scan is already running. Please wait for it to finish.".into(),
         }
     }
