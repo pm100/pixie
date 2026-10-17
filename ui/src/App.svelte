@@ -10,7 +10,6 @@
   import Grid from './lib/Grid.svelte';
   import MailSettings from './lib/MailSettings.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
-  import PrintTest from './lib/PrintTest.svelte';
   import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
   import { parseKindFilter } from './lib/kind';
   import { sameGroups } from './lib/layout';
@@ -42,8 +41,13 @@
   let jumps = 0;
   let scanning = $state(false), seen = $state(0), message = $state('');
   let openIndex = $state<number | null>(null);
-  let page = $state<'library' | 'print'>('library');
   let settingsOpen = $state(false);
+
+  function noBrowserMenu(e: MouseEvent) {
+    const t = e.target;
+    if (t instanceof Element && t.closest('input, textarea, select, [contenteditable="true"]')) return;
+    e.preventDefault();
+  }
 
   // activeGroup is set too: near the end the list cannot scroll far enough to put a short group on top.
   const jump = (group: number) => { activeGroup = group; scrollTo = { group, n: ++jumps }; };
@@ -230,6 +234,9 @@
   });
 </script>
 
+<!-- The webview's own right-click menu (Share, Magnify image, ...) does nothing useful here, so it is off
+     everywhere except in text fields, where copy and paste are wanted. -->
+<svelte:window oncontextmenu={noBrowserMenu} />
 <main>
   <header>
     <strong>Pixie</strong>
@@ -243,7 +250,6 @@
       <button aria-pressed={view.kind === 'video'} onclick={() => setKind('video')}>Videos</button>
     </span>
     <button onclick={() => (settingsOpen = true)}>Email settings</button>
-    <button onclick={() => (page = page === 'print' ? 'library' : 'print')}>Print test</button>
     {#if scanning}
       <span>Scanning… {seen} files</span>
       <button onclick={() => cancelScan()}>Stop</button>
@@ -253,9 +259,7 @@
     {#if message}<span class="err">{message}</span>{/if}
   </header>
   <section>
-    {#if page === 'print'}
-      <PrintTest />
-    {:else if folders.length === 0 && total === 0 && !scanning}
+    {#if folders.length === 0 && total === 0 && !scanning}
       <p class="empty">Add a folder of photos to get started.</p>
     {:else}
       <Shell>

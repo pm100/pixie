@@ -54,11 +54,15 @@
     <p class="none">No photos yet.</p>
   {/each}
 
-  <h3>Folders</h3>
-  <button class="item" class:active={folderId === null} onclick={() => onfolder(null)}>All photos</button>
-  {#each folders as f (f.id)}
-    <button class="item" class:active={folderId === f.id} title={f.path} onclick={() => onfolder(f.id)}>{basename(f.path) || f.path}</button>
-  {/each}
+  <!-- With a single watched folder this list only repeats "everything", so it appears from two folders on
+       (or while a folder filter is on, so it can always be cleared). -->
+  {#if folders.length >= 2 || folderId !== null}
+    <h3>Folders</h3>
+    <button class="item" class:active={folderId === null} onclick={() => onfolder(null)}>Everything</button>
+    {#each folders as f (f.id)}
+      <button class="item" class:active={folderId === f.id} title={f.path} onclick={() => onfolder(f.id)}>{basename(f.path) || f.path}</button>
+    {/each}
+  {/if}
 
   <h3>Map</h3>
   <button class="item" class:active={mapActive} onclick={onmap}>Map</button>
