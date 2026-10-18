@@ -41,13 +41,13 @@
 <button class="add" onclick={onadd}>Add folder…</button>
 
 <style>
-  h2 { margin: 0 0 4px; font-size: 20px; }
+  h2 { margin: 0 0 8px; font-size: 18px; }
   .hint { color: #666; margin: 0 0 16px; max-width: 60ch; }
   ul { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; }
   li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #e4e4e8; border-radius: 6px; }
   .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .n { color: #777; font-size: 13px; }
-  .ask { color: #8a4b00; font-size: 13px; }
+  .n { color: #777; font-size: 12px; }
+  .ask { color: #8a4b00; font-size: 12px; }
   .danger { background: #b00020; color: #fff; border-color: #b00020; }
   .none { color: #777; }
   .err { color: #b00020; }

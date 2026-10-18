@@ -23,9 +23,9 @@ https://claude.ai/artifact/Uc6v9sjhH11yEY1WJbyyi2 (navigation).
 | Menu bar | **None.** |
 | Right-click menus | **None for now** (the webview menu stays switched off, as today). |
 | Folders | **Removed from navigation.** They are plumbing and move to Settings. |
-| Navigation | **Sections**: Library, Recent, When. |
+| Navigation | **Sections**: Library, When. "Last 30 days" is the first row of When. |
 | Date structure | **Years with month chips and busy-month bars; the selected month lists its days as date badges** (weekday over number, with the day's main place beside it). |
-| Recent | **"Last 30 days" only.** No "This year". |
+| Last 30 days | **The only recent shortcut**, first row of When. No "This year". |
 | Where | **No place tree.** Places are what the Map tab is for. |
 
 ## Shell
@@ -54,9 +54,8 @@ Share work on "what I selected" without the user re-choosing items.
 Three sections, top to bottom:
 
 1. **Library**: All items, Photos only, Videos only. Replaces "Everything" and the kind filter's place in the UI.
-2. **Recent**: "Last 30 days". A filter: the grid shows only items from the last 30 days until the user picks
-   something else.
-3. **When**: the date structure below.
+2. **When**: "Last 30 days" first (a filter: the grid shows only items from the last 30 days until the user picks
+   something else), then the date structure below.
 
 Tags and Projects will become further sections when those features exist; the shell needs no change for that.
 

@@ -200,9 +200,9 @@
     </div>
   {/if}
   {#if !solo}
-    {#if index > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)">‹</button>{/if}
-    {#if index < total - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)">›</button>{/if}
-    <div class="count">{index + 1} / {total} · ← → to browse · Esc to close</div>
+    {#if index > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
+    {#if index < total - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M9 4l8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
+    <div class="count"><b>{index + 1} / {total}</b><span><kbd aria-label="Left arrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13 8H3M7.5 3.5 3 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></kbd><kbd aria-label="Right arrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></kbd> browse</span><span><kbd>Esc</kbd> close</span></div>
   {/if}
 </div>
 
@@ -215,17 +215,20 @@
   video { background: #000; }
   .msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; margin: 0; padding: 24px; text-align: center; background: #111; }
   .msg p { margin: 0; max-width: 40ch; }
-  .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: none; border: 0; color: #eee; font-size: 22px; cursor: pointer; }
-  .popout { position: absolute; z-index: 1; top: 14px; right: 56px; background: none; border: 0; color: #eee; font-size: 14px; cursor: pointer; }
+  .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
+  .popout { position: absolute; z-index: 1; top: 12px; right: 60px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 7px 10px; color: #fff; font-size: 14px; cursor: pointer; }
   .cap { position: absolute; z-index: 1; top: 12px; left: 16px; max-width: calc(100% - 90px); padding: 8px 12px; border-radius: 6px; background: rgba(0, 0, 0, .45); text-shadow: 0 0 4px #000; pointer-events: none; line-height: 1.35; }
   .cap .when { font-size: 15px; font-weight: 600; }
   .cap .where { font-size: 13px; opacity: .9; }
-  .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 34px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
+  .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 56px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
   .cell { width: 54px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #222; cursor: pointer; flex: none; overflow: hidden; }
   .cell.on { border-color: #ffc83d; }
   .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .step { position: absolute; z-index: 1; top: 50%; transform: translateY(-50%); width: 48px; height: 72px; border: 0; border-radius: 8px; background: rgba(0, 0, 0, .35); color: #fff; font-size: 40px; line-height: 1; cursor: pointer; opacity: .55; }
+  .step { position: absolute; z-index: 1; top: 50%; transform: translateY(-50%); width: 48px; height: 72px; border: 0; border-radius: 8px; background: rgba(0, 0, 0, .35); color: #fff; display: grid; place-items: center; padding: 0; cursor: pointer; opacity: .55; }
   .step:hover, .step:focus-visible { opacity: 1; background: rgba(0, 0, 0, .6); }
   .step.prev { left: 12px; } .step.next { right: 12px; }
-  .count { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); text-shadow: 0 0 4px #000; bottom: 10px; font-size: 13px; opacity: .7; white-space: nowrap; }
+  /* On a dark pill at full strength so it reads over any photo. */
+  .count { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 10px; display: flex; gap: 16px; align-items: center; padding: 6px 16px; border-radius: 16px; background: rgba(0, 0, 0, .75); color: #fff; font-size: 14px; white-space: nowrap; }
+  .count b { font-weight: 600; }
+  kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 22px; padding: 0 6px; margin-right: 3px; border: 1px solid #aaa; border-radius: 4px; background: #333; color: #fff; font: inherit; font-size: 13px; line-height: 1; }
 </style>

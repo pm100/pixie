@@ -15,7 +15,7 @@
   import { parseKindFilter } from './lib/kind';
   import { POPOUT_CLOSE, POPOUT_CLOSED, POPOUT_MOVED, POPOUT_READY, POPOUT_SHOW, parseMoved } from './lib/popout';
   import { periodRange } from './lib/periods';
-  import { recentSince } from './lib/recent';
+  import { parseRecentDays, recentLabel, recentSince } from './lib/recent';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { click, emptySelection, single } from './lib/selection';
@@ -92,6 +92,20 @@
   let tab = $state<TabId>('browse');
   let viewerMode = $state<ViewerMode>(parseViewerMode(loadPref<unknown>('viewerMode', null)));
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
+  // How many days "recent" means. Changing it while the Recent filter is on re-applies the filter.
+  let recentDays = $state(parseRecentDays(loadPref<unknown>('recentDays', null)));
+  function setRecentDays(n: number) {
+    const days = parseRecentDays(n);
+    if (days === recentDays) return;
+    recentDays = days;
+    savePref('recentDays', days);
+    if (view.since !== null && periodKey === null) {
+      view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
+      selection = emptySelection;
+      refresh(true).catch((e) => (message = String(e)));
+      if (mode === 'map') loadPoints();
+    }
+  }
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
   const tabs = visibleTabs({ create: false, share: false });
@@ -192,7 +206,7 @@
   function setRecent(on: boolean) {
     if (on === (view.since !== null && periodKey === null)) return; // already in that state
     periodKey = null; // Recent and a chosen period are both a date range: one replaces the other
-    view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000)) : null, until: null };
+    view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -402,8 +416,6 @@
       {/if}
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-  </Tabs>
-  <section class="screens">
     <div class="browse" inert={tab === 'settings'}>
       <div class="tools">
         <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
@@ -420,7 +432,7 @@
       <Shell>
         {#snippet left()}
           <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
-               filterDates={mode === 'map'} period={periodKey}
+               filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
                scanLine={scanning ? `Scanning… ${seen.toLocaleString()} found` : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
@@ -447,7 +459,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? 'No photos or videos in the last 30 days.' : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -467,10 +479,10 @@
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id) => runScan(id)} onemail={() => (settingsOpen = true)}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} />
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays} />
       </div>
     {/if}
-  </section>
+  </Tabs>
   {#if settingsOpen}
     <MailSettings onclose={() => (settingsOpen = false)} />
   {/if}
@@ -481,10 +493,9 @@
 </main>
 
 <style>
-  :global(body) { margin: 0; font-family: system-ui, sans-serif; background: #fff; color: #111; }
+  :global(body) { margin: 0; font-family: system-ui, sans-serif; font-size: 14px; background: #fff; color: #111; }
   main { display: flex; flex-direction: column; height: 100vh; }
-  .screens { position: relative; flex: 1; min-height: 0; }
-  .browse { position: relative; display: flex; flex-direction: column; height: 100%; }
+  .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
   .content { flex: 1; min-height: 0; }
   .page-over { position: absolute; inset: 0; z-index: 5; }

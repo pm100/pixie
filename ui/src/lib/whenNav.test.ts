@@ -22,23 +22,18 @@ describe('maxMonthCount', () => {
 
 describe('yearEntries', () => {
   const days = (ys: number[]) => ys.map((y, i) => g(`${y}-06-01`, 1, i));
-  const names = (e: ReturnType<typeof yearEntries>) =>
-    e.map((x) => (x.kind === 'year' ? x.node.label : x.kind === 'decade' ? x.label : 'undated'));
-  it('keeps recent years and folds older ones into decades, newest first', () => {
+  const names = (e: ReturnType<typeof yearEntries>) => e.map((x) => (x.kind === 'year' ? x.node.label : 'undated'));
+  it('lists every year as its own row, newest first, with Undated last', () => {
     const roots = buildDateTree([...days([2026, 2025, 2023, 2019, 2015, 2009]), g(null, 3, 6)]);
-    const e = yearEntries(roots, 2026);
-    expect(names(e)).toEqual(['2026', '2025', '2023', '2010s', '2000s', 'undated']);
-    const d = e[3];
-    expect(d.kind === 'decade' && d.years.map((y) => y.label)).toEqual(['2019', '2015']);
-    expect(d.kind === 'decade' && [d.count, d.firstGroup, d.lastGroup]).toEqual([2, 3, 4]);
+    expect(names(yearEntries(roots))).toEqual(['2026', '2025', '2023', '2019', '2015', '2009', 'undated']);
   });
   it('works oldest first', () => {
     const roots = buildDateTree(days([2009, 2015, 2019, 2026]));
-    expect(names(yearEntries(roots, 2026))).toEqual(['2000s', '2010s', '2026']);
+    expect(names(yearEntries(roots))).toEqual(['2009', '2015', '2019', '2026']);
   });
   it('handles no groups and only undated', () => {
-    expect(yearEntries([], 2026)).toEqual([]);
-    expect(yearEntries(buildDateTree([g(null, 4)]), 2026).map((x) => x.kind)).toEqual(['undated']);
+    expect(yearEntries([])).toEqual([]);
+    expect(yearEntries(buildDateTree([g(null, 4)])).map((x) => x.kind)).toEqual(['undated']);
   });
 });
 

@@ -1,10 +1,7 @@
 import { weekday } from './format';
 import type { TreeNode } from './tree';
 
-export type YearEntry =
-  | { kind: 'year'; node: TreeNode }
-  | { kind: 'decade'; key: string; label: string; count: number; firstGroup: number; lastGroup: number; years: TreeNode[] }
-  | { kind: 'undated'; node: TreeNode };
+export type YearEntry = { kind: 'year'; node: TreeNode } | { kind: 'undated'; node: TreeNode };
 
 /** Items per month of a year node (index 0 = January). Month nodes have keys `m:YYYY-MM`. */
 export function monthCounts(year: TreeNode): number[] {
@@ -20,29 +17,10 @@ export function maxMonthCount(years: TreeNode[]): number {
   return max;
 }
 
-/**
- * Rows for the "When" navigation: the last six years as years, older years folded into decades, Undated last.
- * The order of `roots` (newest or oldest first) is kept.
- */
-export function yearEntries(roots: TreeNode[], thisYear: number): YearEntry[] {
-  const out: YearEntry[] = [];
-  let undated: TreeNode | undefined;
-  for (const n of roots) {
-    if (n.key === 'undated') { undated = n; continue; }
-    const year = Number(n.label);
-    if (year >= thisYear - 5) { out.push({ kind: 'year', node: n }); continue; }
-    const decade = Math.floor(year / 10) * 10;
-    const key = `decade:${decade}`;
-    const last = out[out.length - 1];
-    if (last && last.kind === 'decade' && last.key === key) {
-      last.years.push(n);
-      last.count += n.count;
-      last.firstGroup = Math.min(last.firstGroup, n.firstGroup);
-      last.lastGroup = Math.max(last.lastGroup, n.lastGroup);
-    } else {
-      out.push({ kind: 'decade', key, label: `${decade}s`, count: n.count, firstGroup: n.firstGroup, lastGroup: n.lastGroup, years: [n] });
-    }
-  }
+/** Rows for the "When" navigation: every year, in the order of `roots` (newest or oldest first), Undated last. */
+export function yearEntries(roots: TreeNode[]): YearEntry[] {
+  const out: YearEntry[] = roots.filter((n) => n.key !== 'undated').map((node) => ({ kind: 'year', node }));
+  const undated = roots.find((n) => n.key === 'undated');
   if (undated) out.push({ kind: 'undated', node: undated });
   return out;
 }
