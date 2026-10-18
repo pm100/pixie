@@ -2,15 +2,20 @@
   import { listPhotos, openInDefaultPlayer, placeFor, type Photo, type Place, type View } from './api';
   import { formatDateTime, formatGps } from './format';
   import { createLatest } from './latest';
+  import { filmRange } from './filmstrip';
   import { neighbors } from './neighbors';
   import { placeLines } from './placeLines';
-  import { thumbUrl, videoUrl } from './url';
+  import { posterUrl, thumbUrl, videoUrl } from './url';
 
-  let { index, total, view, solo = null, onclose, onnav }: {
+  let { index, total, view, solo = null, onclose, onnav, onpopout, filmstrip = true }: {
     index: number; total: number; view: View; solo?: Photo | null; onclose: () => void; onnav: (i: number) => void;
+    onpopout?: () => void;
+    /** The strip of neighbours along the bottom; the pop-out window turns it off. */
+    filmstrip?: boolean;
   } = $props();
 
   const PRELOAD = 3; // photos kept ready on each side of the current one
+  const FILM = 6; // items shown on each side of the current one in the filmstrip
   const VIDEO_TIMEOUT_MS = 8000;
 
   let shownSrc = $state<string | null>(null); // last photo that finished loading
@@ -23,6 +28,16 @@
   const curKind = $derived(current?.kind ?? null);
   let player: HTMLVideoElement | undefined = $state();
   const photos: Record<number, Photo> = {};
+  let stripTick = $state(0); // bumped when a page of neighbours arrives, so the filmstrip redraws
+
+  const strip = $derived.by(() => {
+    stripTick;
+    if (solo) return [];
+    const { lo, hi } = filmRange(index, total, FILM);
+    const out: { i: number; p: Photo | undefined }[] = [];
+    for (let k = lo; k < hi; k++) out.push({ i: k, p: photos[k] });
+    return out;
+  });
   let token = 0; // latest navigation wins; older loads are ignored
 
   // Date and place of the photo on screen. The coordinates show at once; the place name replaces them
@@ -68,10 +83,10 @@
     const i = index;
     const mine = ++token;
     // One call for the whole neighbourhood instead of one per arrow press.
-    const lo = Math.max(0, i - PRELOAD);
-    const hi = Math.min(total, i + PRELOAD + 1);
-    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId).then((rows) => {
+    const { lo, hi } = filmRange(i, total, FILM);
+    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId, view.since, view.until).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
+      stripTick++;
       if (mine !== token || !photos[i]) return;
       const here = photos[i];
       if (current?.id !== here.id) {
@@ -110,10 +125,18 @@
     };
   });
 
+  /** One step forward (+1) or back (-1), from a key or a click; ignored at either end. */
+  function step(delta: 1 | -1) {
+    const to = index + delta;
+    if (solo || to < 0 || to >= total) return;
+    (document.activeElement as HTMLElement | null)?.blur();
+    onnav(to);
+  }
+
   function key(e: KeyboardEvent) {
     if (e.key === 'Escape') onclose();
-    else if (!solo && e.key === 'ArrowRight' && index < total - 1) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index + 1); }
-    else if (!solo && e.key === 'ArrowLeft' && index > 0) { (document.activeElement as HTMLElement | null)?.blur(); onnav(index - 1); }
+    else if (e.key === 'ArrowRight') step(1);
+    else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === ' ' && current?.kind === 'video' && player && (e.target as HTMLElement | null)?.tagName !== 'BUTTON') {
       e.preventDefault();
       if (player.paused) void player.play(); else player.pause();
@@ -124,6 +147,7 @@
 <svelte:window onkeydown={key} />
 <div class="overlay" role="dialog" aria-label={current?.kind === 'video' ? 'Video viewer' : 'Photo viewer'}>
   <button class="close" onclick={onclose} aria-label="Close">✕</button>
+  {#if onpopout && !solo}<button class="popout" onclick={onpopout}>Pop out ⧉</button>{/if}
   {#if current?.kind === 'video'}
     {#key current.id}
       <!-- svelte-ignore a11y_media_has_caption -->
@@ -162,7 +186,24 @@
       {/if}
     </div>
   {/if}
-  {#if !solo}<div class="count">{index + 1} / {total}</div>{/if}
+  {#if filmstrip && !solo && strip.length}
+    <div class="film" role="listbox" aria-label="Nearby items">
+      {#each strip as s (s.i)}
+        <button class="cell" class:on={s.i === index} onclick={() => onnav(s.i)} aria-label={`Item ${s.i + 1}`}>
+          {#if s.p}
+            <img alt="" loading="lazy"
+                 src={s.p.kind === 'video' ? posterUrl(s.p.id, s.p.mtime, s.p.size) : thumbUrl('grid', s.p.id, s.p.mtime, s.p.size)}
+                 onerror={(e) => ((e.currentTarget as HTMLElement).style.visibility = 'hidden')} />
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+  {#if !solo}
+    {#if index > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)">‹</button>{/if}
+    {#if index < total - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)">›</button>{/if}
+    <div class="count">{index + 1} / {total} · ← → to browse · Esc to close</div>
+  {/if}
 </div>
 
 <style>
@@ -170,13 +211,21 @@
   .overlay { position: fixed; inset: 0; z-index: 2000; background: #111; overflow: hidden; color: #eee; }
   /* Fill the window and let object-fit shrink the photo to fit; no dependence on the
      photo's own size (a grid/flex cell would grow to it and crop). */
-  img, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .overlay > img, .overlay > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   video { background: #000; }
   .msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; margin: 0; padding: 24px; text-align: center; background: #111; }
   .msg p { margin: 0; max-width: 40ch; }
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: none; border: 0; color: #eee; font-size: 22px; cursor: pointer; }
+  .popout { position: absolute; z-index: 1; top: 14px; right: 56px; background: none; border: 0; color: #eee; font-size: 14px; cursor: pointer; }
   .cap { position: absolute; z-index: 1; top: 12px; left: 16px; max-width: calc(100% - 90px); padding: 8px 12px; border-radius: 6px; background: rgba(0, 0, 0, .45); text-shadow: 0 0 4px #000; pointer-events: none; line-height: 1.35; }
   .cap .when { font-size: 15px; font-weight: 600; }
   .cap .where { font-size: 13px; opacity: .9; }
-  .count { position: absolute; z-index: 1; text-shadow: 0 0 4px #000; bottom: 10px; font-size: 13px; opacity: .7; }
+  .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 34px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
+  .cell { width: 54px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #222; cursor: pointer; flex: none; overflow: hidden; }
+  .cell.on { border-color: #ffc83d; }
+  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .step { position: absolute; z-index: 1; top: 50%; transform: translateY(-50%); width: 48px; height: 72px; border: 0; border-radius: 8px; background: rgba(0, 0, 0, .35); color: #fff; font-size: 40px; line-height: 1; cursor: pointer; opacity: .55; }
+  .step:hover, .step:focus-visible { opacity: 1; background: rgba(0, 0, 0, .6); }
+  .step.prev { left: 12px; } .step.next { right: 12px; }
+  .count { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); text-shadow: 0 0 4px #000; bottom: 10px; font-size: 13px; opacity: .7; white-space: nowrap; }
 </style>

@@ -94,6 +94,14 @@ pub struct Folder {
     pub path: String,
 }
 
+/// A watched folder with the number of live (not missing) items in it, for the Settings page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderInfo {
+    pub id: FolderId,
+    pub path: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SortOrder {
@@ -112,6 +120,10 @@ pub struct PhotoQuery {
     /// Snapshot: only items with `id <= max_id`. New items get higher ids, so the listing (and every
     /// position in it) stays put while a scan adds photos.
     pub max_id: Option<i64>,
+    /// Only items taken at or after this time (unix seconds). Undated items never match.
+    pub since: Option<i64>,
+    /// Only items taken before this time (unix seconds, exclusive). Undated items never match.
+    pub until: Option<i64>,
 }
 
 /// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).

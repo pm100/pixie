@@ -11,36 +11,47 @@ export interface Photo {
 }
 export type MediaKind = 'photo' | 'video';
 export interface Folder { id: number; path: string }
+/** A watched folder with its number of live items, for the Settings page. */
+export interface FolderInfo { id: number; path: string; count: number }
 export type SortOrder = 'newest' | 'oldest';
 /** What the library is showing: a sort order and optional folder, kind and map-area filters. */
 export interface View {
   order: SortOrder; folderId: number | null; kind: MediaKind | null; bounds: Bounds | null;
   /** Snapshot: only items with an id up to this one. Keeps positions stable while a scan adds photos. */
   maxId: number | null;
+  /** Only items taken at or after this time (unix seconds). */
+  since: number | null;
+  /** Only items taken before this time (unix seconds, exclusive). */
+  until: number | null;
 }
 /** Photos taken on one day ("YYYY-MM-DD"; null = no date), in listing order. */
 export interface DayGroup { day: string | null; count: number; first_index: number }
 
 export const listFolders = () => invoke<Folder[]>('list_folders');
+export const listFolderInfo = () => invoke<FolderInfo[]>('list_folder_info');
+export const removeFolder = (id: number) => invoke<void>('remove_folder', { id });
 export const addFolder = (path: string) => invoke<number>('add_folder', { path });
 export const startScan = (folderId: number | null) => invoke<void>('start_scan', { folderId });
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
   offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,
-  kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
-) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId });
+  kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null, since: number | null = null,
+  until: number | null = null,
+) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId, since, until });
 export const countPhotos = (
   folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
-) => invoke<number>('count_photos', { folderId, kind, bounds, maxId });
+  since: number | null = null, until: number | null = null,
+) => invoke<number>('count_photos', { folderId, kind, bounds, maxId, since, until });
 export const listDayGroups = (
   order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null,
-  bounds: Bounds | null = null, maxId: number | null = null,
-) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds, maxId });
+  bounds: Bounds | null = null, maxId: number | null = null, since: number | null = null, until: number | null = null,
+) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds, maxId, since, until });
 /** The current highest photo id, to freeze a listing (see `View.maxId`). */
 export const getMaxPhotoId = () => invoke<number>('max_photo_id');
 export const getPhoto = (id: number) => invoke<Photo | null>('get_photo', { id });
-export const listGeoPoints = (folderId: number | null = null, kind: MediaKind | null = null) =>
-  invoke<GeoPoint[]>('list_geo_points', { folderId, kind });
+export const listGeoPoints = (
+  folderId: number | null = null, kind: MediaKind | null = null, since: number | null = null, until: number | null = null,
+) => invoke<GeoPoint[]>('list_geo_points', { folderId, kind, since, until });
 export const printPage = () => invoke<void>('print_page');
 
 export interface Place { landmark: string | null; locality: string | null }
@@ -49,6 +60,7 @@ const userLang = () => (navigator.languages?.length ? navigator.languages.join('
 export const placeFor = (lat: number, lon: number) => invoke<Place | null>('place_for', { lat, lon, lang: userLang() });
 
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
+export const openViewerWindow = () => invoke<void>('open_viewer_window');
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----
@@ -64,7 +76,7 @@ export interface NewContact { id: number | null; nickname: string; name: string 
 export interface RecipientRef { contact_id: number | null; email: string | null }
 export type SizeChoice = 'small' | 'medium' | 'original';
 export interface SendEmailRequest {
-  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null; max_id: number | null;
+  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null; max_id: number | null; since: number | null; until: number | null;
   to: RecipientRef[]; subject: string; message: string; size: SizeChoice;
 }
 

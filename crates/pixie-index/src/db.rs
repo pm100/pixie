@@ -1,4 +1,4 @@
-use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, Folder, FolderId, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
@@ -115,6 +115,8 @@ struct Filter {
     /// `Some(None)` is an invalid box, which matches nothing.
     bounds: Option<Option<Bounds>>,
     max_id: Option<i64>,
+    since: Option<i64>,
+    until: Option<i64>,
 }
 
 impl Filter {
@@ -124,6 +126,8 @@ impl Filter {
             kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
             bounds: q.bounds.map(|b| b.normalized()),
             max_id: q.max_id,
+            since: q.since,
+            until: q.until,
         }
     }
     fn sql(&self) -> String {
@@ -136,6 +140,12 @@ impl Filter {
         }
         if self.max_id.is_some() {
             s.push_str(" AND id <= :max_id");
+        }
+        if self.since.is_some() {
+            s.push_str(" AND taken_at >= :since");
+        }
+        if self.until.is_some() {
+            s.push_str(" AND taken_at < :until");
         }
         match &self.bounds {
             None => {}
@@ -157,6 +167,12 @@ impl Filter {
         }
         if let Some(m) = &self.max_id {
             v.push((":max_id", m));
+        }
+        if let Some(t) = &self.since {
+            v.push((":since", t));
+        }
+        if let Some(t) = &self.until {
+            v.push((":until", t));
         }
         if let Some(Some(b)) = &self.bounds {
             v.push((":south", &b.south));
@@ -232,6 +248,29 @@ impl Db {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
         Ok(rows)
+    }
+
+    pub fn folder_infos(&self) -> Result<Vec<FolderInfo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT f.id, f.path, COUNT(p.id) FROM folders f
+                 LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0
+                 GROUP BY f.id ORDER BY f.path",
+            )
+            .map_err(db_err)?;
+        let rows = s
+            .query_map([], |r| Ok(FolderInfo { id: r.get(0)?, path: r.get(1)?, count: r.get(2)? }))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// Forget a folder and its items (the `ON DELETE CASCADE` on photos). Files are never touched.
+    pub fn remove_folder(&self, id: FolderId) -> Result<()> {
+        self.conn().execute("DELETE FROM folders WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
     }
 
     pub fn find_photo_stat(&self, path: &str) -> Result<Option<PhotoStat>> {
@@ -454,9 +493,9 @@ impl Db {
         self.conn().query_row("SELECT COALESCE(MAX(id), 0) FROM photos", [], |r| r.get(0)).map_err(db_err)
     }
 
-    /// Every non-missing item with a location, for the map. Honours the folder and kind filters.
-    pub fn list_geo_points(&self, folder_id: Option<FolderId>, kind: Option<MediaKind>) -> Result<Vec<GeoPoint>> {
-        let q = PhotoQuery { folder_id, kind, ..Default::default() };
+    /// Every non-missing item with a location, for the map. Honours the folder, kind, since and until filters.
+    pub fn list_geo_points(&self, folder_id: Option<FolderId>, kind: Option<MediaKind>, since: Option<i64>, until: Option<i64>) -> Result<Vec<GeoPoint>> {
+        let q = PhotoQuery { folder_id, kind, since, until, ..Default::default() };
         let filter = Filter::of(&q);
         let sql = format!(
             "SELECT id, gps_lat, gps_lon FROM photos WHERE missing = 0 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL{} ORDER BY id",
@@ -559,7 +598,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None, max_id: None };
+            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None, max_id: None, since: None, until: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let sql = list_sql(&q, &filter);
@@ -613,6 +652,35 @@ mod tests {
         (db, f)
     }
 
+    #[test]
+    fn until_is_an_exclusive_upper_bound_and_combines_with_since() {
+        let (db, _f) = mixed_library(); // taken 100, 200, 300, 400
+        let q = PhotoQuery { until: Some(300), ..Default::default() };
+        let got = db.list_photos_in(&q, 0, 10).unwrap();
+        assert_eq!(got.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["/p/b.mp4", "/p/a.jpg"]);
+        assert_eq!(db.count_photos_in(&q).unwrap(), 2);
+        assert_eq!(db.day_groups(&q).unwrap().iter().map(|g| g.count).sum::<i64>(), 2);
+        assert_eq!(db.photos_at(&q, &[1]).unwrap()[0].path, "/p/a.jpg");
+        let both = PhotoQuery { since: Some(200), until: Some(400), ..Default::default() };
+        assert_eq!(db.count_photos_in(&both).unwrap(), 2); // 200 and 300; 400 is excluded
+    }
+
+    #[test]
+    fn geo_points_honour_the_until_bound() {
+        let (db, _f) = geo_library(); // located items taken at 100, 200, 300, 400, 500 (photos) and 700 (video)
+        assert_eq!(db.list_geo_points(None, None, None, Some(300)).unwrap().len(), 2);
+        assert_eq!(db.list_geo_points(None, None, Some(200), Some(500)).unwrap().len(), 3); // 200, 300, 400
+    }
+
+    #[test]
+    fn geo_points_honour_the_since_bound() {
+        let (db, _f) = geo_library(); // located items taken at 100, 200, 300, 400, 500 (photos) and 700 (video)
+        assert_eq!(db.list_geo_points(None, None, Some(300), None).unwrap().len(), 4);
+        assert_eq!(db.list_geo_points(None, Some(MediaKind::Video), Some(300), None).unwrap().len(), 1);
+        assert!(db.list_geo_points(None, None, Some(10_000), None).unwrap().is_empty());
+        assert_eq!(db.list_geo_points(None, None, None, None).unwrap().len(), 6);
+    }
+
     fn bq(south: f64, west: f64, north: f64, east: f64) -> PhotoQuery {
         PhotoQuery { bounds: Some(Bounds { south, west, north, east }), ..Default::default() }
     }
@@ -664,22 +732,22 @@ mod tests {
     #[test]
     fn geo_points_are_the_located_items_honouring_filters() {
         let (db, f) = geo_library();
-        let all = db.list_geo_points(None, None).unwrap();
+        let all = db.list_geo_points(None, None, None, None).unwrap();
         assert_eq!(all.len(), 6);
         assert!(all.iter().all(|p| p.lat.abs() <= 90.0 && p.lon.abs() <= 180.0));
         let paris = db.list_photos_in(&bq(48.0, 2.0, 49.0, 3.0), 0, 10).unwrap();
         assert!(all.iter().any(|p| p.id == paris[0].id));
-        assert_eq!(db.list_geo_points(None, Some(MediaKind::Video)).unwrap().len(), 1);
-        assert_eq!(db.list_geo_points(Some(f), Some(MediaKind::Photo)).unwrap().len(), 5);
+        assert_eq!(db.list_geo_points(None, Some(MediaKind::Video), None, None).unwrap().len(), 1);
+        assert_eq!(db.list_geo_points(Some(f), Some(MediaKind::Photo), None, None).unwrap().len(), 5);
         let other = db.add_folder("/q").unwrap();
-        assert!(db.list_geo_points(Some(other), None).unwrap().is_empty());
+        assert!(db.list_geo_points(Some(other), None, None, None).unwrap().is_empty());
     }
 
     #[test]
     fn missing_items_are_not_on_the_map() {
         let (db, f) = geo_library();
         db.mark_missing_except(f, &HashSet::new()).unwrap();
-        assert!(db.list_geo_points(None, None).unwrap().is_empty());
+        assert!(db.list_geo_points(None, None, None, None).unwrap().is_empty());
         assert!(file_names(&db, &bq(-90.0, -180.0, 90.0, 180.0)).is_empty());
     }
 
@@ -715,7 +783,7 @@ mod tests {
             time("count in box", &|| db.count_photos_in(&q).unwrap() as usize),
             time("day groups in box", &|| db.day_groups(&q).unwrap().len()),
             time("page of 200 at offset 500", &|| db.list_photos_in(&q, 500, 200).unwrap().len()),
-            time("geo points", &|| db.list_geo_points(None, None).unwrap().len()),
+            time("geo points", &|| db.list_geo_points(None, None, None, None).unwrap().len()),
         ]
         .into_iter()
         .fold(0.0, f64::max);
@@ -840,6 +908,45 @@ mod tests {
         // a later snapshot includes it
         let q2 = PhotoQuery { max_id: Some(db.max_photo_id().unwrap()), ..Default::default() };
         assert_eq!(db.count_photos_in(&q2).unwrap(), 5);
+    }
+
+    #[test]
+    fn since_keeps_items_taken_at_or_after_it_and_drops_undated_ones() {
+        let (db, f) = mixed_library(); // taken 100, 200, 300, 400
+        db.upsert_photo(f, "/p/undated.jpg", 1, 1, &meta(None)).unwrap();
+        let q = PhotoQuery { since: Some(300), ..Default::default() };
+        let got = db.list_photos_in(&q, 0, 10).unwrap();
+        assert_eq!(got.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["/p/d.mov", "/p/c.jpg"]);
+        assert_eq!(db.count_photos_in(&q).unwrap(), 2);
+        assert_eq!(db.day_groups(&q).unwrap().iter().map(|g| g.count).sum::<i64>(), 2);
+        assert_eq!(db.photos_at(&q, &[1]).unwrap()[0].path, "/p/c.jpg");
+        // combines with kind
+        let qv = PhotoQuery { since: Some(300), kind: Some(MediaKind::Video), ..Default::default() };
+        assert_eq!(db.count_photos_in(&qv).unwrap(), 1);
+    }
+
+    #[test]
+    fn folder_infos_count_live_items_per_folder() {
+        let (db, f) = mixed_library();
+        let g = db.add_folder("/q").unwrap();
+        db.upsert_photo(g, "/q/x.jpg", 1, 1, &meta(Some(5))).unwrap();
+        let seen: HashSet<String> = ["/p/a.jpg".to_string()].into_iter().collect();
+        db.mark_missing_except(f, &seen).unwrap(); // 3 of folder f's 4 items go missing
+        let infos = db.folder_infos().unwrap();
+        assert_eq!(infos.iter().map(|i| (i.path.as_str(), i.count)).collect::<Vec<_>>(), [("/p", 1), ("/q", 1)]);
+        let empty = db.add_folder("/empty").unwrap();
+        assert!(db.folder_infos().unwrap().iter().any(|i| i.id == empty && i.count == 0));
+    }
+
+    #[test]
+    fn removing_a_folder_removes_its_items_only() {
+        let (db, f) = mixed_library();
+        let g = db.add_folder("/q").unwrap();
+        db.upsert_photo(g, "/q/x.jpg", 1, 1, &meta(Some(5))).unwrap();
+        db.remove_folder(f).unwrap();
+        assert_eq!(db.count_photos_in(&PhotoQuery::default()).unwrap(), 1);
+        assert_eq!(db.list_folders().unwrap().len(), 1);
+        db.remove_folder(9999).unwrap(); // unknown id: nothing to do, not an error
     }
 
     #[test]
@@ -983,7 +1090,7 @@ mod tests {
     #[test]
     fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
         let (db, _, _) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None, max_id: None };
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None };
         assert_eq!(file_names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
@@ -995,7 +1102,7 @@ mod tests {
     fn group_counts_add_up_and_first_index_points_at_the_group() {
         let (db, _, _) = dated_library();
         for order in [SortOrder::Newest, SortOrder::Oldest] {
-            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None };
+            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None };
             let groups = db.day_groups(&q).unwrap();
             assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
             for g in &groups {
@@ -1012,11 +1119,11 @@ mod tests {
     #[test]
     fn folder_filter_applies_to_list_count_and_groups() {
         let (db, f, g) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None, max_id: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None, max_id: None, since: None, until: None };
         assert_eq!(file_names(&db, &q), ["f.jpg"]);
         assert_eq!(db.count_photos_in(&q).unwrap(), 1);
         assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None };
         assert_eq!(db.count_photos_in(&q).unwrap(), 5);
     }
 
@@ -1024,7 +1131,7 @@ mod tests {
     fn empty_folder_and_empty_library_have_no_groups() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/empty").unwrap();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None };
         assert!(db.day_groups(&q).unwrap().is_empty());
         assert_eq!(db.count_photos_in(&q).unwrap(), 0);
         assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
@@ -1046,7 +1153,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: None, bounds: None, max_id: None };
+            let q = PhotoQuery { order, folder_id, kind: None, bounds: None, max_id: None, since: None, until: None };
             let c = db.conn();
             let filter = Filter::of(&q);
             let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q, &filter))).unwrap();
