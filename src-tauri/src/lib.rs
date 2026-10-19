@@ -65,8 +65,9 @@ fn query_of(
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> PhotoQuery {
-    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind, bounds, max_id, since, until }
+    PhotoQuery { order: order.unwrap_or_default(), folder_id, kind, bounds, max_id, since, until, search: search.unwrap_or(false) }
 }
 
 /// The current highest photo id: the UI passes it back as `max_id` to freeze a listing while a scan adds photos.
@@ -87,8 +88,9 @@ fn list_photos(
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.list_photos_in(&query_of(order, folder_id, kind, bounds, max_id, since, until), offset.max(0), limit.clamp(1, 1000))
+    state.db.list_photos_in(&query_of(order, folder_id, kind, bounds, max_id, since, until, search), offset.max(0), limit.clamp(1, 1000))
 }
 
 #[tauri::command]
@@ -100,8 +102,9 @@ fn count_photos(
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> Result<i64, PixieError> {
-    state.db.count_photos_in(&query_of(None, folder_id, kind, bounds, max_id, since, until))
+    state.db.count_photos_in(&query_of(None, folder_id, kind, bounds, max_id, since, until, search))
 }
 
 #[tauri::command]
@@ -114,8 +117,9 @@ fn list_day_groups(
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> Result<Vec<DayGroup>, PixieError> {
-    state.db.day_groups(&query_of(order, folder_id, kind, bounds, max_id, since, until))
+    state.db.day_groups(&query_of(order, folder_id, kind, bounds, max_id, since, until, search))
 }
 
 /// One item by id (the photo behind a pin on the map).
@@ -132,8 +136,9 @@ fn list_geo_points(
     kind: Option<MediaKind>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> Result<Vec<GeoPoint>, PixieError> {
-    state.db.list_geo_points(folder_id, kind, since, until)
+    state.db.list_geo_points_in(&PhotoQuery { folder_id, kind, since, until, search: search.unwrap_or(false), ..Default::default() })
 }
 
 #[derive(Serialize, Clone)]
@@ -158,6 +163,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
     let db = state.db.clone();
     let thumbs = state.thumbs.clone();
     let cancel = state.cancel_scan.clone();
+    let analysis = state.analysis.clone();
     let mode = if full.unwrap_or(false) { ScanMode::Full } else { ScanMode::Quick };
     cancel.store(false, Ordering::Relaxed);
     let ids: Vec<i64> = match folder_id {
@@ -182,9 +188,57 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
             }
         }
         let _ = app.emit("scan-done", ScanDone { folders: scanned });
+        analysis.kick(); // new photos to analyse; the worker waits while this scan job (and its thumbnails) runs
         prefetch_all(&db, &thumbs); // build thumbnails for anything new, in the background
     });
     Ok(())
+}
+
+#[tauri::command]
+fn analysis_status(state: tauri::State<AppState>) -> pixie_analysis::service::AnalysisStatus {
+    state.analysis.status()
+}
+
+#[tauri::command]
+fn analysis_set_paused(state: tauri::State<AppState>, paused: bool) {
+    state.analysis.set_paused(paused);
+}
+
+#[derive(Serialize)]
+struct TagCount {
+    tag: String,
+    count: i64,
+}
+
+/// Every tag in use with its photo count, most common first.
+#[tauri::command]
+fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagCount>, PixieError> {
+    Ok(state.db.tag_counts()?.into_iter().map(|(tag, count)| TagCount { tag, count }).collect())
+}
+
+/// One photo's tags, best first.
+#[tauri::command]
+fn tags_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<String>, PixieError> {
+    Ok(state.db.tags_for(photo_id)?.into_iter().map(|(tag, _)| tag).collect())
+}
+
+/// Show only photos with this tag (null turns it off). List with the `search` flag, like a text search.
+#[tauri::command]
+fn set_tag_filter(state: tauri::State<AppState>, tag: Option<String>) -> Result<(), PixieError> {
+    state.db.set_tag_filter(tag.as_deref())
+}
+
+#[tauri::command]
+fn analysis_retry(state: tauri::State<AppState>) {
+    state.analysis.retry();
+}
+
+/// Make `text` the current search (see the `search` flag of the listing commands); returns the match count.
+/// Runs on the blocking pool: it embeds the text and scans every stored vector.
+#[tauri::command]
+async fn search_photos(state: tauri::State<'_, AppState>, text: String) -> Result<usize, String> {
+    let analysis = state.analysis.clone();
+    tauri::async_runtime::spawn_blocking(move || analysis.search(&text)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -289,8 +343,9 @@ fn photos_at(
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
 ) -> Result<Vec<Photo>, PixieError> {
-    state.db.photos_at(&query_of(order, folder_id, kind, bounds, max_id, since, until), &indexes)
+    state.db.photos_at(&query_of(order, folder_id, kind, bounds, max_id, since, until, search), &indexes)
 }
 
 #[tauri::command]
@@ -317,6 +372,7 @@ struct SendEmailRequest {
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: Option<bool>,
     to: Vec<RecipientRef>,
     subject: String,
     message: String,
@@ -341,7 +397,7 @@ async fn send_email(app: tauri::AppHandle, state: tauri::State<'_, AppState>, re
         let mut indexes = request.indexes.clone();
         indexes.sort_unstable();
         indexes.dedup();
-        let query = query_of(request.order, request.folder_id, request.kind, request.bounds, request.max_id, request.since, request.until);
+        let query = query_of(request.order, request.folder_id, request.kind, request.bounds, request.max_id, request.since, request.until, request.search);
         let photos = db.photos_at(&query, &indexes).map_err(|e| e.user_message())?;
         if photos.len() != indexes.len() {
             // Selection is by position, and the library changed since it was made.
@@ -606,6 +662,24 @@ pub fn run() {
                 Duration::from_millis(1100),
             ));
             let tiles = TileService::new(dir.join("tiles"), fetcher, 2);
+            let gate = pixie_index::ScanGate::default();
+            let analysis_app = app.handle().clone();
+            let scanning_gate = gate.clone();
+            let analysis = Arc::new(pixie_analysis::service::AnalysisService::start(pixie_analysis::service::Config {
+                db: db.clone(),
+                version: pixie_analysis::clip::MODEL_VERSION.to_string(),
+                dir: dir.join("models").join(pixie_analysis::clip::MODEL_VERSION),
+                files: pixie_analysis::models::CLIP_FILES,
+                downloader: Arc::new(pixie_analysis::models::HttpDownloader),
+                loader: Arc::new(|d| {
+                    pixie_analysis::clip::ClipEmbedder::load(d).map(|e| Arc::new(e) as Arc<dyn pixie_analysis::embedder::Embedder>)
+                }),
+                scanning: Arc::new(move || scanning_gate.is_busy()),
+                on_status: Arc::new(move |s| {
+                    let _ = analysis_app.emit("analysis-status", s);
+                }),
+                poll: Duration::from_millis(500),
+            }));
             app.manage(AppState {
                 db,
                 thumbs,
@@ -615,12 +689,13 @@ pub fn run() {
                 secrets: Arc::new(OsSecrets),
                 mailer: Arc::new(SmtpMailer),
                 cancel_scan: Arc::new(Default::default()),
-                gate: Default::default(),
+                gate,
+                analysis,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, print_page, place_for, save_poster,
+            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])

@@ -28,6 +28,11 @@ pub struct ScanGate(Arc<AtomicBool>);
 pub struct ScanGuard(Arc<AtomicBool>);
 
 impl ScanGate {
+    /// A scan job is running right now.
+    pub fn is_busy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
     pub fn try_start(&self) -> Option<ScanGuard> {
         self.0
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -458,6 +463,16 @@ mod tests {
         assert!(gate.try_start().is_none());
         drop(a);
         assert!(gate.try_start().is_some());
+    }
+
+    #[test]
+    fn scan_gate_reports_whether_a_scan_is_running() {
+        let gate = ScanGate::default();
+        assert!(!gate.is_busy());
+        let g = gate.try_start().unwrap();
+        assert!(gate.is_busy());
+        drop(g);
+        assert!(!gate.is_busy());
     }
 
     #[test]

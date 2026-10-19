@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseMoved, parseShow } from './popout';
 
-const view = { order: 'newest', folderId: null, kind: null, bounds: null, maxId: 9, since: null, until: null };
+const view = { order: 'newest', folderId: null, kind: null, bounds: null, maxId: 9, since: null, until: null, search: false };
 
 describe('parseShow', () => {
   it('accepts a well-formed message', () => {

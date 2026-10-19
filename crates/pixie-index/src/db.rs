@@ -62,6 +62,23 @@ const MIGRATIONS: &[&str] = &[
         security     TEXT NOT NULL,
         limit_mb     INTEGER NOT NULL
      );",
+    // V5: image embeddings for search. A NULL vector marks a photo that could not be analysed, so it is not retried.
+    "CREATE TABLE embeddings (
+        photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+        model_version TEXT NOT NULL,
+        vector        BLOB,
+        PRIMARY KEY (photo_id, model_version)
+     );",
+    // V6: content tags ("beach", "dog", ...) derived from the stored vectors. `tags_version` on an embedding says
+    // which tag vocabulary it was last tagged with, so a new vocabulary re-tags without decoding any image.
+    "ALTER TABLE embeddings ADD COLUMN tags_version TEXT;
+     CREATE TABLE photo_tags (
+        photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+        tag      TEXT NOT NULL,
+        score    REAL NOT NULL,
+        PRIMARY KEY (photo_id, tag)
+     );
+     CREATE INDEX idx_photo_tags_tag ON photo_tags(tag);",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +134,7 @@ struct Filter {
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    search: bool,
 }
 
 impl Filter {
@@ -128,6 +146,7 @@ impl Filter {
             max_id: q.max_id,
             since: q.since,
             until: q.until,
+            search: q.search,
         }
     }
     fn sql(&self) -> String {
@@ -146,6 +165,9 @@ impl Filter {
         }
         if self.until.is_some() {
             s.push_str(" AND taken_at < :until");
+        }
+        if self.search {
+            s.push_str(" AND id IN (SELECT photo_id FROM search_hits)");
         }
         match &self.bounds {
             None => {}
@@ -192,6 +214,22 @@ fn list_sql(q: &PhotoQuery, f: &Filter) -> String {
     )
 }
 
+/// Rebuild `search_hits` as the photos in every active hit set (text search, tag filter).
+fn refresh_hits(tx: &rusqlite::Transaction) -> Result<()> {
+    tx.execute("DELETE FROM search_hits", []).map_err(db_err)?;
+    let active = |name: &str| -> Result<bool> {
+        tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get::<_, i64>(0)).map(|n| n > 0).map_err(db_err)
+    };
+    let sql = match (active("text")?, active("tag")?) {
+        (true, true) => "INSERT INTO search_hits SELECT photo_id FROM text_hits INTERSECT SELECT photo_id FROM tag_hits",
+        (true, false) => "INSERT INTO search_hits SELECT photo_id FROM text_hits",
+        (false, true) => "INSERT INTO search_hits SELECT photo_id FROM tag_hits",
+        (false, false) => return Ok(()),
+    };
+    tx.execute(sql, []).map_err(db_err)?;
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
         Self::init(Connection::open(path).map_err(db_err)?)
@@ -217,6 +255,13 @@ impl Db {
             tx.pragma_update(None, "user_version", (i + 1) as i64).map_err(db_err)?;
             tx.commit().map_err(db_err)?;
         }
+        conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS search_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS text_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS tag_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY);",
+        )
+        .map_err(db_err)?;
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -283,7 +328,17 @@ impl Db {
     }
 
     pub fn upsert_photo(&self, folder_id: FolderId, path: &str, size: i64, mtime: i64, meta: &PhotoMeta) -> Result<PhotoId> {
-        self.conn()
+        let c = self.conn();
+        // A file that changed on disk is a different picture: whatever was learned from the old one (including a
+        // "could not analyse" marker from a half-copied file) no longer applies.
+        for table in ["embeddings", "photo_tags"] {
+            c.execute(
+                &format!("DELETE FROM {table} WHERE photo_id = (SELECT id FROM photos WHERE path = ?1 AND (size != ?2 OR mtime != ?3))"),
+                params![path, size, mtime],
+            )
+            .map_err(db_err)?;
+        }
+        c
             .query_row(
                 "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)
@@ -487,6 +542,186 @@ impl Db {
         Ok(out)
     }
 
+    /// Store the embedding of one photo for a model version (replacing any earlier one).
+    pub fn put_embedding(&self, photo_id: PhotoId, model_version: &str, vector: &[f32]) -> Result<()> {
+        let blob: Vec<u8> = vector.iter().flat_map(|x| x.to_le_bytes()).collect();
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO embeddings(photo_id, model_version, vector) VALUES (?1, ?2, ?3)",
+                params![photo_id, model_version, blob],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Record that a photo could not be analysed, so it is not offered again for this model version.
+    pub fn put_embedding_failed(&self, photo_id: PhotoId, model_version: &str) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO embeddings(photo_id, model_version, vector) VALUES (?1, ?2, NULL)",
+                params![photo_id, model_version],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Photos (not videos, not missing) with no embedding row for this model version, newest id first.
+    pub fn photos_needing_embedding(&self, model_version: &str, limit: i64) -> Result<Vec<Photo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND kind = 0
+                   AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)
+                 ORDER BY id DESC LIMIT ?2"
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map(params![model_version, limit], row_to_photo).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// (photos with a row for this model version, photos that should have one).
+    pub fn embedding_counts(&self, model_version: &str) -> Result<(i64, i64)> {
+        let c = self.conn();
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let done: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings e JOIN photos p ON p.id = e.photo_id
+                  WHERE e.model_version = ?1 AND p.missing = 0 AND p.kind = 0",
+                params![model_version],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        Ok((done, total))
+    }
+
+    /// Every stored vector for this model version (failed markers excluded) of photos that are not missing.
+    pub fn load_embeddings(&self, model_version: &str) -> Result<Vec<(PhotoId, Vec<f32>)>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT e.photo_id, e.vector FROM embeddings e JOIN photos p ON p.id = e.photo_id
+                  WHERE e.model_version = ?1 AND e.vector IS NOT NULL AND p.missing = 0",
+            )
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![model_version], |r| {
+                let blob: Vec<u8> = r.get(1)?;
+                let v = blob.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+                Ok((r.get(0)?, v))
+            })
+            .map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Make these photos the text-search result. Together with the tag filter (if any) they are what
+    /// `PhotoQuery::search` restricts listings to: a photo must be in every active set.
+    pub fn set_search_hits(&self, ids: &[PhotoId]) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM text_hits", []).map_err(db_err)?;
+        {
+            let mut ins = tx.prepare("INSERT OR IGNORE INTO text_hits(photo_id) VALUES (?1)").map_err(db_err)?;
+            for id in ids {
+                ins.execute(params![id]).map_err(db_err)?;
+            }
+        }
+        tx.execute("INSERT OR IGNORE INTO filter_state(name) VALUES ('text')", []).map_err(db_err)?;
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The text search is off (the tag filter, if any, stays).
+    pub fn clear_search_hits(&self) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM text_hits", []).map_err(db_err)?;
+        tx.execute("DELETE FROM filter_state WHERE name = 'text'", []).map_err(db_err)?;
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Show only photos with this tag; `None` turns the tag filter off.
+    pub fn set_tag_filter(&self, tag: Option<&str>) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM tag_hits", []).map_err(db_err)?;
+        match tag {
+            Some(t) => {
+                tx.execute("INSERT INTO tag_hits(photo_id) SELECT photo_id FROM photo_tags WHERE tag = ?1", params![t]).map_err(db_err)?;
+                tx.execute("INSERT OR IGNORE INTO filter_state(name) VALUES ('tag')", []).map_err(db_err)?;
+            }
+            None => {
+                tx.execute("DELETE FROM filter_state WHERE name = 'tag'", []).map_err(db_err)?;
+            }
+        }
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Replace a photo's tags (best first by score) and record the vocabulary that produced them.
+    pub fn set_tags(&self, photo_id: PhotoId, model_version: &str, tags_version: &str, tags: &[(String, f32)]) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM photo_tags WHERE photo_id = ?1", params![photo_id]).map_err(db_err)?;
+        {
+            let mut ins = tx.prepare("INSERT INTO photo_tags(photo_id, tag, score) VALUES (?1, ?2, ?3)").map_err(db_err)?;
+            for (tag, score) in tags {
+                ins.execute(params![photo_id, tag, score]).map_err(db_err)?;
+            }
+        }
+        tx.execute(
+            "UPDATE embeddings SET tags_version = ?3 WHERE photo_id = ?1 AND model_version = ?2",
+            params![photo_id, model_version, tags_version],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Stored vectors (of photos that are not missing) not yet tagged with this vocabulary version.
+    pub fn embeddings_needing_tags(&self, model_version: &str, tags_version: &str, limit: i64) -> Result<Vec<(PhotoId, Vec<f32>)>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT e.photo_id, e.vector FROM embeddings e JOIN photos p ON p.id = e.photo_id
+                  WHERE e.model_version = ?1 AND e.vector IS NOT NULL AND p.missing = 0
+                    AND (e.tags_version IS NULL OR e.tags_version != ?2)
+                  LIMIT ?3",
+            )
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![model_version, tags_version, limit], |r| {
+                let blob: Vec<u8> = r.get(1)?;
+                Ok((r.get(0)?, blob.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()))
+            })
+            .map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// A photo's tags, best first.
+    pub fn tags_for(&self, photo_id: PhotoId) -> Result<Vec<(String, f32)>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT tag, score FROM photo_tags WHERE photo_id = ?1 ORDER BY score DESC, tag").map_err(db_err)?;
+        let rows = s.query_map(params![photo_id], |r| Ok((r.get(0)?, r.get::<_, f64>(1)? as f32))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Every tag in use with how many photos carry it, most common first.
+    pub fn tag_counts(&self) -> Result<Vec<(String, i64)>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT t.tag, COUNT(*) AS n FROM photo_tags t JOIN photos p ON p.id = t.photo_id
+                  WHERE p.missing = 0 GROUP BY t.tag ORDER BY n DESC, t.tag",
+            )
+            .map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
     /// The highest photo id, or 0 for an empty library. Pass it as `PhotoQuery::max_id` to freeze a listing:
     /// items added later (by a running scan) have higher ids and do not shift any position.
     pub fn max_photo_id(&self) -> Result<i64> {
@@ -495,8 +730,12 @@ impl Db {
 
     /// Every non-missing item with a location, for the map. Honours the folder, kind, since and until filters.
     pub fn list_geo_points(&self, folder_id: Option<FolderId>, kind: Option<MediaKind>, since: Option<i64>, until: Option<i64>) -> Result<Vec<GeoPoint>> {
-        let q = PhotoQuery { folder_id, kind, since, until, ..Default::default() };
-        let filter = Filter::of(&q);
+        self.list_geo_points_in(&PhotoQuery { folder_id, kind, since, until, ..Default::default() })
+    }
+
+    /// Located items matching the query's folder, kind, date and search filters (position and order are ignored).
+    pub fn list_geo_points_in(&self, q: &PhotoQuery) -> Result<Vec<GeoPoint>> {
+        let filter = Filter::of(q);
         let sql = format!(
             "SELECT id, gps_lat, gps_lon FROM photos WHERE missing = 0 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL{} ORDER BY id",
             filter.sql()
@@ -598,7 +837,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None, max_id: None, since: None, until: None };
+            let q = PhotoQuery { order, folder_id, kind: Some(MediaKind::Video), bounds: None, max_id: None, since: None, until: None, search: false };
             let c = db.conn();
             let filter = Filter::of(&q);
             let sql = list_sql(&q, &filter);
@@ -1090,7 +1329,7 @@ mod tests {
     #[test]
     fn oldest_lists_and_groups_oldest_first_but_undated_still_last() {
         let (db, _, _) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None };
+        let q = PhotoQuery { order: SortOrder::Oldest, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
         assert_eq!(file_names(&db, &q), ["c.jpg", "f.jpg", "a.jpg", "b.jpg", "d.jpg", "e.jpg"]);
         assert_eq!(
             db.day_groups(&q).unwrap(),
@@ -1102,7 +1341,7 @@ mod tests {
     fn group_counts_add_up_and_first_index_points_at_the_group() {
         let (db, _, _) = dated_library();
         for order in [SortOrder::Newest, SortOrder::Oldest] {
-            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None };
+            let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
             let groups = db.day_groups(&q).unwrap();
             assert_eq!(groups.iter().map(|g| g.count).sum::<i64>(), db.count_photos_in(&q).unwrap());
             for g in &groups {
@@ -1119,11 +1358,11 @@ mod tests {
     #[test]
     fn folder_filter_applies_to_list_count_and_groups() {
         let (db, f, g) = dated_library();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None, max_id: None, since: None, until: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(g), kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
         assert_eq!(file_names(&db, &q), ["f.jpg"]);
         assert_eq!(db.count_photos_in(&q).unwrap(), 1);
         assert_eq!(db.day_groups(&q).unwrap(), [group(Some("2024-06-02"), 1, 0)]);
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
         assert_eq!(db.count_photos_in(&q).unwrap(), 5);
     }
 
@@ -1131,7 +1370,7 @@ mod tests {
     fn empty_folder_and_empty_library_have_no_groups() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/empty").unwrap();
-        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None };
+        let q = PhotoQuery { order: SortOrder::Newest, folder_id: Some(f), kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
         assert!(db.day_groups(&q).unwrap().is_empty());
         assert_eq!(db.count_photos_in(&q).unwrap(), 0);
         assert!(db.day_groups(&PhotoQuery::default()).unwrap().is_empty());
@@ -1153,7 +1392,7 @@ mod tests {
             (SortOrder::Newest, None), (SortOrder::Oldest, None),
             (SortOrder::Newest, Some(f)), (SortOrder::Oldest, Some(f)),
         ] {
-            let q = PhotoQuery { order, folder_id, kind: None, bounds: None, max_id: None, since: None, until: None };
+            let q = PhotoQuery { order, folder_id, kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
             let c = db.conn();
             let filter = Filter::of(&q);
             let mut s = c.prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(&q, &filter))).unwrap();
@@ -1203,5 +1442,150 @@ mod tests {
         assert_eq!(gps("/p/zero.jpg"), (None, None));
         assert_eq!(gps("/p/range.jpg"), (None, None));
         assert_eq!(gps("/p/half.jpg"), (None, None));
+    }
+
+    #[test]
+    fn embeddings_round_trip_and_pending_query() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        let b = db.upsert_photo(f, "/p/b.jpg", 1, 1, &meta(None)).unwrap();
+        assert_eq!(db.photos_needing_embedding("m1", 10).unwrap().len(), 2);
+        db.put_embedding(a, "m1", &[0.5, 0.25]).unwrap();
+        db.put_embedding_failed(b, "m1").unwrap();
+        assert!(db.photos_needing_embedding("m1", 10).unwrap().is_empty());
+        assert_eq!(db.photos_needing_embedding("m2", 10).unwrap().len(), 2); // a new model version re-queues
+        assert_eq!(db.load_embeddings("m1").unwrap(), vec![(a, vec![0.5, 0.25])]); // the failed marker is skipped
+        assert_eq!(db.embedding_counts("m1").unwrap(), (2, 2));
+    }
+
+    #[test]
+    fn videos_and_missing_photos_are_not_queued_for_embedding() {
+        let (db, f) = mixed_library(); // 2 photos, 2 videos
+        assert_eq!(db.photos_needing_embedding("m", 10).unwrap().len(), 2);
+        db.mark_missing_except(f, &HashSet::new()).unwrap();
+        assert!(db.photos_needing_embedding("m", 10).unwrap().is_empty());
+        assert_eq!(db.embedding_counts("m").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn a_changed_file_is_analysed_again_but_an_unchanged_one_is_not() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 10, 100, &meta(None)).unwrap();
+        db.put_embedding(a, "m", &[1.0]).unwrap();
+        db.upsert_photo(f, "/p/a.jpg", 10, 100, &meta(None)).unwrap(); // rescan, nothing changed
+        assert_eq!(db.load_embeddings("m").unwrap().len(), 1);
+        db.upsert_photo(f, "/p/a.jpg", 10, 200, &meta(None)).unwrap(); // edited: new mtime
+        assert!(db.load_embeddings("m").unwrap().is_empty());
+        assert_eq!(db.photos_needing_embedding("m", 10).unwrap().len(), 1);
+        db.put_embedding_failed(a, "m").unwrap(); // e.g. it was half-copied when first read
+        db.upsert_photo(f, "/p/a.jpg", 20, 200, &meta(None)).unwrap(); // finished copying: new size
+        assert_eq!(db.photos_needing_embedding("m", 10).unwrap().len(), 1); // the failure marker expired
+    }
+
+    #[test]
+    fn embeddings_go_when_the_folder_goes() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        db.put_embedding(a, "m", &[1.0]).unwrap();
+        db.remove_folder(f).unwrap();
+        assert!(db.load_embeddings("m").unwrap().is_empty());
+    }
+
+    #[test]
+    fn map_points_follow_the_search_result() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let at = PhotoMeta { gps_lat: Some(10.0), gps_lon: Some(20.0), ..Default::default() };
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &at).unwrap();
+        let _b = db.upsert_photo(f, "/p/b.jpg", 1, 1, &at).unwrap();
+        db.set_search_hits(&[a]).unwrap();
+        let q = PhotoQuery { search: true, ..Default::default() };
+        let pts = db.list_geo_points_in(&q).unwrap();
+        assert_eq!(pts.iter().map(|p| p.id).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(db.list_geo_points_in(&PhotoQuery::default()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn search_hits_filter_listing() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        let _b = db.upsert_photo(f, "/p/b.jpg", 1, 1, &meta(None)).unwrap();
+        db.set_search_hits(&[a]).unwrap();
+        let q = PhotoQuery { search: true, ..Default::default() };
+        assert_eq!(db.count_photos_in(&q).unwrap(), 1);
+        assert_eq!(db.list_photos_in(&q, 0, 10).unwrap()[0].id, a);
+        db.set_search_hits(&[]).unwrap();
+        assert_eq!(db.count_photos_in(&q).unwrap(), 0);
+        assert_eq!(db.count_photos_in(&PhotoQuery::default()).unwrap(), 2); // flag off: unfiltered
+    }
+
+    #[test]
+    fn tags_are_stored_counted_and_expire_with_the_file() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        let b = db.upsert_photo(f, "/p/b.jpg", 1, 1, &meta(None)).unwrap();
+        db.put_embedding(a, "m", &[1.0, 0.0]).unwrap();
+        db.put_embedding(b, "m", &[0.0, 1.0]).unwrap();
+        db.put_embedding_failed(db.upsert_photo(f, "/p/c.jpg", 1, 1, &meta(None)).unwrap(), "m").unwrap();
+        // Both analysed photos need tags; the one that failed has no vector to tag from.
+        let need = db.embeddings_needing_tags("m", "t1", 10).unwrap();
+        assert_eq!(need.iter().map(|(id, _)| *id).collect::<Vec<_>>().len(), 2);
+        db.set_tags(a, "m", "t1", &[("beach".into(), 0.9), ("people".into(), 0.5)]).unwrap();
+        db.set_tags(b, "m", "t1", &[("beach".into(), 0.4)]).unwrap();
+        assert!(db.embeddings_needing_tags("m", "t1", 10).unwrap().is_empty());
+        assert_eq!(db.embeddings_needing_tags("m", "t2", 10).unwrap().len(), 2); // a new vocabulary re-tags from the stored vectors
+        assert_eq!(db.tags_for(a).unwrap(), vec![("beach".to_string(), 0.9), ("people".to_string(), 0.5)]);
+        assert_eq!(db.tag_counts().unwrap(), vec![("beach".to_string(), 2), ("people".to_string(), 1)]);
+        db.set_tags(a, "m", "t1", &[]).unwrap(); // re-tagging replaces; "no tag cleared the bar" is a valid result
+        assert!(db.tags_for(a).unwrap().is_empty());
+        db.set_tags(a, "m", "t1", &[("dog".into(), 0.7)]).unwrap();
+        db.upsert_photo(f, "/p/a.jpg", 1, 99, &meta(None)).unwrap(); // the file changed
+        assert!(db.tags_for(a).unwrap().is_empty());
+        db.remove_folder(f).unwrap();
+        assert!(db.tag_counts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_photos_do_not_count_toward_tags() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        db.put_embedding(a, "m", &[1.0]).unwrap();
+        db.set_tags(a, "m", "t", &[("beach".into(), 0.9)]).unwrap();
+        db.mark_missing_except(f, &HashSet::new()).unwrap();
+        assert!(db.tag_counts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tag_filter_and_text_search_combine_and_clear_independently() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let ids: Vec<_> = (0..3).map(|i| db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &meta(None)).unwrap()).collect();
+        for id in &ids {
+            db.put_embedding(*id, "m", &[1.0]).unwrap();
+        }
+        db.set_tags(ids[0], "m", "t", &[("beach".into(), 0.9)]).unwrap();
+        db.set_tags(ids[1], "m", "t", &[("beach".into(), 0.9)]).unwrap();
+        let q = PhotoQuery { search: true, ..Default::default() };
+        let hits = |db: &Db| {
+            let mut v: Vec<_> = db.list_photos_in(&q, 0, 10).unwrap().iter().map(|p| p.id).collect();
+            v.sort();
+            v
+        };
+        db.set_tag_filter(Some("beach")).unwrap();
+        assert_eq!(hits(&db), vec![ids[0], ids[1]]);
+        db.set_search_hits(&[ids[1], ids[2]]).unwrap(); // text search on top: only photos in both
+        assert_eq!(hits(&db), vec![ids[1]]);
+        db.set_tag_filter(None).unwrap(); // dropping the tag leaves the text search
+        assert_eq!(hits(&db), vec![ids[1], ids[2]]);
+        db.clear_search_hits().unwrap();
+        assert!(hits(&db).is_empty()); // nothing active: the flag matches nothing (the UI turns the flag off)
+        db.set_tag_filter(Some("nothing-has-this")).unwrap();
+        assert!(hits(&db).is_empty());
     }
 }

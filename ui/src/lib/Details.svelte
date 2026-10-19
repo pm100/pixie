@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { placeFor, type Photo, type Place } from './api';
+  import { placeFor, tagsFor, type Photo, type Place } from './api';
+  import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
   import { placeLines } from './placeLines';
@@ -13,6 +14,17 @@
   let place = $state<Place | null>(null);
   const latest = createLatest();
   const lines = $derived(placeLines(place));
+
+  // What the photo shows. Re-read when the selection changes; a slow answer for an old selection is dropped.
+  let tags = $state<string[]>([]);
+  const tagsLatest = createLatest();
+  const photoId = $derived(photo?.id ?? null);
+  $effect(() => {
+    tags = [];
+    const token = tagsLatest.next();
+    if (photoId === null) return;
+    tagsFor(photoId).then((t) => { if (tagsLatest.isCurrent(token)) tags = t; }).catch(() => {});
+  });
 
   // Look the place up when the selected photo's location changes. A slow answer for a
   // photo that is no longer selected is dropped. Offline or failed: show nothing.
@@ -41,6 +53,7 @@
       <dt>Folder</dt><dd class="path" title={dirname(photo.path)}>{dirname(photo.path)}</dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
+      {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t)}<span class="chip">{tagLabel(t)}</span>{/each}</dd>{/if}
     </dl>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
@@ -59,6 +72,8 @@
   dt { color: #777; }
   dd { margin: 0; min-width: 0; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { padding: 1px 8px; border-radius: 10px; background: #eef2fb; color: #2a3f7a; font-size: 12px; }
   .hint { color: #777; }
   .place { margin: 0 0 16px; }
 </style>

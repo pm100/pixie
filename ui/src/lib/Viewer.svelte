@@ -84,7 +84,7 @@
     const mine = ++token;
     // One call for the whole neighbourhood instead of one per arrow press.
     const { lo, hi } = filmRange(i, total, FILM);
-    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId, view.since, view.until).then((rows) => {
+    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId, view.since, view.until, view.search).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
       stripTick++;
       if (mine !== token || !photos[i]) return;

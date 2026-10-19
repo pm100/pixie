@@ -1,0 +1,18 @@
+[package]
+name = "pixie-analysis"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pixie-core = { path = "../pixie-core" }
+pixie-image = { path = "../pixie-image" }
+pixie-index = { path = "../pixie-index" }
+image = { workspace = true }
+serde = { workspace = true }
+sha2 = "0.10"
+ureq = "2"
+ort = "=2.0.0-rc.10"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

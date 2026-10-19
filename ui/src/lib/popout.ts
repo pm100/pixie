@@ -20,7 +20,7 @@ function parseView(v: unknown): View | null {
   const num = (x: unknown) => (typeof x === 'number' ? x : null);
   return {
     order: o.order, folderId: num(o.folderId), kind: parseKindFilter(o.kind),
-    bounds: (o.bounds ?? null) as View['bounds'], maxId: num(o.maxId), since: num(o.since), until: num(o.until),
+    bounds: (o.bounds ?? null) as View['bounds'], maxId: num(o.maxId), since: num(o.since), until: num(o.until), search: o.search === true,
   };
 }
 

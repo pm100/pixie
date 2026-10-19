@@ -23,6 +23,8 @@ export interface View {
   since: number | null;
   /** Only items taken before this time (unix seconds, exclusive). */
   until: number | null;
+  /** Only items in the current search result (see `searchPhotos`). */
+  search: boolean;
 }
 /** Photos taken on one day ("YYYY-MM-DD"; null = no date), in listing order. */
 export interface DayGroup { day: string | null; count: number; first_index: number }
@@ -37,22 +39,23 @@ export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
   offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,
   kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null, since: number | null = null,
-  until: number | null = null,
-) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId, since, until });
+  until: number | null = null, search = false,
+) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId, since, until, search });
 export const countPhotos = (
   folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
-  since: number | null = null, until: number | null = null,
-) => invoke<number>('count_photos', { folderId, kind, bounds, maxId, since, until });
+  since: number | null = null, until: number | null = null, search = false,
+) => invoke<number>('count_photos', { folderId, kind, bounds, maxId, since, until, search });
 export const listDayGroups = (
   order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null,
   bounds: Bounds | null = null, maxId: number | null = null, since: number | null = null, until: number | null = null,
-) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds, maxId, since, until });
+  search = false,
+) => invoke<DayGroup[]>('list_day_groups', { order, folderId, kind, bounds, maxId, since, until, search });
 /** The current highest photo id, to freeze a listing (see `View.maxId`). */
 export const getMaxPhotoId = () => invoke<number>('max_photo_id');
 export const getPhoto = (id: number) => invoke<Photo | null>('get_photo', { id });
 export const listGeoPoints = (
-  folderId: number | null = null, kind: MediaKind | null = null, since: number | null = null, until: number | null = null,
-) => invoke<GeoPoint[]>('list_geo_points', { folderId, kind, since, until });
+  folderId: number | null = null, kind: MediaKind | null = null, since: number | null = null, until: number | null = null, search = false,
+) => invoke<GeoPoint[]>('list_geo_points', { folderId, kind, since, until, search });
 export const printPage = () => invoke<void>('print_page');
 
 export interface Place { landmark: string | null; locality: string | null }
@@ -77,7 +80,7 @@ export interface NewContact { id: number | null; nickname: string; name: string 
 export interface RecipientRef { contact_id: number | null; email: string | null }
 export type SizeChoice = 'small' | 'medium' | 'original';
 export interface SendEmailRequest {
-  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null; max_id: number | null; since: number | null; until: number | null;
+  indexes: number[]; order: SortOrder; folder_id: number | null; kind: MediaKind | null; bounds: Bounds | null; max_id: number | null; since: number | null; until: number | null; search: boolean;
   to: RecipientRef[]; subject: string; message: string; size: SizeChoice;
 }
 
@@ -92,5 +95,20 @@ export const listContacts = () => invoke<Contact[]>('list_contacts');
 export const saveContact = (contact: NewContact) => invoke<Contact>('save_contact', { contact });
 export const deleteContact = (id: number) => invoke<void>('delete_contact', { id });
 export const photosAt = (indexes: number[], v: View) =>
-  invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId });
+  invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId, since: v.since, until: v.until, search: v.search });
 export const sendEmail = (request: SendEmailRequest) => invoke<string[]>('send_email', { request });
+
+// ---- content analysis and search ----
+import type { AnalysisStatus } from './analysis';
+export const analysisStatus = () => invoke<AnalysisStatus>('analysis_status');
+export const analysisSetPaused = (paused: boolean) => invoke<void>('analysis_set_paused', { paused });
+export const analysisRetry = () => invoke<void>('analysis_retry');
+/** Make `text` the current search and return how many photos match; blank text clears it. List with `View.search`. */
+export const searchPhotos = (text: string) => invoke<number>('search_photos', { text });
+
+// ---- tags ----
+import type { TagCount } from './tagNav';
+export const listTags = () => invoke<TagCount[]>('list_tags');
+export const tagsFor = (photoId: number) => invoke<string[]>('tags_for', { photoId });
+/** Show only photos with this tag (null: off). List with `View.search`, like a text search. */
+export const setTagFilter = (tag: string | null) => invoke<void>('set_tag_filter', { tag });

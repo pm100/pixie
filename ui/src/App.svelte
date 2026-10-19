@@ -3,10 +3,13 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
-    addFolder, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    removeFolder, startScan,
+    addFolder, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
+    listTags, removeFolder, searchPhotos, setTagFilter, startScan,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
+  import { searchNote, type AnalysisStatus } from './lib/analysis';
+  import { createLatest } from './lib/latest';
+  import { searchActive, tagLabel, type TagCount } from './lib/tagNav';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
   import MailSettings from './lib/MailSettings.svelte';
@@ -37,9 +40,10 @@
     maxId: null,
     since: null,
     until: null,
+    search: false,
   };
   const same = (a: View, b: View) =>
-    a.order === b.order && a.folderId === b.folderId && a.kind === b.kind && a.since === b.since && a.until === b.until && sameBounds(a.bounds, b.bounds);
+    a.order === b.order && a.folderId === b.folderId && a.kind === b.kind && a.since === b.since && a.until === b.until && a.search === b.search && sameBounds(a.bounds, b.bounds);
   let view = $state<View>({ ...initial });
   // The view the loaded groups/pages belong to. It trails `view` by one round trip, so the grid,
   // details and viewer never mix the new order with old data.
@@ -109,6 +113,76 @@
       if (mode === 'map') loadPoints();
     }
   }
+  // Search: the box holds what is being typed; `searchTerm` is the search that is applied to the view.
+  let analysis = $state<AnalysisStatus | null>(null);
+  let searchText = $state(''), searchTerm = $state<string | null>(null), searching = $state(false);
+  const searchReady = $derived(analysis?.models === 'ready');
+
+  // Only the latest search or clear may change the view; an older one finishing late is ignored.
+  const latestSearch = createLatest();
+  /** The pop-out pages through the search result by position, so it cannot outlive a change of that result. */
+  function closePopout() {
+    if (popoutOpen) { void emit(POPOUT_CLOSE); popoutOpen = false; popoutSnap = null; }
+  }
+
+  async function runSearch() {
+    const text = searchText.trim();
+    if (text === '') return clearSearch();
+    const token = latestSearch.next();
+    searching = true;
+    try {
+      await searchPhotos(text);
+      if (!latestSearch.isCurrent(token)) return;
+      closePopout();
+      searchTerm = text;
+      view = { ...view, search: true };
+      selection = emptySelection;
+      await refresh(true);
+      if (mode === 'map') loadPoints();
+    } catch (e) {
+      message = String(e);
+    } finally {
+      if (latestSearch.isCurrent(token)) searching = false;
+    }
+  }
+
+  async function clearSearch() {
+    latestSearch.next(); // a search still in flight must not bring the results back
+    searching = false;
+    searchText = '';
+    searchTerm = null;
+    const next = searchActive(null, activeTag); // a chosen tag keeps the view restricted
+    if (!view.search && !next) return;
+    closePopout();
+    view = { ...view, search: next };
+    selection = emptySelection;
+    searchPhotos('').catch(() => {}); // forget the text hits
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  // Tags: what the photos show, as a filter. It combines with a text search (a photo must match both).
+  let tags = $state<TagCount[]>([]), activeTag = $state<string | null>(null);
+  let tagsAt = 0;
+  async function loadTags() {
+    tagsAt = Date.now();
+    try { tags = await listTags(); } catch { /* the list just stays as it was */ }
+  }
+  /** Tags appear as analysis proceeds; refresh the list now and then, not on every progress event. */
+  function loadTagsSoon() {
+    if (Date.now() - tagsAt > 4000) loadTags();
+  }
+
+  async function setTag(next: string | null) {
+    try { await setTagFilter(next); } catch (e) { message = String(e); return; }
+    activeTag = next;
+    closePopout();
+    view = { ...view, search: searchActive(searchTerm, next) };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
   const tabs = visibleTabs({ create: false, share: false });
@@ -145,8 +219,8 @@
     // higher ids and cannot shift the positions that selection, details and the viewer rely on.
     v.maxId = await getMaxPhotoId();
     const [n, g] = await Promise.all([
-      countPhotos(v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until),
-      listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until),
+      countPhotos(v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search),
+      listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search),
     ]);
     const ng = await navGroupsFor(v, g);
     if (!same(v, view)) return; // a newer request owns the screen
@@ -162,7 +236,7 @@
   /** The day groups for the left pane: the same as `g`, except that on the map a chosen period is left out. */
   async function navGroupsFor(v: View, g: DayGroup[]): Promise<DayGroup[]> {
     if (mode !== 'map' || periodKey === null) return g;
-    return listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, null, null);
+    return listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, null, null, v.search);
   }
 
   /** True while the user is looking at or holding something that refers to a position in the list. */
@@ -181,8 +255,8 @@
       const v = { ...view };
       v.maxId = await getMaxPhotoId();
       const [n, g] = await Promise.all([
-        countPhotos(v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until),
-        listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until),
+        countPhotos(v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search),
+        listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search),
       ]);
       const ng = await navGroupsFor(v, g);
       if (!same(v, view) || !same(v, shown) || interacting()) return;
@@ -248,10 +322,10 @@
 
   /** Points for the map follow the folder and kind filters; the map's own area is not part of them. */
   async function loadPoints() {
-    const { folderId, kind, since, until } = view;
+    const { folderId, kind, since, until, search } = view;
     try {
-      const pts = await listGeoPoints(folderId, kind, since, until);
-      if (folderId !== view.folderId || kind !== view.kind || since !== view.since || until !== view.until) return; // the filters moved on
+      const pts = await listGeoPoints(folderId, kind, since, until, search);
+      if (folderId !== view.folderId || kind !== view.kind || since !== view.since || until !== view.until || search !== view.search) return; // the filters moved on
       points = pts;
     } catch (e) {
       message = String(e);
@@ -351,7 +425,8 @@
 
   async function removeFolderAndRefresh(id: number) {
     await removeFolder(id);
-    if (popoutOpen) { void emit(POPOUT_CLOSE); popoutOpen = false; popoutSnap = null; } // its photos may be gone
+    closePopout(); // its photos may be gone
+    loadTags();
     folders = await listFolders();
     await loadFolderInfos();
     closeViewer();
@@ -363,16 +438,18 @@
   // Details for a single selected photo (fetched by index in the current view).
   $effect(() => {
     const i = single(selection);
-    const { order, folderId, kind, bounds, maxId, since, until } = shown;
+    const { order, folderId, kind, bounds, maxId, since, until, search } = shown;
     if (i === null) { selectedPhoto = null; return; }
     let live = true;
-    listPhotos(i, 1, order, folderId, kind, bounds, maxId, since, until).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
+    listPhotos(i, 1, order, folderId, kind, bounds, maxId, since, until, search).then((r) => { if (live) selectedPhoto = r[0] ?? null; });
     return () => { live = false; };
   });
 
   onMount(() => {
     refresh().catch((e) => (message = String(e)));
     loadFolderInfos();
+    analysisStatus().then((s) => (analysis = s)).catch(() => {});
+    loadTags();
     // Re-scan all known folders on launch to pick up changes.
     listFolders().then((fs) => {
       folders = fs;
@@ -381,12 +458,14 @@
       startScan(null).catch(() => (scanning = false));
     });
     const subs = [
+      listen<AnalysisStatus>('analysis-status', (e) => { analysis = e.payload; loadTagsSoon(); }),
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number }>('scan-progress', (e) => {
         seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
         refreshLive();
       }),
       listen('scan-done', () => {
+        loadTags();
         scanning = false;
         scanFolder = null;
         loadFolderInfos();
@@ -423,6 +502,21 @@
         <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
           {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
         </button>
+        <form class="search" onsubmit={(e) => { e.preventDefault(); runSearch(); }}>
+          <input type="search" bind:value={searchText} placeholder="Search, e.g. dog on a beach" aria-label="Search photos"
+                 disabled={!searchReady || searching}
+                 title={searchReady ? 'Describe what you are looking for' : 'Search is not ready yet: see Settings, Search'}
+                 onkeydown={(e) => { if (e.key === 'Escape') clearSearch(); }} />
+        </form>
+        {#if view.search && searchTerm !== null}
+          <span class="filter">Matching “{searchTerm}”
+            <button onclick={clearSearch} aria-label="Clear search" title="Clear search">✕</button></span>
+        {/if}
+        {#if activeTag !== null}
+          <span class="filter">Tagged “{tagLabel(activeTag)}”
+            <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
+        {/if}
+        {#if view.search && analysis && searchNote(analysis)}<span class="note">{searchNote(analysis)}</span>{/if}
         {#if periodKey !== null}
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
@@ -439,6 +533,7 @@
         {#snippet left()}
           <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
+               {tags} tag={activeTag} ontag={setTag}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
@@ -464,7 +559,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{view.search ? (searchTerm !== null ? `Nothing matches “${searchTerm}”.` : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -484,7 +579,8 @@
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays} />
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
+                  {analysis} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>
@@ -503,6 +599,9 @@
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
   .content { flex: 1; min-height: 0; }
+  .search input { width: 260px; max-width: 40vw; font: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid #c3c8d4; border-radius: 12px; }
+  .search input:disabled { background: #f3f4f7; color: #888; }
+  .note { font-size: 12px; color: #666; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   .filter button:hover { background: rgba(47, 111, 237, .2); }

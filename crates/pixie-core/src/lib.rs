@@ -124,6 +124,8 @@ pub struct PhotoQuery {
     pub since: Option<i64>,
     /// Only items taken before this time (unix seconds, exclusive). Undated items never match.
     pub until: Option<i64>,
+    /// Only items in the current search result (see `Db::set_search_hits`).
+    pub search: bool,
 }
 
 /// All photos taken on one day (`day` is "YYYY-MM-DD"; `None` = no date).

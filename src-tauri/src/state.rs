@@ -14,4 +14,5 @@ pub struct AppState {
     pub mailer: Arc<dyn pixie_mail::Mailer>,
     pub cancel_scan: Arc<AtomicBool>,
     pub gate: pixie_index::ScanGate,
+    pub analysis: Arc<pixie_analysis::service::AnalysisService>,
 }

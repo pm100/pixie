@@ -46,7 +46,7 @@ fn main() {
         println!("{label}: 5 viewer-sized pages in {:.1} ms total", t.elapsed().as_secs_f64() * 1000.0);
     }
     for order in [SortOrder::Newest, SortOrder::Oldest] {
-        let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None };
+        let q = PhotoQuery { order, folder_id: None, kind: None, bounds: None, max_id: None, since: None, until: None, search: false };
         let t = Instant::now();
         let groups = db.day_groups(&q).unwrap();
         println!("{order:?}: day_groups {:.1} ms, {} groups, {} photos", t.elapsed().as_secs_f64() * 1000.0, groups.len(), groups.iter().map(|g| g.count).sum::<i64>());
