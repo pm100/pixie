@@ -202,7 +202,7 @@
   {#if !solo}
     {#if index > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
     {#if index < total - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M9 4l8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
-    <div class="count"><b>{index + 1} / {total}</b><span><kbd aria-label="Left arrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13 8H3M7.5 3.5 3 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></kbd><kbd aria-label="Right arrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></kbd> browse</span><span><kbd>Esc</kbd> close</span></div>
+    <div class="count"><b>{index + 1} / {total}</b><span><button class="kbd" onclick={() => step(-1)} disabled={index <= 0} aria-label="Previous" title="Previous"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13 8H3M7.5 3.5 3 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="kbd" onclick={() => step(1)} disabled={index >= total - 1} aria-label="Next" title="Next"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button> browse</span><span><button class="kbd" onclick={onclose} title="Close">Esc</button> close</span></div>
   {/if}
 </div>
 
@@ -230,5 +230,7 @@
   /* On a dark pill at full strength so it reads over any photo. */
   .count { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 10px; display: flex; gap: 16px; align-items: center; padding: 6px 16px; border-radius: 16px; background: rgba(0, 0, 0, .75); color: #fff; font-size: 14px; white-space: nowrap; }
   .count b { font-weight: 600; }
-  kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 22px; padding: 0 6px; margin-right: 3px; border: 1px solid #aaa; border-radius: 4px; background: #333; color: #fff; font: inherit; font-size: 13px; line-height: 1; }
+  .kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 22px; padding: 0 6px; margin-right: 3px; border: 1px solid #aaa; border-radius: 4px; background: #333; color: #fff; font: inherit; font-size: 13px; line-height: 1; cursor: pointer; }
+  .kbd:hover:not(:disabled) { background: #555; border-color: #fff; }
+  .kbd:disabled { opacity: .35; cursor: default; }
 </style>
