@@ -327,7 +327,7 @@ mod tests {
             FakeEmbedder.embed_image(img)
         }
         fn embed_text(&self, t: &str) -> Result<Vec<f32>, String> {
-            Ok(if t.contains("reddish") { vec![1.0, 0.0] } else { vec![0.0, 1.0] })
+            Ok(if t.contains("reddish") { vec![1.0, 0.0] } else if t.contains("bluish") { vec![0.0, 1.0] } else { vec![0.0, 0.0] }) // decoys match nothing
         }
         fn version(&self) -> &str {
             "fake-1"

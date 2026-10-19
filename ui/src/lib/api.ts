@@ -109,6 +109,7 @@ export const searchPhotos = (text: string) => invoke<number>('search_photos', { 
 // ---- tags ----
 import type { TagCount } from './tagNav';
 export const listTags = () => invoke<TagCount[]>('list_tags');
-export const tagsFor = (photoId: number) => invoke<string[]>('tags_for', { photoId });
+export type PhotoTag = { tag: string; score: number };
+export const tagsFor = (photoId: number) => invoke<PhotoTag[]>('tags_for', { photoId });
 /** Show only photos with this tag (null: off). List with `View.search`, like a text search. */
 export const setTagFilter = (tag: string | null) => invoke<void>('set_tag_filter', { tag });

@@ -216,10 +216,17 @@ fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagCount>, PixieError>
     Ok(state.db.tag_counts()?.into_iter().map(|(tag, count)| TagCount { tag, count }).collect())
 }
 
+#[derive(Serialize)]
+struct PhotoTag {
+    tag: String,
+    /// 0..1: the tag's share of the probability against every label and decoy.
+    score: f32,
+}
+
 /// One photo's tags, best first.
 #[tauri::command]
-fn tags_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<String>, PixieError> {
-    Ok(state.db.tags_for(photo_id)?.into_iter().map(|(tag, _)| tag).collect())
+fn tags_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<PhotoTag>, PixieError> {
+    Ok(state.db.tags_for(photo_id)?.into_iter().map(|(tag, score)| PhotoTag { tag, score }).collect())
 }
 
 /// Show only photos with this tag (null turns it off). List with the `search` flag, like a text search.

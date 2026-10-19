@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { placeFor, tagsFor, type Photo, type Place } from './api';
+  import { placeFor, tagsFor, type Photo, type PhotoTag, type Place } from './api';
   import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
@@ -16,7 +16,7 @@
   const lines = $derived(placeLines(place));
 
   // What the photo shows. Re-read when the selection changes; a slow answer for an old selection is dropped.
-  let tags = $state<string[]>([]);
+  let tags = $state<PhotoTag[]>([]);
   const tagsLatest = createLatest();
   const photoId = $derived(photo?.id ?? null);
   $effect(() => {
@@ -53,7 +53,7 @@
       <dt>Folder</dt><dd class="path" title={dirname(photo.path)}>{dirname(photo.path)}</dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
-      {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t)}<span class="chip">{tagLabel(t)}</span>{/each}</dd>{/if}
+      {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
