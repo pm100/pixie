@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { periodRange } from './periods';
+import { periodLabel, periodRange } from './periods';
 
 const utc = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 1000;
 
@@ -18,5 +18,16 @@ describe('periodRange', () => {
   });
   it('anything else is not a period', () => {
     for (const k of ['undated', 'decade:2010', 'y:abcd', 'm:2025-13', 'm:2025-00', 'd:2025-02-30', '', 'x:1']) expect(periodRange(k)).toBeNull();
+  });
+});
+
+describe('periodLabel', () => {
+  it('names a year, a month and a day for people', () => {
+    expect(periodLabel('y:2026')).toBe('2026');
+    expect(periodLabel('m:2026-09')).toBe('September 2026');
+    expect(periodLabel('d:2026-09-19')).toBe('19 September 2026');
+  });
+  it('is empty for anything that is not a period', () => {
+    expect(periodLabel('undated')).toBe('');
   });
 });

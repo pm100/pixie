@@ -8,7 +8,7 @@
   import { boundsOfView, clusterPoints, clusterTarget, nearestWorldLon, progressZoom, type Bounds, type GeoPoint, type MapView } from './geo';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, initial, resetKey, onbounds, onmove, onpin, onopenphoto, onclose }: {
+  let { points, initial, resetKey, onbounds, onmove, onpin, onopenphoto }: {
     points: GeoPoint[];
     initial: MapView | null;
     /** Changes when the user asks for the whole map again. */
@@ -19,7 +19,6 @@
     onpin: (p: Photo) => void;
     /** The photo in the pin popup was clicked: open it. */
     onopenphoto: (p: Photo) => void;
-    onclose: () => void;
   } = $props();
 
   let el: HTMLDivElement;
@@ -213,7 +212,7 @@
 
 <div class="wrap">
   <div class="map" bind:this={el}></div>
-  <button class="close" onclick={onclose} title="Back to the library">✕ Close map</button>
+  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Zoom out to fit every photo and video on the map">Show all</button>
   {#if points.length === 0}
     <div class="note">No photos with a location yet.</div>
   {/if}
@@ -224,8 +223,9 @@
 <style>
   .wrap { position: relative; height: 100%; min-height: 0; isolation: isolate; /* keep Leaflet's z-indexes inside the map */ }
   .map { height: 100%; background: #e8e8e8; }
-  .close, .attr { position: absolute; z-index: 500; background: rgba(255, 255, 255, .88); border-radius: 4px; font-size: 12px; padding: 3px 8px; }
-  .close { top: 8px; right: 8px; border: 1px solid #ccc; cursor: pointer; }
+  .showall, .attr { position: absolute; z-index: 500; background: rgba(255, 255, 255, .88); border-radius: 4px; font-size: 12px; padding: 3px 8px; }
+  .showall { top: 8px; right: 8px; border: 1px solid #ccc; cursor: pointer; font: inherit; font-size: 12px; color: #111; }
+  .showall:disabled { color: #999; cursor: default; }
   .attr { right: 8px; bottom: 4px; color: #666; padding: 1px 6px; }
   .note { position: absolute; z-index: 500; inset: 0; display: grid; place-items: center; pointer-events: none; color: #555; font-size: 14px; }
   :global(.pm) { background: none; border: 0; }

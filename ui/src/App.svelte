@@ -14,7 +14,7 @@
   import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
   import { parseKindFilter } from './lib/kind';
   import { POPOUT_CLOSE, POPOUT_CLOSED, POPOUT_MOVED, POPOUT_READY, POPOUT_SHOW, parseMoved } from './lib/popout';
-  import { periodRange } from './lib/periods';
+  import { periodLabel, periodRange } from './lib/periods';
   import { parseRecentDays, recentLabel, recentSince } from './lib/recent';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
@@ -318,7 +318,7 @@
   }
 
   function toggleMap() {
-    if (mode === 'map') { mapResetKey++; return; } // clicking Map again shows the whole map; Close map leaves it
+    if (mode === 'map') { mapResetKey++; return; } // clicking Map again shows the whole map
     mapStart = lastMap;
     mode = 'map';
     tab = 'map';
@@ -421,6 +421,10 @@
         <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
           {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
         </button>
+        {#if periodKey !== null}
+          <span class="filter">Showing only {periodLabel(periodKey)}
+            <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
+        {/if}
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -444,8 +448,7 @@
                           onbounds={setBounds}
                           onpin={focusPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}
-                          onmove={(v) => { lastMap = v; savePref('mapView', v); }}
-                          onclose={leaveMap} />
+                          onmove={(v) => { lastMap = v; savePref('mapView', v); }} />
               </div>
               <div class="mapbottom">
                 {#if total === 0 && !scanning}
@@ -498,6 +501,9 @@
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
   .content { flex: 1; min-height: 0; }
+  .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
+  .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
+  .filter button:hover { background: rgba(47, 111, 237, .2); }
   .page-over { position: absolute; inset: 0; z-index: 5; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }

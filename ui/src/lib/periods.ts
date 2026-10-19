@@ -1,3 +1,5 @@
+import { monthName } from './format';
+
 /** A navigation key (`y:2025`, `m:2025-06`, `d:2025-06-14`) as a time range in unix seconds, UTC: since inclusive, until exclusive. */
 export function periodRange(key: string): { since: number; until: number } | null {
   const m = /^(y|m|d):(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(key);
@@ -16,4 +18,11 @@ export function periodRange(key: string): { since: number; until: number } | nul
     return { since, until: since + 86_400 };
   }
   return null;
+}
+
+/** A period key as people read it: `2026`, `September 2026`, `19 September 2026`; empty if it is not a period key. */
+export function periodLabel(key: string): string {
+  if (periodRange(key) === null) return '';
+  const [, y, m, d] = /^[ymd]:(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(key)!;
+  return [d ? String(Number(d)) : '', m ? monthName(Number(m)) : '', y].filter(Boolean).join(' ');
 }

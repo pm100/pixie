@@ -38,7 +38,7 @@
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>
       <label class="opt"><input type="radio" name="viewer" checked={viewerMode === 'window'} onchange={() => onviewer('window')} /> The full window</label>
-      <label class="opt"><input type="radio" name="viewer" checked={viewerMode === 'popout'} onchange={() => onviewer('popout')} /> A separate window (for a second monitor)</label>
+      <label class="opt"><input type="radio" name="viewer" checked={viewerMode === 'popout'} onchange={() => onviewer('popout')} /> A separate window</label>
     {:else if page === 'browsing'}
       <h2>Browsing</h2>
       <p>The "recent" shortcut at the top of the date list shows items from the last
