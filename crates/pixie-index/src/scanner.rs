@@ -49,6 +49,8 @@ pub struct ScanProgress {
     pub seen: usize,
     /// New or changed files whose metadata has been stored so far.
     pub indexed: usize,
+    /// How many files will be read in all: 0 while the folder is still being walked, then fixed.
+    pub to_index: usize,
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -74,15 +76,30 @@ fn metadata_workers() -> usize {
     (cpus * 2).clamp(4, 32)
 }
 
-/// Incrementally scan a watched folder. Never touches originals.
+/// How much of a folder a scan reads again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanMode {
+    /// Only new files and files whose size or modified time changed.
+    Quick,
+    /// Every file, whether or not it looks changed. Items keep their ids.
+    Full,
+}
+
+/// A quick scan of a watched folder: see [`scan_folder_with`].
+pub fn scan_folder(db: &Db, folder_id: FolderId, cancel: &AtomicBool, on_progress: impl FnMut(&ScanProgress)) -> Result<ScanStats> {
+    scan_folder_with(db, folder_id, ScanMode::Quick, cancel, on_progress)
+}
+
+/// Scan a watched folder. Never touches originals.
 /// If the root is unreachable, returns `NotFound` and changes nothing.
 ///
 /// Phase 1 walks the folder and works out which files are new or changed (cheap,
 /// sequential). Phase 2 reads metadata for those files on many threads and writes
 /// the results to the database as they arrive.
-pub fn scan_folder(
+pub fn scan_folder_with(
     db: &Db,
     folder_id: FolderId,
+    mode: ScanMode,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(&ScanProgress),
 ) -> Result<ScanStats> {
@@ -125,15 +142,17 @@ pub fn scan_folder(
         let (size, mtime) = (md.len() as i64, mtime_ms(&md));
 
         match db.find_photo_stat(&path)? {
-            Some(s) if s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
+            Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
             existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some(), kind }),
         }
         if seen.len() % 100 == 0 {
-            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0 });
+            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0 });
         }
     }
 
     // Phase 2: read metadata in parallel, store results as they arrive.
+    // Say how much there is to read, so the UI can show real progress instead of the finished walk's count.
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len() });
     let next = AtomicUsize::new(0);
     let (todo_ref, next_ref) = (&todo, &next);
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PhotoMeta)>();
@@ -170,7 +189,7 @@ pub fn scan_folder(
             if c.is_update { stats.updated += 1 } else { stats.added += 1 }
             indexed += 1;
             if indexed % 50 == 0 {
-                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed });
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len() });
             }
         }
     });
@@ -190,7 +209,7 @@ pub fn scan_folder(
     if stats.walk_errors == 0 {
         stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
     }
-    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed });
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo.len() });
     Ok(stats)
 }
 
@@ -276,6 +295,47 @@ mod tests {
         scan(&db, f);
         let p = &db.list_photos(0, 10).unwrap()[0];
         assert_eq!(p.meta.taken_at, Some(1_577_934_245));
+    }
+
+    #[test]
+    fn progress_reports_how_many_files_will_be_read_and_how_many_are_done() {
+        let (dir, db, f) = setup();
+        for i in 0..120 {
+            fs::write(dir.path().join(format!("p{i:03}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let mut events = Vec::new();
+        scan_folder(&db, f, &AtomicBool::new(false), |p| events.push(p.clone())).unwrap();
+        // While walking nothing is known yet; once reading starts the total is announced before any file is done.
+        let first_reading = events.iter().position(|p| p.to_index > 0).expect("a reading-phase event");
+        assert_eq!(events[first_reading].to_index, 120);
+        assert_eq!(events[first_reading].indexed, 0);
+        assert!(events[..first_reading].iter().all(|p| p.to_index == 0));
+        // Later events keep the total and count up.
+        assert!(events[first_reading..].iter().all(|p| p.to_index == 120));
+        assert!(events.iter().any(|p| p.indexed == 100)); // reported every 50 files
+        assert_eq!(events.last().unwrap().indexed, 120); // and once more when the scan ends
+        assert!(events.windows(2).all(|w| w[0].indexed <= w[1].indexed));
+    }
+
+    #[test]
+    fn a_full_scan_rereads_files_whose_size_and_mtime_are_unchanged() {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join("a.jpg"), jpeg_with_exif(20, 10, 1, Some("2020:01:02 03:04:05"))).unwrap();
+        scan(&db, f);
+        // Make the stored date stale without touching size or mtime (what a changed rule or a bad first read leaves).
+        let p = db.list_photos(0, 10).unwrap().remove(0);
+        let stale = pixie_core::PhotoMeta { taken_at: Some(5), ..p.meta.clone() };
+        db.upsert_photo(f, &p.path, p.size, p.mtime, &stale).unwrap();
+
+        let quick = scan(&db, f);
+        assert_eq!((quick.unchanged, quick.updated), (1, 0));
+        assert_eq!(db.list_photos(0, 10).unwrap()[0].meta.taken_at, Some(5)); // the quick scan trusts size and mtime
+
+        let full = scan_folder_with(&db, f, ScanMode::Full, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((full.unchanged, full.updated, full.added), (0, 1, 0));
+        let p = &db.list_photos(0, 10).unwrap()[0];
+        assert_eq!(p.meta.taken_at, Some(1_577_934_245));
+        assert_eq!(db.count_photos().unwrap(), 1); // same row, not a second one
     }
 
     #[test]

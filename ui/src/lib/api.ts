@@ -31,7 +31,8 @@ export const listFolders = () => invoke<Folder[]>('list_folders');
 export const listFolderInfo = () => invoke<FolderInfo[]>('list_folder_info');
 export const removeFolder = (id: number) => invoke<void>('remove_folder', { id });
 export const addFolder = (path: string) => invoke<number>('add_folder', { path });
-export const startScan = (folderId: number | null) => invoke<void>('start_scan', { folderId });
+/** `full` re-reads every file of the folder instead of only new and changed ones. */
+export const startScan = (folderId: number | null, full = false) => invoke<void>('start_scan', { folderId, full });
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
   offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,

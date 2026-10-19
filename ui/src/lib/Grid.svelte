@@ -125,7 +125,7 @@
       {#if row.kind === 'heading'}
         <div class="head" style:top="{row.top}px" style:height="{row.h}px">
           <strong>{formatDay(groups[row.group].day)}</strong>
-          <span>{groups[row.group].count} {unit(groups[row.group].count)}</span>
+          <span>{groups[row.group].count.toLocaleString()} {unit(groups[row.group].count)}</span>
         </div>
       {:else}
         {#each { length: row.n } as _, k (row.first + k)}

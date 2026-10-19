@@ -7,12 +7,13 @@
   import { onMount } from 'svelte';
   import type { FolderInfo } from './api';
   import PhotoFolders from './PhotoFolders.svelte';
+  import type { ScanState } from './scanProgress';
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays }: {
-    folders: FolderInfo[]; scanning: boolean; onadd: () => void; onremove: (id: number) => Promise<void>;
-    onrescan: (id: number) => void; onemail: () => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays }: {
+    folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
+    onrescan: (id: number, full: boolean) => void; onemail: () => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
   } = $props();
@@ -33,7 +34,7 @@
   </nav>
   <div class="page">
     {#if page === 'folders'}
-      <PhotoFolders {folders} {scanning} {onadd} {onremove} {onrescan} />
+      <PhotoFolders {folders} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {onrescan} />
     {:else if page === 'viewing'}
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>

@@ -30,7 +30,7 @@
 
 <div class="details">
   {#if count > 1}
-    <p class="hint"><strong>{count}</strong> photos selected</p>
+    <p class="hint"><strong>{count.toLocaleString()}</strong> photos selected</p>
   {:else if photo}
     <h3 title={photo.path}>{basename(photo.path)}</h3>
     <dl>

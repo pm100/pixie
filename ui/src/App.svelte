@@ -18,6 +18,7 @@
   import { parseRecentDays, recentLabel, recentSince } from './lib/recent';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
+  import { scanText } from './lib/scanProgress';
   import { click, emptySelection, single } from './lib/selection';
   import SelectionBar from './lib/SelectionBar.svelte';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
@@ -56,6 +57,8 @@
   let scrollTo = $state<{ group: number; n: number } | null>(null);
   let jumps = 0;
   let scanning = $state(false), seen = $state(0), message = $state('');
+  let scanFolder = $state<number | null>(null); // the folder the running scan is on (null: none yet)
+  let indexed = $state(0), toIndex = $state(0); // files read so far, and how many will be read (0 while walking)
   let openIndex = $state<number | null>(null);
 
   // The separate viewer window: it keeps the snapshot it was sent, and follows the selection when asked to.
@@ -326,11 +329,11 @@
   }
 
   /** Start a scan of one folder (or all, with null) and show progress. */
-  async function runScan(id: number | null) {
+  async function runScan(id: number | null, full = false) {
     message = '';
-    scanning = true; seen = 0; // before the call, so a fast scan-done cannot be overwritten
+    scanning = true; seen = 0; indexed = 0; toIndex = 0; scanFolder = id; // before the call, so a fast scan-done cannot be overwritten
     try {
-      await startScan(id);
+      await startScan(id, full);
     } catch (e) {
       message = String(e);
       if (!/already running/.test(message)) scanning = false; // busy => the other scan is still going
@@ -379,9 +382,13 @@
     });
     const subs = [
       // During a scan only the count is refreshed; the grid resets on scan-done.
-      listen<{ seen: number }>('scan-progress', (e) => { seen = e.payload.seen; refreshLive(); }),
+      listen<{ seen: number; indexed: number; to_index: number; folder_id: number }>('scan-progress', (e) => {
+        seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
+        refreshLive();
+      }),
       listen('scan-done', () => {
         scanning = false;
+        scanFolder = null;
         loadFolderInfos();
         if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
         else refresh().catch((e) => (message = String(e)));
@@ -408,12 +415,7 @@
 <main>
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
-      {#if scanning}
-        <span>Scanning… {seen} files</span>
-        <button onclick={() => cancelScan()}>Stop</button>
-      {:else}
-        <span>{total} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
-      {/if}
+      <span>{total.toLocaleString()} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
     <div class="browse" inert={tab === 'settings'}>
@@ -437,7 +439,7 @@
         {#snippet left()}
           <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
-               scanLine={scanning ? `Scanning… ${seen.toLocaleString()} found` : null}
+               scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
         {#snippet center()}
@@ -480,8 +482,8 @@
     </div>
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings folders={folderInfos} {scanning} onadd={chooseFolder} onremove={removeFolderAndRefresh}
-                  onrescan={(id) => runScan(id)} onemail={() => (settingsOpen = true)}
+        <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+                  onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays} />
       </div>
     {/if}

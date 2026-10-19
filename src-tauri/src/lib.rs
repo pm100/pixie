@@ -9,7 +9,7 @@ use pixie_image::posters::{poster_path, save_poster as write_poster, validate_po
 use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
-use pixie_index::{scan_folder, Db};
+use pixie_index::{scan_folder_with, Db, ScanMode};
 use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
 use serde::{Deserialize, Serialize};
 use state::AppState;
@@ -148,7 +148,8 @@ struct ScanErrorEvent {
 }
 
 #[tauri::command]
-fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: Option<i64>) -> Result<(), PixieError> {
+/// `full` re-reads every file of the chosen folder(s); otherwise only new and changed files.
+fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: Option<i64>, full: Option<bool>) -> Result<(), PixieError> {
     // Only one scan job at a time; a second request is refused, not queued.
     let guard = state
         .gate
@@ -157,6 +158,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
     let db = state.db.clone();
     let thumbs = state.thumbs.clone();
     let cancel = state.cancel_scan.clone();
+    let mode = if full.unwrap_or(false) { ScanMode::Full } else { ScanMode::Quick };
     cancel.store(false, Ordering::Relaxed);
     let ids: Vec<i64> = match folder_id {
         Some(id) => vec![id],
@@ -170,7 +172,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
                 break;
             }
             let progress_app = app.clone();
-            match scan_folder(&db, id, &cancel, |p| {
+            match scan_folder_with(&db, id, mode, &cancel, |p| {
                 let _ = progress_app.emit("scan-progress", p);
             }) {
                 Ok(_) => scanned += 1,
