@@ -2,7 +2,7 @@ use crate::embedder::Embedder;
 use crate::vectors::dot;
 
 /// Bump when `VOCAB` or the selection rules change: every analysed photo is re-tagged from its stored vector.
-pub const TAGS_VERSION: &str = "tags-3";
+pub const TAGS_VERSION: &str = "tags-4";
 
 /// CLIP's own logit scale, so the softmax below means what the model was trained to mean.
 const TEMPERATURE: f32 = 100.0;
@@ -23,8 +23,6 @@ pub const CATEGORIES: &[(&str, &[&str])] = &[
     ("Sky and weather", &["sunset", "sunrise", "night", "rain", "fog", "clouds", "rainbow", "sky", "moon", "stars", "lightning", "storm"]),
     ("Animals", &["dog", "cat", "horse", "cow", "sheep", "bird", "fish", "butterfly", "insect", "duck", "deer", "monkey", "elephant", "lion", "rabbit", "chicken", "zoo animals", "pig", "goat", "owl", "snake", "turtle", "squirrel", "bear", "giraffe", "penguin", "dolphin", "whale"]),
     ("Plants", &["flowers", "trees", "autumn leaves", "grass", "palm tree", "cactus", "mushroom", "crops"]),
-    ("Attire", &["hat", "sunglasses", "glasses", "dress", "uniform", "jacket", "helmet", "suit", "costume", "scarf", "backpack", "swimsuit", "boots", "mask"]),
-    ("Occupations", &["soldier", "nurse", "doctor", "cowboy", "police officer", "firefighter", "chef", "farmer", "pilot", "priest", "teacher", "sailor"]),
     ("Vehicles", &["car", "truck", "bus", "bicycle", "motorbike", "boat", "ship", "plane", "train", "tractor", "helicopter", "caravan", "tram", "ferry", "taxi", "ambulance", "fire engine"]),
     ("Food and drink", &["food", "cake", "pizza", "coffee", "drinks", "fruit", "vegetables", "ice cream", "bread", "breakfast", "wine"]),
     ("Art", &["painting", "statue", "mural", "graffiti", "stained glass", "mosaic", "fountain", "monument", "drawing"]),
@@ -33,22 +31,19 @@ pub const CATEGORIES: &[(&str, &[&str])] = &[
     ("Photo style", &["close-up", "aerial view", "panorama", "black and white photo", "blurry photo"]),
 ];
 
-/// Where a tag that no longer has a category (from an older vocabulary) is listed.
-pub const OTHER_CATEGORY: &str = "Other";
-
 /// Every label, in category order.
 pub fn vocab() -> Vec<&'static str> {
     CATEGORIES.iter().flat_map(|(_, labels)| labels.iter().copied()).collect()
 }
 
-/// The category of a label and its position in the tree (`OTHER_CATEGORY`, last, for an unknown one).
-pub fn category_of(label: &str) -> (&'static str, usize) {
+/// The category of a label and its position in the tree; `None` for a label not in the vocabulary (a leftover from an
+/// older one), which the tree does not list.
+pub fn category_of(label: &str) -> Option<(&'static str, usize)> {
     CATEGORIES
         .iter()
         .enumerate()
         .find(|(_, (_, labels))| labels.contains(&label))
         .map(|(i, (name, _))| (*name, i))
-        .unwrap_or((OTHER_CATEGORY, CATEGORIES.len()))
 }
 
 /// Things photos often show that are not in `VOCAB`. They compete in the softmax but are never shown as tags:
@@ -227,7 +222,7 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), vocab.len(), "duplicate labels (a label belongs to one category)");
-        for l in ["beach", "forest", "hat", "people", "painting", "statue"] {
+        for l in ["beach", "forest", "people", "painting", "statue"] {
             assert!(vocab.contains(&l), "{l}");
         }
         assert!(vocab.iter().all(|l| l == &l.trim() && !l.is_empty() && *l == l.to_lowercase()));
@@ -235,11 +230,11 @@ mod tests {
     }
 
     #[test]
-    fn labels_know_their_category_and_unknown_ones_go_last() {
-        assert_eq!(category_of("forest"), ("Settings", 3));
-        assert_eq!(category_of("museum").0, "Places");
-        assert_eq!(category_of("painting").0, "Art");
-        assert_eq!(category_of("soldier").0, "Occupations");
-        assert_eq!(category_of("not a label"), (OTHER_CATEGORY, CATEGORIES.len()));
+    fn labels_know_their_category_and_unknown_ones_have_none() {
+        assert_eq!(category_of("forest"), Some(("Settings", 3)));
+        assert_eq!(category_of("museum").map(|c| c.0), Some("Places"));
+        assert_eq!(category_of("painting").map(|c| c.0), Some("Art"));
+        assert_eq!(category_of("fountain").map(|c| c.0), Some("Art"));
+        assert_eq!(category_of("not a label"), None);
     }
 }

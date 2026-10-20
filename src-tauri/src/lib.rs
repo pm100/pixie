@@ -330,13 +330,13 @@ struct TagCount {
     category_photos: i64,
 }
 
-/// Every tag in use with its photo count and category. Categories come biggest first (by photos, "Other" last),
-/// and the tags inside one most common first.
+/// Every tag in use with its photo count and category. Categories come biggest first (by photos), and the tags inside
+/// one most common first. A tag the vocabulary no longer has is not listed.
 #[tauri::command]
 fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagCount>, PixieError> {
     let mut rows: Vec<(usize, TagCount)> = Vec::new();
     for (tag, count) in state.db.tag_counts()? {
-        let (category, order) = pixie_analysis::tags::category_of(&tag);
+        let Some((category, order)) = pixie_analysis::tags::category_of(&tag) else { continue };
         rows.push((order, TagCount { tag, count, category: category.to_string(), category_photos: 0 }));
     }
     let mut photos: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
@@ -350,10 +350,9 @@ fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagCount>, PixieError>
     for (order, t) in &mut rows {
         t.category_photos = photos[order];
     }
-    let other = pixie_analysis::tags::CATEGORIES.len();
     rows.sort_by(|a, b| {
-        (a.0 == other).cmp(&(b.0 == other)) // "Other" last
-            .then(b.1.category_photos.cmp(&a.1.category_photos))
+        b.1.category_photos
+            .cmp(&a.1.category_photos)
             .then(a.0.cmp(&b.0))
             .then(b.1.count.cmp(&a.1.count))
             .then(a.1.tag.cmp(&b.1.tag))
