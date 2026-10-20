@@ -125,6 +125,8 @@ export const mergePeople = (from: number, into: number) => invoke<void>('merge_p
 /** "Not this person": the face leaves its person and is not grouped automatically again. */
 export const rejectFace = (faceId: number) => invoke<void>('reject_face', { faceId });
 /** Show only photos with this person (null: off). List with `View.search`, like a text search. */
+/** The tag and person the listings are really restricted to. */
+export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 
 // ---- the Faces tab ----

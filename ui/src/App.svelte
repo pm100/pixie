@@ -5,7 +5,7 @@
   import {
     addFolder, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, searchPhotos, setTagFilter, startScan,
-    listPeople, peopleStatus, setPersonFilter,
+    listPeople, peopleStatus, setPersonFilter, activeFilters,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import { searchNote, type AnalysisStatus } from './lib/analysis';
@@ -176,9 +176,21 @@
     if (Date.now() - tagsAt > 4000) loadTags();
   }
 
+  /** Take the tag and person from the backend, which is what the listings really use: a chip can never be missing
+   *  for a filter that is on (or shown for one that is off), however calls overlapped. True when something changed. */
+  async function syncFilters(): Promise<boolean> {
+    try {
+      const f = await activeFilters();
+      const changed = f.tag !== activeTag || f.person !== activePerson;
+      activeTag = f.tag;
+      activePerson = f.person;
+      return changed;
+    } catch { return false; }
+  }
+
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
-    activeTag = next;
+    await syncFilters();
     closePopout();
     view = { ...view, search: searchActive(searchTerm, next, activePerson) };
     selection = emptySelection;
@@ -205,6 +217,10 @@
     try { list = await listPeople(); } catch { return; /* the list just stays as it was */ }
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
+    if (await syncFilters()) { // a filter was on that the screen did not show: show it now
+      view = { ...view, search: searchActive(searchTerm, activeTag, activePerson) };
+      refresh(true).catch((e) => (message = String(e)));
+    }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
   }
   /** People appear as the scan proceeds; refresh the list now and then, not on every progress event. */
@@ -214,12 +230,18 @@
 
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
-    activePerson = next;
+    await syncFilters();
     closePopout();
     view = { ...view, search: searchActive(searchTerm, activeTag, next) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
+  }
+
+  /** The People tab changed someone: refresh the list, and re-take the photos of a chosen person (they may have changed). */
+  async function peopleTabChanged() {
+    await loadPeople();
+    if (activePerson !== null) await setPerson(activePerson);
   }
 
   /** A face was marked "not this person": the lists and, if a person is chosen, the filter must follow. */
@@ -330,6 +352,27 @@
     if (on === (view.since !== null && periodKey === null)) return; // already in that state
     periodKey = null; // Recent and a chosen period are both a date range: one replaces the other
     view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
+  const filtered = $derived(searchTerm !== null || activeTag !== null || activePerson !== null || periodKey !== null || view.since !== null);
+
+  /** "Show all": drop the text search, tag, person and date range in one go. */
+  async function showAll() {
+    latestSearch.next(); // a search still in flight must not bring the results back
+    searching = false;
+    searchText = '';
+    searchTerm = null;
+    closePopout();
+    try {
+      await Promise.all([searchPhotos(''), setTagFilter(null), setPersonFilter(null)]);
+    } catch (e) { message = String(e); }
+    await syncFilters();
+    periodKey = null;
+    view = { ...view, search: searchActive(null, activeTag, activePerson), since: null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -576,6 +619,7 @@
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
         {/if}
+        {#if filtered}<button class="showall" onclick={showAll} title="Clear the search, tag, person and dates">Show all</button>{/if}
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -633,7 +677,7 @@
     </div>
     {#if peopleTabBuilt}
       <div class="page-over" hidden={tab !== 'faces'}>
-        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={loadPeople} />
+        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={peopleTabChanged} />
       </div>
     {/if}
     {#if tab === 'settings'}
@@ -665,6 +709,7 @@
   .note { font-size: 12px; color: #666; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
+  .showall { font: inherit; font-size: 13px; }
   .filter button:hover { background: rgba(47, 111, 237, .2); }
   .page-over { position: absolute; inset: 0; z-index: 5; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }

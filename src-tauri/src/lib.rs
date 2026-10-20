@@ -301,6 +301,19 @@ fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieErro
     state.db.unhide_person(id)
 }
 
+/// The tag and the person the listings are really restricted to, so the chips can never disagree with them.
+#[derive(Serialize)]
+struct ActiveFilters {
+    tag: Option<String>,
+    person: Option<i64>,
+}
+
+#[tauri::command]
+fn active_filters(state: tauri::State<AppState>) -> Result<ActiveFilters, PixieError> {
+    let (tag, person) = state.db.active_filters()?;
+    Ok(ActiveFilters { tag, person })
+}
+
 /// Show only photos with this person (null turns it off). List with the `search` flag, like a text search.
 #[tauri::command]
 fn set_person_filter(state: tauri::State<AppState>, person: Option<i64>) -> Result<(), PixieError> {
@@ -860,7 +873,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])

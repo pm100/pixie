@@ -136,7 +136,10 @@
   const close = () => (viewing = null);
   function step(by: number) {
     if (viewing === null || tiles.length === 0) return;
-    viewing = (viewing + by + tiles.length) % tiles.length;
+    const to = viewing + by;
+    if (to < 0 || to >= tiles.length) return; // like the photo viewer: no wrapping round
+    (document.activeElement as HTMLElement | null)?.blur();
+    viewing = to;
   }
   function onkeydown(e: KeyboardEvent) {
     if (viewing === null) return;
@@ -299,13 +302,14 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="lightbox" onclick={(e) => { if (e.target === e.currentTarget) close(); }} role="dialog" tabindex="-1" aria-modal="true" aria-label="The whole photo">
     <div class="lb-bar">
-      <button onclick={() => step(-1)} aria-label="Previous face" title="Previous (←)">←</button>
-      <span>{(viewing ?? 0) + 1} of {tiles.length}{current ? ` · ${personLabel(current)}` : ''}</span>
-      <button onclick={() => step(1)} aria-label="Next face" title="Next (→)">→</button>
+      {#if current}<span>{personLabel(current)}</span>{/if}
       <span class="sp"></span>
       <div class="lb-actions">{@render actions(viewed)}</div>
-      <button onclick={close} aria-label="Close" title="Close (Esc)">✕</button>
+      <button class="lb-close" onclick={close} aria-label="Close">✕</button>
     </div>
+    {#if (viewing ?? 0) > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
+    {#if (viewing ?? 0) < tiles.length - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M9 4l8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
+    <div class="count"><b>{((viewing ?? 0) + 1).toLocaleString()} / {tiles.length.toLocaleString()}</b><span><button class="kbd" onclick={() => step(-1)} disabled={(viewing ?? 0) <= 0} aria-label="Previous" title="Previous"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13 8H3M7.5 3.5 3 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="kbd" onclick={() => step(1)} disabled={(viewing ?? 0) >= tiles.length - 1} aria-label="Next" title="Next"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button> browse</span><span><button class="kbd" onclick={close} title="Close">Esc</button> close</span></div>
     <div class="lb-stage">
       <div class="lb-frame">
         {#key viewed.photo_id}
@@ -352,7 +356,16 @@
   .lb-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: rgba(0, 0, 0, .35); font-size: 13px; }
   .lb-bar .sp { flex: 1; }
   .lb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .lb-actions input, .lb-actions select { background: #fff; }
+  .lb-actions input, .lb-actions select, .lb-actions option { background: #fff; color: #111; }
+  .lb-close { background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
+  .step { position: absolute; z-index: 1; top: 50%; transform: translateY(-50%); width: 48px; height: 72px; border: 0; border-radius: 8px; background: rgba(0, 0, 0, .35); color: #fff; display: grid; place-items: center; padding: 0; cursor: pointer; opacity: .55; }
+  .step:hover, .step:focus-visible { opacity: 1; background: rgba(0, 0, 0, .6); }
+  .step.prev { left: 12px; } .step.next { right: 12px; }
+  .count { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 10px; display: flex; gap: 16px; align-items: center; padding: 6px 16px; border-radius: 16px; background: rgba(0, 0, 0, .75); color: #fff; font-size: 14px; white-space: nowrap; }
+  .count b { font-weight: 600; }
+  .kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 22px; padding: 0 6px; margin-right: 3px; border: 1px solid #aaa; border-radius: 4px; background: #333; color: #fff; font: inherit; font-size: 13px; line-height: 1; cursor: pointer; }
+  .kbd:hover:not(:disabled) { background: #555; border-color: #fff; }
+  .kbd:disabled { opacity: .35; cursor: default; }
   .lb-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; }
   /* The frame shrink-wraps the picture, so the box's percentages are percentages of the photo itself. */
   .lb-frame { position: relative; display: inline-block; line-height: 0; }

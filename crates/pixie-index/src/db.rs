@@ -387,7 +387,7 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS text_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS tag_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS person_hits (photo_id INTEGER PRIMARY KEY);
-             CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY);",
+             CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
         )
         .map_err(db_err)?;
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
@@ -777,6 +777,15 @@ impl Db {
         Ok(())
     }
 
+    /// The tag and the person the listings are really restricted to (the UI draws its chips from these).
+    pub fn active_filters(&self) -> Result<(Option<String>, Option<i64>)> {
+        let c = self.conn();
+        let value = |name: &str| -> Result<Option<String>> {
+            c.query_row("SELECT value FROM filter_state WHERE name = ?1", params![name], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err).map(Option::flatten)
+        };
+        Ok((value("tag")?, value("person")?.and_then(|v| v.parse().ok())))
+    }
+
     /// Show only photos with this tag; `None` turns the tag filter off.
     pub fn set_tag_filter(&self, tag: Option<&str>) -> Result<()> {
         let mut c = self.conn();
@@ -785,7 +794,7 @@ impl Db {
         match tag {
             Some(t) => {
                 tx.execute("INSERT INTO tag_hits(photo_id) SELECT photo_id FROM photo_tags WHERE tag = ?1", params![t]).map_err(db_err)?;
-                tx.execute("INSERT OR IGNORE INTO filter_state(name) VALUES ('tag')", []).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('tag', ?1)", params![t]).map_err(db_err)?;
             }
             None => {
                 tx.execute("DELETE FROM filter_state WHERE name = 'tag'", []).map_err(db_err)?;
@@ -1138,7 +1147,7 @@ impl Db {
         match person {
             Some(p) => {
                 tx.execute("INSERT INTO person_hits(photo_id) SELECT DISTINCT photo_id FROM faces WHERE person_id = ?1", params![p]).map_err(db_err)?;
-                tx.execute("INSERT OR IGNORE INTO filter_state(name) VALUES ('person')", []).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('person', ?1)", params![p.to_string()]).map_err(db_err)?;
             }
             None => {
                 tx.execute("DELETE FROM filter_state WHERE name = 'person'", []).map_err(db_err)?;
@@ -2224,6 +2233,19 @@ mod tests {
         db.set_person_filter(Some(p)).unwrap();
         db.set_tag_filter(Some("nothing")).unwrap();
         assert!(hits(&db).is_empty());
+    }
+
+    #[test]
+    fn the_active_tag_and_person_can_be_read_back() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, None));
+        db.set_tag_filter(Some("museum")).unwrap();
+        db.set_person_filter(Some(7)).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (Some("museum".to_string()), Some(7)));
+        db.set_tag_filter(None).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, Some(7)));
+        db.set_person_filter(None).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, None));
     }
 
     #[test]
