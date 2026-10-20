@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-18-content-analysis-design.md`
 
-**Scope note:** The spec's Stage 3 (faces / People) is a separate plan, written after this one lands, because it adds a second model family, clustering and its own UI. Rulings against the spec, taken here: (1) the pending queue is derived by query (photos without an embedding for the current `model_version`), not a `jobs` table: fewer moving parts, restart-safe by construction. (2) Search results display in date order within the existing filters, capped at the top 500 matches above a similarity floor; relevance ordering is a later refinement.
+**Scope note:** The spec's Stage 3 (faces / People) is a separate plan (`2026-10-19-people.md`), written after this one landed, because it adds a second model family, clustering and its own UI. Rulings against the spec, taken here: (1) the pending queue is derived by query (photos without an embedding for the current `model_version`), not a `jobs` table: fewer moving parts, restart-safe by construction. (2) Search results display in date order within the existing filters, capped at the top 500 matches above a similarity floor; relevance ordering is a later refinement.
 
 ## Global Constraints
 

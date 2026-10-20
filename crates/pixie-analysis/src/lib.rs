@@ -1,9 +1,16 @@
+pub mod align;
 pub mod clip;
+pub mod cluster;
 pub mod clip_pre;
 pub mod embedder;
+pub mod face_worker;
+pub mod faces;
 pub mod models;
+pub mod people;
+pub mod people_service;
 pub mod search;
 pub mod tags;
 pub mod service;
 pub mod worker;
 pub mod vectors;
+pub mod yunet;

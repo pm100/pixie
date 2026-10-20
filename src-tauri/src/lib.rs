@@ -164,6 +164,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
     let thumbs = state.thumbs.clone();
     let cancel = state.cancel_scan.clone();
     let analysis = state.analysis.clone();
+    let people = state.people.clone();
     let mode = if full.unwrap_or(false) { ScanMode::Full } else { ScanMode::Quick };
     cancel.store(false, Ordering::Relaxed);
     let ids: Vec<i64> = match folder_id {
@@ -189,6 +190,7 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
         }
         let _ = app.emit("scan-done", ScanDone { folders: scanned });
         analysis.kick(); // new photos to analyse; the worker waits while this scan job (and its thumbnails) runs
+        people.kick();
         prefetch_all(&db, &thumbs); // build thumbnails for anything new, in the background
     });
     Ok(())
@@ -202,6 +204,107 @@ fn analysis_status(state: tauri::State<AppState>) -> pixie_analysis::service::An
 #[tauri::command]
 fn analysis_set_paused(state: tauri::State<AppState>, paused: bool) {
     state.analysis.set_paused(paused);
+    state.people.set_paused(paused);
+}
+
+#[tauri::command]
+fn people_status(state: tauri::State<AppState>) -> pixie_analysis::people_service::PeopleStatus {
+    state.people.status()
+}
+
+/// The people to list in the nav (see `Db::list_people`).
+#[tauri::command]
+fn list_people(state: tauri::State<AppState>) -> Result<Vec<pixie_core::PersonInfo>, PixieError> {
+    state.db.list_people()
+}
+
+/// The faces in one photo.
+#[tauri::command]
+fn faces_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<pixie_core::FaceInfo>, PixieError> {
+    state.db.faces_of(photo_id)
+}
+
+/// Name a person; an empty name clears it.
+#[tauri::command]
+fn rename_person(state: tauri::State<AppState>, id: i64, name: Option<String>) -> Result<(), PixieError> {
+    state.db.rename_person(id, name.as_deref())
+}
+
+#[tauri::command]
+fn hide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.hide_person(id)
+}
+
+#[tauri::command]
+fn merge_people(state: tauri::State<AppState>, from: i64, into: i64) -> Result<(), PixieError> {
+    state.db.merge_people(from, into)
+}
+
+/// After "not this person" the faces are guessed again at once (never as a person they were rejected from).
+fn guess_again(db: &Db) {
+    if let Err(e) = pixie_analysis::people::assign_new_faces(db, pixie_analysis::cluster::JOIN_THRESHOLD) {
+        eprintln!("[people] cannot guess again: {e}");
+    }
+}
+
+/// "Not this person".
+#[tauri::command]
+fn reject_face(state: tauri::State<AppState>, face_id: i64) -> Result<(), PixieError> {
+    state.db.reject_face(face_id)?;
+    guess_again(&state.db);
+    Ok(())
+}
+
+/// Everyone for the Faces tab (see `Db::list_face_people`).
+#[tauri::command]
+fn list_face_people(state: tauri::State<AppState>, include_hidden: bool) -> Result<Vec<pixie_core::FacePerson>, PixieError> {
+    state.db.list_face_people(include_hidden)
+}
+
+/// One person's faces (at most `limit`, default 60): best first, or the most doubtful first.
+#[tauri::command]
+fn faces_of_person(state: tauri::State<AppState>, person_id: i64, limit: Option<i64>, doubtful_first: Option<bool>) -> Result<Vec<pixie_core::FaceTile>, PixieError> {
+    state.db.faces_of_person(person_id, limit.unwrap_or(60).clamp(1, 5000), doubtful_first.unwrap_or(false))
+}
+
+/// Faces marked "not this person" and not given to anyone since.
+#[tauri::command]
+fn rejected_faces(state: tauri::State<AppState>, limit: Option<i64>) -> Result<Vec<pixie_core::FaceTile>, PixieError> {
+    state.db.rejected_faces(limit.unwrap_or(60).clamp(1, 500))
+}
+
+#[tauri::command]
+fn move_face(state: tauri::State<AppState>, face_id: i64, person_id: i64) -> Result<(), PixieError> {
+    state.db.move_face(face_id, person_id)
+}
+
+#[tauri::command]
+fn move_faces(state: tauri::State<AppState>, face_ids: Vec<i64>, person_id: i64) -> Result<(), PixieError> {
+    state.db.move_faces(&face_ids, person_id)
+}
+
+#[tauri::command]
+fn reject_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<(), PixieError> {
+    state.db.reject_faces(&face_ids)?;
+    guess_again(&state.db);
+    Ok(())
+}
+
+/// Start a new person from a face; returns their id.
+#[tauri::command]
+fn new_person_from_face(state: tauri::State<AppState>, face_id: i64, name: Option<String>) -> Result<i64, PixieError> {
+    state.db.new_person_from_face(face_id, name.as_deref())
+}
+
+#[tauri::command]
+fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.unhide_person(id)
+}
+
+/// Show only photos with this person (null turns it off). List with the `search` flag, like a text search.
+#[tauri::command]
+fn set_person_filter(state: tauri::State<AppState>, person: Option<i64>) -> Result<(), PixieError> {
+    state.db.set_person_filter(person)
 }
 
 #[derive(Serialize)]
@@ -231,6 +334,7 @@ fn set_tag_filter(state: tauri::State<AppState>, tag: Option<String>) -> Result<
 #[tauri::command]
 fn analysis_retry(state: tauri::State<AppState>) {
     state.analysis.retry();
+    state.people.retry();
 }
 
 /// Make `text` the current search (see the `search` flag of the listing commands); returns the match count.
@@ -565,6 +669,47 @@ fn handle_poster(state: &AppState, path: &str, responder: tauri::UriSchemeRespon
     }
 }
 
+/// `/face/{face_id}?s=96|160|320`: a square JPEG of that face, cut from the photo's (upright) viewer thumbnail.
+fn handle_face(state: &AppState, path: &str, query: Option<String>, responder: tauri::UriSchemeResponder) {
+    let size = pixie_analysis::people::face_size(query.as_deref());
+    let Some(id) = path.trim_matches('/').split('/').nth(1).and_then(|s| s.parse::<i64>().ok()) else {
+        return responder.respond(status(StatusCode::NOT_FOUND));
+    };
+    let (photo, face) = match state.db.face_location(id) {
+        Ok(Some(found)) => found,
+        Ok(None) => return responder.respond(status(StatusCode::NOT_FOUND)),
+        Err(_) => return responder.respond(status(StatusCode::INTERNAL_SERVER_ERROR)),
+    };
+    // Everything the picture depends on is in the key, so a kept picture is always the right one.
+    let key = format!("{}-{}-{}-{:.4}-{:.4}-{:.4}-{:.4}-{size}", photo.id, photo.mtime, photo.size, face[0], face[1], face[2], face[3]);
+    let dir = state.faces_dir.clone();
+    if let Ok(bytes) = pixie_analysis::people::cached_face(&dir, &key, || Err(String::new())) {
+        return responder.respond(jpeg_response(bytes)); // made before: no thumbnail needed
+    }
+    state.thumbs.request_with(
+        ThumbClass::Viewer,
+        photo.id,
+        photo.mtime,
+        photo.size,
+        PathBuf::from(&photo.path),
+        Box::new(move |result| {
+            let jpeg = result.map_err(|e| e.to_string()).and_then(|file| {
+                pixie_analysis::people::cached_face(&dir, &key, || {
+                    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+                    pixie_analysis::people::face_jpeg(&bytes, face, size)
+                })
+            });
+            responder.respond(match jpeg {
+                Ok(bytes) => jpeg_response(bytes),
+                Err(e) => {
+                    eprintln!("[face] {id}: {e}");
+                    status(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            });
+        }),
+    );
+}
+
 /// `/{grid|view}/{photo_id}`: answers through `responder` once the thumbnail is
 /// ready. No thread is parked per request; the worker that finishes it replies.
 fn handle_thumb(state: &AppState, path: &str, responder: tauri::UriSchemeResponder) {
@@ -643,6 +788,7 @@ pub fn run() {
                     handle_video(&state, path, range, responder);
                 }
                 Some("poster") => handle_poster(&state, path, responder),
+                Some("face") => handle_face(&state, path, request.uri().query().map(str::to_owned), responder),
                 _ => handle_thumb(&state, path, responder),
             }
         })
@@ -680,22 +826,41 @@ pub fn run() {
                 }),
                 poll: Duration::from_millis(500),
             }));
+            let people_app = app.handle().clone();
+            let people_gate = gate.clone();
+            let people = Arc::new(pixie_analysis::people_service::PeopleService::start(pixie_analysis::people_service::PeopleConfig {
+                db: db.clone(),
+                version: pixie_analysis::faces::FACES_VERSION.to_string(),
+                dir: dir.join("models").join(pixie_analysis::faces::FACES_VERSION),
+                files: pixie_analysis::models::FACE_FILES,
+                downloader: Arc::new(pixie_analysis::models::HttpDownloader),
+                loader: Arc::new(|d| {
+                    pixie_analysis::faces::FaceModels::load(d).map(|e| Arc::new(e) as Arc<dyn pixie_analysis::faces::FaceEngine>)
+                }),
+                scanning: Arc::new(move || people_gate.is_busy()),
+                on_status: Arc::new(move |s| {
+                    let _ = people_app.emit("people-status", s);
+                }),
+                poll: Duration::from_millis(500),
+            }));
             app.manage(AppState {
                 db,
                 thumbs,
                 tiles,
                 places,
                 posters_dir: dir.join("posters"),
+                faces_dir: dir.join("faces"),
                 secrets: Arc::new(OsSecrets),
                 mailer: Arc::new(SmtpMailer),
                 cancel_scan: Arc::new(Default::default()),
                 gate,
                 analysis,
+                people,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, print_page, place_for, save_poster,
+            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])

@@ -13,12 +13,12 @@
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, analysis, onanalysispause, onanalysisretry }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, analysis, people, onanalysispause, onanalysisretry }: {
     folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     onrescan: (id: number, full: boolean) => void; onemail: () => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
-    analysis: AnalysisStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
+    analysis: AnalysisStatus | null; people: AnalysisStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
@@ -49,7 +49,7 @@
         <input class="days" type="number" min="1" max={MAX_RECENT_DAYS} step="1" value={recentDays} aria-label="Days counted as recent"
                onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} /> days.</p>
     {:else if page === 'analysis'}
-      <AnalysisSettings status={analysis} onpause={onanalysispause} onretry={onanalysisretry} />
+      <AnalysisSettings status={analysis} {people} onpause={onanalysispause} onretry={onanalysisretry} />
     {:else if page === 'email'}
       <h2>Email</h2>
       <p>Set up the account Pixie uses to send photos.</p>

@@ -5,11 +5,14 @@
   import {
     addFolder, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, searchPhotos, setTagFilter, startScan,
+    listPeople, peopleStatus, setPersonFilter,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import { searchNote, type AnalysisStatus } from './lib/analysis';
   import { createLatest } from './lib/latest';
   import { searchActive, tagLabel, type TagCount } from './lib/tagNav';
+  import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
+  import FacesTab from './lib/FacesTab.svelte';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
   import MailSettings from './lib/MailSettings.svelte';
@@ -151,7 +154,7 @@
     searching = false;
     searchText = '';
     searchTerm = null;
-    const next = searchActive(null, activeTag); // a chosen tag keeps the view restricted
+    const next = searchActive(null, activeTag, activePerson); // a chosen tag or person keeps the view restricted
     if (!view.search && !next) return;
     closePopout();
     view = { ...view, search: next };
@@ -177,10 +180,59 @@
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     activeTag = next;
     closePopout();
-    view = { ...view, search: searchActive(searchTerm, next) };
+    view = { ...view, search: searchActive(searchTerm, next, activePerson) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
+  }
+
+  // People: faces grouped by who they are, as a filter. It combines with a text search and a tag.
+  let peopleList = $state<PersonInfo[]>([]), activePerson = $state<number | null>(null);
+  let peopleState = $state<PeopleStatus | null>(null);
+  let peopleAt = 0;
+  /** Counts people edits made in Browse, so the People tab knows to reload when it is shown again. */
+  let peopleEdits = $state(0);
+  /** The People tab is built on first use and then kept, so switching back to it is instant. */
+  let peopleTabBuilt = $state(false);
+  $effect(() => { if (tab === 'faces') peopleTabBuilt = true; });
+  const latestPeople = createLatest();
+  const activeInfo = $derived(peopleList.find((p) => p.id === activePerson) ?? null);
+
+  async function loadPeople() {
+    peopleAt = Date.now();
+    const token = latestPeople.next();
+    let list: PersonInfo[];
+    try { list = await listPeople(); } catch { return; /* the list just stays as it was */ }
+    if (!latestPeople.isCurrent(token)) return;
+    peopleList = list;
+    if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
+  }
+  /** People appear as the scan proceeds; refresh the list now and then, not on every progress event. */
+  function loadPeopleSoon() {
+    if (Date.now() - peopleAt > 4000) loadPeople();
+  }
+
+  async function setPerson(next: number | null) {
+    try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
+    activePerson = next;
+    closePopout();
+    view = { ...view, search: searchActive(searchTerm, activeTag, next) };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  /** From the Faces tab: look at this person's photos in Browse. */
+  async function showPerson(id: number) {
+    if (tab !== 'browse') pickTab('browse');
+    await setPerson(id);
+  }
+
+  /** A face was marked "not this person": the lists and, if a person is chosen, the filter must follow. */
+  async function facesChanged() {
+    peopleEdits++;
+    await loadPeople();
+    if (activePerson !== null) await setPerson(activePerson);
   }
 
   let settingsPage = $state<SettingsPage>('folders');
@@ -427,6 +479,7 @@
     await removeFolder(id);
     closePopout(); // its photos may be gone
     loadTags();
+    loadPeople();
     folders = await listFolders();
     await loadFolderInfos();
     closeViewer();
@@ -449,7 +502,9 @@
     refresh().catch((e) => (message = String(e)));
     loadFolderInfos();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
+    peopleStatus().then((s) => (peopleState = s)).catch(() => {});
     loadTags();
+    loadPeople();
     // Re-scan all known folders on launch to pick up changes.
     listFolders().then((fs) => {
       folders = fs;
@@ -459,6 +514,7 @@
     });
     const subs = [
       listen<AnalysisStatus>('analysis-status', (e) => { analysis = e.payload; loadTagsSoon(); }),
+      listen<PeopleStatus>('people-status', (e) => { peopleState = e.payload; loadPeopleSoon(); }),
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number }>('scan-progress', (e) => {
         seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
@@ -466,6 +522,7 @@
       }),
       listen('scan-done', () => {
         loadTags();
+        loadPeople();
         scanning = false;
         scanFolder = null;
         loadFolderInfos();
@@ -497,7 +554,7 @@
       <span>{total.toLocaleString()} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings'}>
+    <div class="browse" inert={tab === 'settings' || tab === 'faces'}>
       <div class="tools">
         <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
           {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
@@ -515,6 +572,10 @@
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
+        {/if}
+        {#if activeInfo !== null}
+          <span class="filter">Person “{personLabel(activeInfo)}”
+            <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
         {/if}
         {#if view.search && analysis && searchNote(analysis)}<span class="note">{searchNote(analysis)}</span>{/if}
         {#if periodKey !== null}
@@ -534,6 +595,7 @@
           <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
                {tags} tag={activeTag} ontag={setTag}
+               people={peopleList} person={activePerson} onperson={setPerson}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
@@ -559,7 +621,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{view.search ? (searchTerm !== null ? `Nothing matches “${searchTerm}”.` : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{view.search ? (searchTerm !== null ? `Nothing matches “${searchTerm}”.` : activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -568,19 +630,24 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} count={selection.picked.size} />
+          <Details photo={selectedPhoto} count={selection.picked.size} people={peopleList} onfaceschange={facesChanged} />
         {/snippet}
       </Shell>
         {/if}
       </div>
       <SelectionBar count={selection.picked.size} onclear={() => (selection = emptySelection)} />
     </div>
+    {#if peopleTabBuilt}
+      <div class="page-over" hidden={tab !== 'faces'}>
+        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={loadPeople} onshow={showPerson} />
+      </div>
+    {/if}
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
-                  {analysis} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
+                  {analysis} people={peopleState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>

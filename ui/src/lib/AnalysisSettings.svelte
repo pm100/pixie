@@ -1,9 +1,14 @@
 <script lang="ts">
   import { analysisFraction, analysisLine, type AnalysisStatus } from './analysis';
+  import { peopleLine } from './people';
 
-  let { status, onpause, onretry }: { status: AnalysisStatus | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
+  let { status, people, onpause, onretry }: { status: AnalysisStatus | null; people: AnalysisStatus | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
   const fraction = $derived(status ? analysisFraction(status) : null);
-  const working = $derived(status !== null && status.models === 'ready' && status.total > 0 && status.done < status.total);
+  const peopleFraction = $derived(people ? analysisFraction(people) : null);
+  const unfinished = (s: AnalysisStatus | null) => s !== null && s.models === 'ready' && s.total > 0 && s.done < s.total;
+  const working = $derived(unfinished(status) || unfinished(people));
+  const paused = $derived((status?.paused ?? false) || (people?.paused ?? false));
+  const failed = $derived(status?.models === 'error' || people?.models === 'error');
 </script>
 
 <h2>Search</h2>
@@ -14,11 +19,17 @@
 {:else}
   <p class:err={status.models === 'error'}>{analysisLine(status)}</p>
   {#if fraction !== null}<progress value={fraction} max="1"></progress>{/if}
+  {#if people}
+    <h3>People</h3>
+    <p>Pixie also looks for faces and groups them into people. The face models are a one-time download too.</p>
+    <p class:err={people.models === 'error'}>{peopleLine(people)}</p>
+    {#if peopleFraction !== null}<progress value={peopleFraction} max="1"></progress>{/if}
+  {/if}
   <div class="row">
-    {#if status.models === 'error'}
+    {#if failed}
       <button onclick={onretry}>Try again</button>
-    {:else if working || status.paused}
-      <button onclick={() => onpause(!status!.paused)}>{status.paused ? 'Resume' : 'Pause'}</button>
+    {:else if working || paused}
+      <button onclick={() => onpause(!paused)}>{paused ? 'Resume' : 'Pause'}</button>
     {/if}
   </div>
 {/if}

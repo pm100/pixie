@@ -1,4 +1,4 @@
-export type TabId = 'browse' | 'map' | 'create' | 'share' | 'settings';
+export type TabId = 'browse' | 'map' | 'faces' | 'create' | 'share' | 'settings';
 export interface TabInfo { id: TabId; label: string }
 
 /** Create and Share are empty until their first feature ships; an empty tab is not shown. */
@@ -6,6 +6,7 @@ export function visibleTabs(features: { create: boolean; share: boolean }): TabI
   const all: (TabInfo & { on: boolean })[] = [
     { id: 'browse', label: 'Browse', on: true },
     { id: 'map', label: 'Map', on: true },
+    { id: 'faces', label: 'People', on: true },
     { id: 'create', label: 'Create', on: features.create },
     { id: 'share', label: 'Share', on: features.share },
     { id: 'settings', label: 'Settings', on: true },

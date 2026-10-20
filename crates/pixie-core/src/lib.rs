@@ -319,3 +319,64 @@ mod tests {
         assert!(!json.contains("UNIQUE"));
     }
 }
+
+/// A person found in the photos, for the nav: `count` is the number of photos they are in, `face_id` the face to
+/// show as their picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonInfo {
+    pub id: i64,
+    pub name: Option<String>,
+    pub count: i64,
+    pub face_id: Option<i64>,
+}
+
+/// A face in one photo. The box is a fraction (0..1) of the upright image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FaceInfo {
+    pub id: i64,
+    pub person_id: Option<i64>,
+    pub person_name: Option<String>,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// A face as the detector reports it, ready to store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewFace {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub score: f32,
+    pub embedding: Vec<f32>,
+}
+
+/// A person for the Faces tab: everyone, including unnamed people seen once and (on request) hidden ones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FacePerson {
+    pub id: i64,
+    pub name: Option<String>,
+    pub hidden: bool,
+    /// Also shown in the nav (not hidden, and named or in two or more photos): only then can Browse filter on them.
+    pub listed: bool,
+    pub photos: i64,
+    pub faces: i64,
+    /// Up to three of their best faces, best first.
+    pub samples: Vec<i64>,
+}
+
+/// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,
+/// as fractions (0..1) of the upright photo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FaceTile {
+    pub id: i64,
+    pub photo_id: i64,
+    pub mtime: i64,
+    pub size: i64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
