@@ -28,6 +28,7 @@ fn assign_with(db: &Db, mut people: Vec<Centroid>, threshold: f32) -> Result<usi
                     absorb(&mut moved, &embedding);
                     db.assign_face(face_id, moved.id, &moved.vector, moved.n).map(|_| people[i] = moved)
                 }
+                None if !skip.is_empty() => db.park_face(face_id), // rejected and nobody else fits: it waits in the rejects
                 None => db.create_person(&embedding).and_then(|id| {
                     db.assign_face(face_id, id, &embedding, 1)?;
                     people.push(Centroid { id, vector: embedding.clone(), n: 1 });
@@ -243,10 +244,9 @@ mod tests {
         db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
         db.replace_faces(ids[1], "v", &[face([0.99, 0.141])]).unwrap();
         db.replace_faces(ids[2], "v", &[face([0.6, 0.8])]).unwrap(); // someone a bit like them
-        assign_new_faces(&db, 0.42).unwrap();
+        assign_new_faces(&db, 0.9).unwrap(); // strict: the third is a person of their own
         let first = db.faces_of(ids[0]).unwrap()[0].person_id.unwrap();
         let other = db.faces_of(ids[2]).unwrap()[0].person_id.unwrap();
-        // the first two were grouped; the third joined them too (it is similar enough) or is its own person
         let face = db.faces_of(ids[0]).unwrap()[0].id;
         db.reject_face(face).unwrap();
         assign_new_faces(&db, 0.42).unwrap();
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_face_nobody_else_matches_becomes_a_person_of_its_own() {
+    fn a_rejected_face_nobody_else_matches_waits_in_the_rejects() {
         let (db, ids) = library(2);
         db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
         db.replace_faces(ids[1], "v", &[face([1.0, 0.0])]).unwrap();
@@ -266,12 +266,12 @@ mod tests {
         let only = db.faces_of(ids[0]).unwrap()[0].person_id.unwrap();
         db.reject_face(db.faces_of(ids[0]).unwrap()[0].id).unwrap();
         assign_new_faces(&db, 0.42).unwrap();
-        let now = db.faces_of(ids[0]).unwrap()[0].person_id;
-        assert!(now.is_some() && now != Some(only));
-        // rejecting it again never sends it back to the first person (the one it was rejected from still exists)
-        db.reject_face(db.faces_of(ids[0]).unwrap()[0].id).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        let third = db.faces_of(ids[0]).unwrap()[0].person_id;
-        assert!(third.is_some() && third != Some(only));
+        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id, None);
+        let parked = db.rejected_faces(10).unwrap();
+        assert_eq!(parked.len(), 1);
+        assert_eq!(assign_new_faces(&db, 0.42).unwrap(), 0, "and is not grouped again");
+        // the user can still say who it is
+        db.move_face(parked[0].id, only).unwrap();
+        assert!(db.rejected_faces(10).unwrap().is_empty());
     }
 }

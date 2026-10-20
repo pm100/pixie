@@ -240,7 +240,7 @@ fn merge_people(state: tauri::State<AppState>, from: i64, into: i64) -> Result<(
     state.db.merge_people(from, into)
 }
 
-/// After "not this person" the faces are guessed again at once (never as a person they were rejected from).
+/// After "not this person" the faces are guessed again at once (never as a person they were rejected from); one nobody else matches waits in the rejects.
 fn guess_again(db: &Db) {
     if let Err(e) = pixie_analysis::people::assign_new_faces(db, pixie_analysis::cluster::JOIN_THRESHOLD) {
         eprintln!("[people] cannot guess again: {e}");

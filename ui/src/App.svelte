@@ -222,12 +222,6 @@
     if (mode === 'map') loadPoints();
   }
 
-  /** From the Faces tab: look at this person's photos in Browse. */
-  async function showPerson(id: number) {
-    if (tab !== 'browse') pickTab('browse');
-    await setPerson(id);
-  }
-
   /** A face was marked "not this person": the lists and, if a person is chosen, the filter must follow. */
   async function facesChanged() {
     peopleEdits++;
@@ -639,7 +633,7 @@
     </div>
     {#if peopleTabBuilt}
       <div class="page-over" hidden={tab !== 'faces'}>
-        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={loadPeople} onshow={showPerson} />
+        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={loadPeople} />
       </div>
     {/if}
     {#if tab === 'settings'}

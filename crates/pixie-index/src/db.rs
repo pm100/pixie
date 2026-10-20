@@ -868,7 +868,7 @@ impl Db {
         Ok(out)
     }
 
-    /// Faces not yet grouped: no person, and not parked by an older version. Oldest first.
+    /// Faces not yet grouped: no person, and not parked in the rejects. Oldest first.
     pub fn unassigned_faces(&self) -> Result<Vec<(i64, Vec<f32>)>> {
         let c = self.conn();
         let mut s = c.prepare("SELECT id, embedding FROM faces WHERE person_id IS NULL AND pinned = 0 ORDER BY id").map_err(db_err)?;
@@ -1037,6 +1037,12 @@ impl Db {
             .map_err(db_err)?;
         let rows = s.query_map(params![limit], row_to_tile).map_err(db_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Park a face nobody matched in the "not this person" rejects, until the user says who it is.
+    pub fn park_face(&self, face_id: i64) -> Result<()> {
+        self.conn().execute("UPDATE faces SET pinned = 1 WHERE id = ?1 AND person_id IS NULL", params![face_id]).map_err(db_err)?;
+        Ok(())
     }
 
     /// Give a face to a person (from another person, or from "not this person").
@@ -2302,7 +2308,9 @@ mod tests {
         assert_eq!(db.faces_of_person(p, 2, false).unwrap().len(), 2);
         assert!(db.rejected_faces(10).unwrap().is_empty());
         db.reject_face(fs[1]).unwrap();
-        assert!(db.rejected_faces(10).unwrap().is_empty(), "a rejected face is guessed again, not parked");
+        db.park_face(fs[1]).unwrap();
+        assert_eq!(db.rejected_faces(10).unwrap().len(), 1);
+        assert!(db.unassigned_faces().unwrap().is_empty(), "a parked face is not grouped again");
         assert_eq!(db.faces_of_person(p, 10, false).unwrap().len(), 2);
     }
 

@@ -1,14 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import {
-    facesOfPerson, hidePerson, listFacePeople, mergePeople, moveFace, moveFaces, newPersonFromFace, rejectedFaces, rejectFace, rejectFaces, renamePerson, unhidePerson,
+    facesOfPerson, hidePerson, listFacePeople, mergePeople, moveFace, newPersonFromFace, rejectedFaces, rejectFace, renamePerson, unhidePerson,
   } from './api';
   import { faceCardLine, peopleLine, personLabel, sameNamePerson, type FacePerson, type FaceTile, type PeopleStatus } from './people';
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import { faceUrl, thumbUrl } from './url';
 
-  let { active, status, edits, onchange, onshow }: {
+  let { active, status, edits, onchange }: {
     /** This tab is the one on screen (it stays built while another tab is shown, so coming back is instant). */
     active: boolean;
     /** How far the face scan has got: shown here, and a change means there is more to see (offered, never forced). */
@@ -17,8 +17,6 @@
     edits: number;
     /** Something was named, merged, hidden or moved here: the rest of the app should refresh its people. */
     onchange: () => void;
-    /** Show this person's photos in Browse. */
-    onshow: (id: number) => void;
   } = $props();
 
   type Selected = { kind: 'person'; id: number } | { kind: 'rejected' } | null;
@@ -46,8 +44,6 @@
    *  like the rest of the person first: that is where the wrongly grouped ones are. */
   let shown = $state(60);
   let doubtful = $state(true);
-  /** Faces ticked for a bulk change. */
-  let picked = $state<Set<number>>(new Set());
   const viewed = $derived(viewing === null ? null : tiles[viewing] ?? null);
   const latest = createLatest();
   const scanning = $derived(status !== null && (status.models !== 'ready' || status.done < status.total));
@@ -78,7 +74,6 @@
       const gone = sel?.kind === 'person' && !list.some((p) => p.id === sel.id); // merged away
       if (gone) selected = null;
       tiles = sel === null || gone ? [] : list2;
-      picked = new Set([...picked].filter((id) => tiles.some((t) => t.id === id))); // only faces still on screen stay ticked
       loaded = true;
       loadedDone = doneThen;
       loadedEdits = editsThen;
@@ -110,12 +105,10 @@
     selected = next;
     tiles = [];
     shown = 60;
-    picked = new Set();
     await load();
   }
-  const setOrder = (d: boolean) => { doubtful = d; picked = new Set(); load(); };
+  const setOrder = (d: boolean) => { doubtful = d; load(); };
   const showMore = () => { shown += 120; load(); };
-  const toggle = (id: number) => { const n = new Set(picked); if (n.has(id)) n.delete(id); else n.add(id); picked = n; };
   const total = $derived(current ? current.faces : rejectedCount);
 
   const saveName = (p: FacePerson) => {
@@ -159,7 +152,8 @@
     if (viewing !== null && viewing >= tiles.length) viewing = tiles.length > 0 ? tiles.length - 1 : null;
   });
   const visible = $derived(onlyUnnamed ? people.filter((p) => p.name === null) : people);
-  const others = (id: number | null) => people.filter((p) => p.id !== id);
+  /** Who a face can be given to: named people only, and not the one it is already in. */
+  const others = (id: number | null) => people.filter((p) => p.name !== null && p.id !== id);
 </script>
 
 <svelte:window {onkeydown} />
@@ -167,20 +161,22 @@
 {#snippet actions(t: FaceTile)}
   {#if current}
     {#if others(current.id).length > 0}
-      <select aria-label="Move to another person" onchange={(e) => { const v = Number(e.currentTarget.value); e.currentTarget.value = ''; if (v) act(() => moveFace(t.id, v)); }}>
-        <option value="">Move to…</option>
+      <select aria-label="This is another person" onchange={(e) => { const v = Number(e.currentTarget.value); e.currentTarget.value = ''; if (v) act(() => moveFace(t.id, v)); }}>
+        <option value="">This is…</option>
         {#each others(current.id) as o (o.id)}<option value={o.id}>{personLabel(o)}</option>{/each}
       </select>
     {/if}
-    <button onclick={() => act(() => rejectFace(t.id))} title="This face is not them">Not this person</button>
+    {#if current.name !== null}
+      <button onclick={() => act(() => rejectFace(t.id))} title="This face is not them">Not this person</button>
+    {/if}
   {:else}
     <form onsubmit={(e) => { e.preventDefault(); saveFaceName(t); }}>
-      <input value={faceDrafts[t.id] ?? ''} oninput={(e) => (faceDrafts[t.id] = e.currentTarget.value)} placeholder="Name as a new person" aria-label="New person's name" />
+      <input value={faceDrafts[t.id] ?? ''} oninput={(e) => (faceDrafts[t.id] = e.currentTarget.value)} placeholder="Name this person" aria-label="Name" />
     </form>
-    {#if people.length > 0}
-      <select aria-label="Move to a person" onchange={(e) => { const v = Number(e.currentTarget.value); e.currentTarget.value = ''; if (v) act(() => moveFace(t.id, v)); }}>
-        <option value="">Move to…</option>
-        {#each people as o (o.id)}<option value={o.id}>{personLabel(o)}</option>{/each}
+    {#if others(null).length > 0}
+      <select aria-label="This is a person" onchange={(e) => { const v = Number(e.currentTarget.value); e.currentTarget.value = ''; if (v) act(() => moveFace(t.id, v)); }}>
+        <option value="">This is…</option>
+        {#each others(null) as o (o.id)}<option value={o.id}>{personLabel(o)}</option>{/each}
       </select>
     {/if}
   {/if}
@@ -191,12 +187,12 @@
   <!-- The header, status and controls stay put; only the pictures below scroll. -->
   <div class="top">
     <header>
-      <h2>People</h2>
       {#if selected !== null}
         <button onclick={() => open(null)}>← All people</button>
       {:else}
         <label class="toggle"><input type="checkbox" bind:checked={onlyUnnamed} /> Only people without a name</label>
         <label class="toggle"><input type="checkbox" bind:checked={showHidden} /> Show hidden people</label>
+        {#if loaded}<span class="count">{onlyUnnamed ? `Showing ${visible.length.toLocaleString()} of ${people.length.toLocaleString()} people` : `${people.length.toLocaleString()} people`}</span>{/if}
       {/if}
       {#if error}<span class="err">{error}</span>{/if}
     </header>
@@ -222,7 +218,7 @@
       {#if people.length === 0 && rejectedCount === 0}
         <p class="hint">No faces yet. Pixie looks for faces in the background once the face models are downloaded: see Settings, Search.</p>
       {:else}
-        <p class="hint">Click a person's faces to see them all. Type a name and press Enter to name them; a name that already exists offers to merge the two.{onlyUnnamed ? ` Showing ${visible.length.toLocaleString()} of ${people.length.toLocaleString()} people.` : ''}</p>
+        <p class="hint">Click a person to see all their pictures and to reject some. If this person has already been named, just type that name.</p>
       {/if}
     {:else if loaded}
       <div class="detail-head">
@@ -233,7 +229,7 @@
           </form>
           <span class="line">{faceCardLine(current)}</span>
         {:else}
-          <strong>Faces without a person</strong>
+          <strong>“Not this person” rejects</strong>
         {/if}
       </div>
       <div class="listbar">
@@ -244,21 +240,7 @@
         {/if}
         <span class="sp"></span>
         <span>Showing {tiles.length.toLocaleString()} of {total.toLocaleString()}</span>
-        <button onclick={() => (picked = new Set(tiles.map((t) => t.id)))}>Tick all shown</button>
       </div>
-      {#if picked.size > 0}
-        <div class="notice bulk" role="status">
-          <strong>{picked.size} ticked</strong>
-          {#if (current ? others(current.id) : people).length > 0}
-            <select aria-label="Move the ticked faces to a person" onchange={(e) => { const v = Number(e.currentTarget.value); e.currentTarget.value = ''; const ids = [...picked]; if (v) act(() => moveFaces(ids, v)); }}>
-              <option value="">Move them to…</option>
-              {#each current ? others(current.id) : people as o (o.id)}<option value={o.id}>{personLabel(o)}</option>{/each}
-            </select>
-          {/if}
-          {#if current}<button onclick={() => { const ids = [...picked]; act(() => rejectFaces(ids)); }} title="None of these is them">Not this person</button>{/if}
-          <button onclick={() => (picked = new Set())}>Clear ticks</button>
-        </div>
-      {/if}
     {/if}
   </div>
 
@@ -267,39 +249,37 @@
       <p class="hint">Loading…</p>
     {:else if selected === null}
       <div class="cards">
+        {#if rejectedCount > 0}
+          <section class="card loose">
+            <button class="samples text" onclick={() => open({ kind: 'rejected' })}>“Not this person” rejects ({rejectedCount.toLocaleString()})</button>
+            <div class="line">Faces you marked “not this person” that nobody else matched. Give them a name or say who they are.</div>
+          </section>
+        {/if}
         {#each visible as p (p.id)}
           <section class="card" class:dim={p.hidden}>
             <button class="samples" onclick={() => open({ kind: 'person', id: p.id })} aria-label={`See all faces of ${personLabel(p)}`}>
               {#each p.samples as f (f)}<img alt="" loading="lazy" decoding="async" src={faceUrl(f, undefined, 160)} />{/each}
             </button>
-            <form onsubmit={(e) => { e.preventDefault(); saveName(p); }}>
-              <input value={personDrafts[p.id] ?? p.name ?? ''} oninput={(e) => (personDrafts[p.id] = e.currentTarget.value)} onblur={() => saveName(p)}
-                     placeholder="Name this person" aria-label="Name" />
-            </form>
-            <div class="line">{faceCardLine(p)}{p.hidden ? ' · hidden' : ''}</div>
-            <div class="actions">
-              <button disabled={!p.listed} title={p.listed ? 'Show their photos in Browse' : 'Browse lists named people, and people in two or more photos'} onclick={() => onshow(p.id)}>Show photos</button>
+            <div class="namerow">
+              <form onsubmit={(e) => { e.preventDefault(); saveName(p); }}>
+                <input value={personDrafts[p.id] ?? p.name ?? ''} oninput={(e) => (personDrafts[p.id] = e.currentTarget.value)} onblur={() => saveName(p)}
+                       placeholder="Name this person" aria-label="Name" />
+              </form>
               {#if p.hidden}
                 <button onclick={() => act(() => unhidePerson(p.id))}>Unhide</button>
               {:else}
                 <button onclick={() => act(() => hidePerson(p.id))}>Hide</button>
               {/if}
             </div>
+            <div class="line">{faceCardLine(p)}{p.hidden ? ' · hidden' : ''}</div>
           </section>
         {/each}
-        {#if rejectedCount > 0}
-          <section class="card loose">
-            <button class="samples text" onclick={() => open({ kind: 'rejected' })}>Faces without a person ({rejectedCount.toLocaleString()})</button>
-            <div class="line">Faces you marked “not this person”. Give them a name or move them to someone.</div>
-          </section>
-        {/if}
       </div>
       {#if onlyUnnamed && visible.length === 0}<p class="hint">Everyone has a name.</p>{/if}
     {:else}
       <div class="tiles">
         {#each tiles as t, i (t.id)}
-          <figure class:ticked={picked.has(t.id)}>
-            <label class="tick" title="Tick to change several at once"><input type="checkbox" checked={picked.has(t.id)} onchange={() => toggle(t.id)} aria-label="Tick this face" /></label>
+          <figure>
             <button class="zoom" onclick={() => (viewing = i)} title="See the whole photo this face is in" aria-label="See the whole photo">
               <img alt="" loading="lazy" decoding="async" src={faceUrl(t.id, undefined, 320)} />
             </button>
@@ -341,8 +321,8 @@
   .faces { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fff; font-size: 14px; }
   .top { flex: none; padding: 14px 18px 0; border-bottom: 1px solid #e3e6ee; }
   .scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 24px; }
+  .count { margin-left: auto; color: #555; font-size: 13px; }
   header { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
-  h2 { margin: 0; font-size: 18px; }
   .toggle { color: #555; font-size: 13px; }
   .hint { color: #777; margin: 6px 0 12px; }
   .err { color: #b3261e; }
@@ -358,7 +338,8 @@
   input, select { font: inherit; font-size: 13px; padding: 3px 6px; border: 1px solid #c3c8d4; border-radius: 6px; background: #fff; color: inherit; max-width: 100%; }
   form input { width: 100%; box-sizing: border-box; }
   .line { color: #666; font-size: 12px; }
-  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .namerow { display: flex; align-items: center; gap: 8px; }
+  .namerow form { flex: 1; min-width: 0; }
   button { font: inherit; font-size: 13px; }
   .detail-head { display: flex; align-items: center; gap: 12px; margin: 8px 0 14px; }
   .detail-head form { width: 260px; }
@@ -366,8 +347,6 @@
   .listbar .sp { flex: 1; }
   .listbar button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }
   figure { position: relative; }
-  figure.ticked img { outline: 3px solid #2f6fed; outline-offset: -3px; }
-  .tick { position: absolute; top: 6px; left: 6px; z-index: 1; padding: 2px; border-radius: 4px; background: rgba(255, 255, 255, .85); line-height: 0; }
   .zoom { padding: 0; border: 0; background: none; cursor: zoom-in; display: block; }
   .lightbox { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: rgba(12, 14, 20, .94); color: #eee; }
   .lb-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: rgba(0, 0, 0, .35); font-size: 13px; }
