@@ -2,7 +2,7 @@ use crate::embedder::Embedder;
 use crate::vectors::dot;
 
 /// Bump when `VOCAB` or the selection rules change: every analysed photo is re-tagged from its stored vector.
-pub const TAGS_VERSION: &str = "tags-2";
+pub const TAGS_VERSION: &str = "tags-3";
 
 /// CLIP's own logit scale, so the softmax below means what the model was trained to mean.
 const TEMPERATURE: f32 = 100.0;
@@ -12,39 +12,44 @@ const ABS_FLOOR: f32 = 0.22;
 const MIN_PROB: f32 = 0.15;
 pub const MAX_TAGS: usize = 5;
 
-/// Everyday things people look for in their photos. Lowercase, shown as written.
-pub const VOCAB: &[&str] = &[
-    // places and scenes
-    "beach", "sea", "lake", "river", "waterfall", "mountain", "forest", "countryside", "field", "desert", "snow",
-    "garden", "park", "city street", "skyline", "bridge", "building", "church", "castle", "museum", "market",
-    "restaurant", "kitchen", "living room", "bedroom", "bathroom", "office", "school", "airport", "train station",
-    "road", "harbour", "farm", "campsite", "playground", "swimming pool", "stadium", "concert",
-    // light and weather
-    "sunset", "sunrise", "night", "fireworks", "rain", "fog", "clouds", "rainbow",
-    // nature
-    "flowers", "trees", "autumn leaves", "grass", "rocks", "sky", "moon", "stars",
-    // animals
-    "dog", "cat", "horse", "cow", "sheep", "bird", "fish", "butterfly", "insect", "duck", "deer", "monkey",
-    "elephant", "lion", "rabbit", "chicken", "zoo animals",
-    // people and occasions
-    "people", "crowd", "child", "baby", "portrait", "group photo", "selfie", "couple", "family", "wedding",
-    "bride", "birthday party", "graduation", "dancing", "sport", "football", "running", "cycling", "swimming",
-    "skiing", "hiking", "playing music",
-    // what people wear
-    "hat", "sunglasses", "glasses", "dress", "uniform", "jacket", "helmet",
-    // vehicles
-    "car", "truck", "bus", "bicycle", "motorbike", "boat", "ship", "plane", "train", "tractor",
-    // food and drink
-    "food", "cake", "pizza", "coffee", "drinks", "fruit", "vegetables", "barbecue", "ice cream", "bread",
-    "breakfast", "wine", "candles",
-    // things
-    "book", "computer", "phone", "television", "toys", "balloons", "christmas tree", "presents", "tent", "flag",
-    "statue", "painting", "sign", "map",
-    // paperwork and screens
-    "document", "screenshot", "receipt", "whiteboard", "text",
-    // how it was shot
-    "close-up", "aerial view", "panorama", "black and white photo", "blurry photo",
+/// Everyday things people look for in their photos, grouped for the Auto tags tree (the order here is the order of the
+/// tree). Lowercase, shown as written. A label sits in exactly one category.
+pub const CATEGORIES: &[(&str, &[&str])] = &[
+    ("People", &["people", "crowd", "child", "baby", "portrait", "group photo", "selfie", "couple", "family"]),
+    ("Occasions", &["wedding", "bride", "birthday party", "graduation", "parade", "festival", "funeral", "christmas tree", "presents", "balloons", "candles", "fireworks"]),
+    ("Activities", &["dancing", "sport", "football", "running", "cycling", "swimming", "skiing", "hiking", "playing music", "barbecue", "fishing", "sailing", "camping", "climbing", "tennis", "golf", "surfing", "cooking", "picnic"]),
+    ("Settings", &["beach", "sea", "lake", "river", "waterfall", "mountain", "forest", "countryside", "field", "desert", "snow", "garden", "park", "harbour", "farm", "campsite", "rocks", "cliff", "island", "cave", "canyon", "vineyard"]),
+    ("Places", &["city street", "skyline", "bridge", "building", "church", "castle", "museum", "market", "restaurant", "kitchen", "living room", "bedroom", "bathroom", "office", "school", "airport", "train station", "road", "playground", "swimming pool", "stadium", "concert", "bar", "hotel", "shop", "library", "hospital", "gym", "cinema", "theatre", "cemetery", "temple", "lighthouse", "ruins"]),
+    ("Sky and weather", &["sunset", "sunrise", "night", "rain", "fog", "clouds", "rainbow", "sky", "moon", "stars", "lightning", "storm"]),
+    ("Animals", &["dog", "cat", "horse", "cow", "sheep", "bird", "fish", "butterfly", "insect", "duck", "deer", "monkey", "elephant", "lion", "rabbit", "chicken", "zoo animals", "pig", "goat", "owl", "snake", "turtle", "squirrel", "bear", "giraffe", "penguin", "dolphin", "whale"]),
+    ("Plants", &["flowers", "trees", "autumn leaves", "grass", "palm tree", "cactus", "mushroom", "crops"]),
+    ("Attire", &["hat", "sunglasses", "glasses", "dress", "uniform", "jacket", "helmet", "suit", "costume", "scarf", "backpack", "swimsuit", "boots", "mask"]),
+    ("Occupations", &["soldier", "nurse", "doctor", "cowboy", "police officer", "firefighter", "chef", "farmer", "pilot", "priest", "teacher", "sailor"]),
+    ("Vehicles", &["car", "truck", "bus", "bicycle", "motorbike", "boat", "ship", "plane", "train", "tractor", "helicopter", "caravan", "tram", "ferry", "taxi", "ambulance", "fire engine"]),
+    ("Food and drink", &["food", "cake", "pizza", "coffee", "drinks", "fruit", "vegetables", "ice cream", "bread", "breakfast", "wine"]),
+    ("Art", &["painting", "statue", "mural", "graffiti", "stained glass", "mosaic", "fountain", "monument", "drawing"]),
+    ("Things", &["book", "computer", "phone", "television", "toys", "tent", "flag", "sign", "map", "guitar", "piano"]),
+    ("Documents and screens", &["document", "screenshot", "receipt", "whiteboard", "text"]),
+    ("Photo style", &["close-up", "aerial view", "panorama", "black and white photo", "blurry photo"]),
 ];
+
+/// Where a tag that no longer has a category (from an older vocabulary) is listed.
+pub const OTHER_CATEGORY: &str = "Other";
+
+/// Every label, in category order.
+pub fn vocab() -> Vec<&'static str> {
+    CATEGORIES.iter().flat_map(|(_, labels)| labels.iter().copied()).collect()
+}
+
+/// The category of a label and its position in the tree (`OTHER_CATEGORY`, last, for an unknown one).
+pub fn category_of(label: &str) -> (&'static str, usize) {
+    CATEGORIES
+        .iter()
+        .enumerate()
+        .find(|(_, (_, labels))| labels.contains(&label))
+        .map(|(i, (name, _))| (*name, i))
+        .unwrap_or((OTHER_CATEGORY, CATEGORIES.len()))
+}
 
 /// Things photos often show that are not in `VOCAB`. They compete in the softmax but are never shown as tags:
 /// a photo of a ring then goes to "ring", not to the nearest real label ("sunglasses").
@@ -53,7 +58,7 @@ pub const DECOYS: &[&str] = &[
     "furniture", "plant", "tools", "machine", "toy animal", "insect close-up", "reptile", "spider", "pet",
     "wild animal", "sculpture", "pattern", "texture", "logo", "poster", "box", "bottle", "plate", "cup", "window",
     "door", "wall", "floor", "ceiling", "bed", "chair", "table", "lamp", "mirror", "shelf", "cables", "pavement",
-    "an object on a table", "an abstract image", "a dark photo", "an empty room", "a person in a costume",
+    "an object on a table", "an abstract image", "a dark photo", "an empty room",
 ];
 
 fn softmax(scores: &[f32]) -> Vec<f32> {
@@ -201,7 +206,7 @@ mod tests {
     #[test]
     fn decoys_are_distinct_from_the_vocabulary() {
         for d in DECOYS {
-            assert!(!VOCAB.contains(d), "{d}");
+            assert!(!vocab().contains(d), "{d}");
         }
         let mut s = DECOYS.to_vec();
         s.sort();
@@ -216,14 +221,25 @@ mod tests {
 
     #[test]
     fn the_built_in_vocabulary_is_sane() {
-        assert!(VOCAB.len() >= 120);
-        let mut sorted = VOCAB.to_vec();
+        let vocab = vocab();
+        assert!(vocab.len() >= 120);
+        let mut sorted = vocab.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), VOCAB.len(), "duplicate labels");
-        for l in ["beach", "forest", "hat", "people"] {
-            assert!(VOCAB.contains(&l), "{l}");
+        assert_eq!(sorted.len(), vocab.len(), "duplicate labels (a label belongs to one category)");
+        for l in ["beach", "forest", "hat", "people", "painting", "statue"] {
+            assert!(vocab.contains(&l), "{l}");
         }
-        assert!(VOCAB.iter().all(|l| l == &l.trim() && !l.is_empty() && *l == l.to_lowercase()));
+        assert!(vocab.iter().all(|l| l == &l.trim() && !l.is_empty() && *l == l.to_lowercase()));
+        assert!(CATEGORIES.iter().all(|(name, labels)| !name.is_empty() && !labels.is_empty()));
+    }
+
+    #[test]
+    fn labels_know_their_category_and_unknown_ones_go_last() {
+        assert_eq!(category_of("forest"), ("Settings", 3));
+        assert_eq!(category_of("museum").0, "Places");
+        assert_eq!(category_of("painting").0, "Art");
+        assert_eq!(category_of("soldier").0, "Occupations");
+        assert_eq!(category_of("not a label"), (OTHER_CATEGORY, CATEGORIES.len()));
     }
 }

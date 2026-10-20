@@ -1,16 +1,23 @@
-export type TagCount = { tag: string; count: number };
+export type TagCount = { tag: string; count: number; category: string; category_photos: number };
+export type TagGroup = { category: string; photos: number; tags: TagCount[] };
 
 /** "city street" -> "City street". */
 export const tagLabel = (tag: string): string => (tag ? tag[0].toUpperCase() + tag.slice(1) : tag);
 
-/** The rows the Tags list shows: the most common `limit` (or all when expanded), plus the chosen tag even when it is rare. */
-export function tagRows(tags: TagCount[], chosen: string | null, expanded: boolean, limit: number): { rows: TagCount[]; hidden: number } {
-  if (expanded || tags.length <= limit) return { rows: tags, hidden: 0 };
-  let rows = tags.slice(0, limit);
-  const pick = chosen === null ? undefined : tags.find((t) => t.tag === chosen);
-  if (pick && !rows.includes(pick)) rows = [...rows.slice(0, limit - 1), pick];
-  return { rows, hidden: tags.length - limit };
+/** The Auto tags tree: tags grouped by category, categories in the order the list gives them (the backend sorts them),
+ *  tags inside a category in list order. */
+export function tagTree(tags: TagCount[]): TagGroup[] {
+  const groups: TagGroup[] = [];
+  for (const t of tags) {
+    let g = groups.find((x) => x.category === t.category);
+    if (!g) groups.push((g = { category: t.category, photos: t.category_photos, tags: [] }));
+    g.tags.push(t);
+  }
+  return groups;
 }
+
+/** The category a tag is listed under, if it is in the list. */
+export const categoryOf = (tags: TagCount[], tag: string | null): string | null => (tag === null ? null : (tags.find((t) => t.tag === tag)?.category ?? null));
 
 /** The listing is restricted to hits when a text search, a tag or a person is applied. */
 export const searchActive = (searchTerm: string | null, tag: string | null, person: number | null = null): boolean =>

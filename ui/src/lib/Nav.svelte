@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { DayGroup, MediaKind } from './api';
+  import { untrack } from 'svelte';
   import Check from './Check.svelte';
   import WhenNav from './WhenNav.svelte';
-  import { tagLabel, tagRows, type TagCount } from './tagNav';
+  import { categoryOf, tagLabel, tagTree, type TagCount } from './tagNav';
   import { personLabel, personRows, type PersonInfo } from './people';
   import { faceUrl } from './url';
 
@@ -20,9 +21,23 @@
     onkind: (k: MediaKind | null) => void; onrecent: (on: boolean) => void;
   } = $props();
 
-  let allTags = $state(false), allPeople = $state(false);
+  let allPeople = $state(false);
+  /** Auto tags categories the user has opened; the one holding the chosen tag is open as well. */
+  let openCategories = $state<Set<string>>(new Set());
   const shownPeople = $derived(personRows(people, person, allPeople, 8));
-  const shown = $derived(tagRows(tags, tag, allTags, 10));
+  const tree = $derived(tagTree(tags));
+  const chosenCategory = $derived(categoryOf(tags, tag));
+  const isOpen = (category: string) => openCategories.has(category);
+  const toggleCategory = (category: string) => {
+    const next = new Set(openCategories);
+    if (isOpen(category)) next.delete(category); else next.add(category);
+    openCategories = next;
+  };
+  // Choosing a tag (here or elsewhere) opens its category once; the user can close it again afterwards.
+  $effect(() => {
+    const c = chosenCategory;
+    if (c !== null) untrack(() => { if (!openCategories.has(c)) openCategories = new Set([...openCategories, c]); });
+  });
 </script>
 
 <nav>
@@ -46,15 +61,19 @@
   {/if}
 
   {#if tags.length > 0}
-    <h3>Tags</h3>
-    {#each shown.rows as t (t.tag)}
-      <button class="item" class:active={tag === t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
-        <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{t.count.toLocaleString()}</span>
+    <h3>Auto tags</h3>
+    {#each tree as g (g.category)}
+      <button class="item cat" aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
+        <span class="chev" class:open={isOpen(g.category)} aria-hidden="true">▸</span><span class="grow">{g.category}</span><span class="n">{g.photos.toLocaleString()}</span>
       </button>
+      {#if isOpen(g.category)}
+        {#each g.tags as t (t.tag)}
+          <button class="item sub" class:active={tag === t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
+            <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{t.count.toLocaleString()}</span>
+          </button>
+        {/each}
+      {/if}
     {/each}
-    {#if shown.hidden > 0 || allTags}
-      <button class="item more" onclick={() => (allTags = !allTags)}><span class="mark"></span>{allTags ? 'Show fewer' : `Show all ${tags.length} tags`}</button>
-    {/if}
   {/if}
 
   <h3>When</h3>
@@ -72,6 +91,10 @@
   .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
   .more { color: #555; }
+  .cat { font-weight: 600; color: #333; }
+  .chev { width: 14px; flex: none; text-align: center; font-size: 11px; color: #777; transition: transform .1s; }
+  .chev.open { transform: rotate(90deg); }
+  .sub { padding-left: 28px; }
   .avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: #dde2ee; flex: none; margin-right: 6px; }
   .mark { width: 14px; flex: none; display: inline-flex; }
   .item:hover { background: #eef2fb; }

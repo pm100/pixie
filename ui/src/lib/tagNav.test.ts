@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { searchActive, tagLabel, tagRows } from './tagNav';
+import { categoryOf, searchActive, tagLabel, tagTree } from './tagNav';
 
-const tags = (n: number) => Array.from({ length: n }, (_, i) => ({ tag: `t${i}`, count: n - i }));
+const t = (tag: string, count: number, category: string, category_photos: number) => ({ tag, count, category, category_photos });
+const list = [t('beach', 9, 'Settings', 12), t('lake', 4, 'Settings', 12), t('dog', 7, 'Animals', 8), t('museum', 3, 'Places', 3), t('cat', 2, 'Animals', 8)];
 
 describe('tagLabel', () => {
   it('capitalises the first letter only', () => {
@@ -12,23 +13,24 @@ describe('tagLabel', () => {
   });
 });
 
-describe('tagRows', () => {
-  it('shows the most common few and says how many are hidden', () => {
-    const r = tagRows(tags(30), null, false, 12);
-    expect(r.rows).toHaveLength(12);
-    expect(r.hidden).toBe(18);
+describe('tagTree', () => {
+  it('groups tags by category, categories in order of first appearance and tags in list order', () => {
+    expect(tagTree(list)).toEqual([
+      { category: 'Settings', photos: 12, tags: [list[0], list[1]] },
+      { category: 'Animals', photos: 8, tags: [list[2], list[4]] },
+      { category: 'Places', photos: 3, tags: [list[3]] },
+    ]);
   });
-  it('shows everything when expanded', () => {
-    expect(tagRows(tags(30), null, true, 12)).toEqual({ rows: tags(30), hidden: 0 });
+  it('is empty for no tags', () => {
+    expect(tagTree([])).toEqual([]);
   });
-  it('never hides the chosen tag, even if it is rare', () => {
-    const r = tagRows(tags(30), 't25', false, 12);
-    expect(r.rows).toHaveLength(12);
-    expect(r.rows.map((x) => x.tag)).toContain('t25');
-    expect(r.hidden).toBe(18);
-  });
-  it('has nothing hidden for a short list', () => {
-    expect(tagRows(tags(5), null, false, 12)).toEqual({ rows: tags(5), hidden: 0 });
+});
+
+describe('categoryOf', () => {
+  it('finds the category of a listed tag, and nothing for none or an unlisted one', () => {
+    expect(categoryOf(list, 'museum')).toBe('Places');
+    expect(categoryOf(list, null)).toBeNull();
+    expect(categoryOf(list, 'unicorn')).toBeNull();
   });
 });
 

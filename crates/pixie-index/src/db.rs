@@ -1206,6 +1206,24 @@ impl Db {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
     }
 
+    /// How many different photos carry at least one of these tags.
+    pub fn photos_with_any_tag(&self, tags: &[&str]) -> Result<i64> {
+        if tags.is_empty() {
+            return Ok(0);
+        }
+        let marks = vec!["?"; tags.len()].join(",");
+        let c = self.conn();
+        c.query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT t.photo_id) FROM photo_tags t JOIN photos p ON p.id = t.photo_id
+                  WHERE p.missing = 0 AND t.tag IN ({marks})"
+            ),
+            rusqlite::params_from_iter(tags.iter()),
+            |r| r.get(0),
+        )
+        .map_err(db_err)
+    }
+
     /// Every tag in use with how many photos carry it, most common first.
     pub fn tag_counts(&self) -> Result<Vec<(String, i64)>> {
         let c = self.conn();
@@ -2038,6 +2056,10 @@ mod tests {
         assert_eq!(db.embeddings_needing_tags("m", "t2", 10).unwrap().len(), 2); // a new vocabulary re-tags from the stored vectors
         assert_eq!(db.tags_for(a).unwrap(), vec![("beach".to_string(), 0.9), ("people".to_string(), 0.5)]);
         assert_eq!(db.tag_counts().unwrap(), vec![("beach".to_string(), 2), ("people".to_string(), 1)]);
+        assert_eq!(db.photos_with_any_tag(&["beach", "people"]).unwrap(), 2); // a photo with both counts once
+        assert_eq!(db.photos_with_any_tag(&["people"]).unwrap(), 1);
+        assert_eq!(db.photos_with_any_tag(&["unicorn"]).unwrap(), 0);
+        assert_eq!(db.photos_with_any_tag(&[]).unwrap(), 0);
         db.set_tags(a, "m", "t1", &[]).unwrap(); // re-tagging replaces; "no tag cleared the bar" is a valid result
         assert!(db.tags_for(a).unwrap().is_empty());
         db.set_tags(a, "m", "t1", &[("dog".into(), 0.7)]).unwrap();

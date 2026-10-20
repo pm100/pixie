@@ -51,9 +51,9 @@ fn very_long_and_empty_text_do_not_fail() {
 #[test]
 #[ignore = "downloads or needs the real CLIP model files"]
 fn tags_pick_the_obvious_label_for_a_plain_colour_picture_and_stay_quiet_for_nonsense() {
-    use pixie_analysis::tags::{TagIndex, VOCAB};
+    use pixie_analysis::tags::{vocab, TagIndex};
     let e = ClipEmbedder::load(&model_dir()).unwrap();
-    let idx = TagIndex::build(&e, VOCAB).unwrap();
+    let idx = TagIndex::build(&e, &vocab()).unwrap();
     let snow = e.embed_image(&solid(245, 245, 250)).unwrap();
     let tags: Vec<String> = idx.tags_for(&snow).into_iter().map(|t| t.0).collect();
     println!("white picture -> {tags:?}");

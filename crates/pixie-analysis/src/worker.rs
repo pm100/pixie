@@ -1,5 +1,5 @@
 use crate::embedder::Embedder;
-use crate::tags::{TagIndex, TAGS_VERSION, VOCAB};
+use crate::tags::{vocab, TagIndex, TAGS_VERSION};
 use pixie_image::decode::decode_scaled;
 use pixie_index::Db;
 use std::path::Path;
@@ -193,7 +193,7 @@ impl Worker {
     }
 
     pub fn start_with(db: Db, embedder: Arc<dyn Embedder>, scanning: ScanningFn, on_progress: ProgressFn, poll: Duration) -> Worker {
-        Self::start_full(db, embedder, scanning, on_progress, poll, VOCAB)
+        Self::start_full(db, embedder, scanning, on_progress, poll, &vocab())
     }
 
     /// `start_with` and a choice of tag vocabulary.

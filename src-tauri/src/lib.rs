@@ -324,12 +324,41 @@ fn set_person_filter(state: tauri::State<AppState>, person: Option<i64>) -> Resu
 struct TagCount {
     tag: String,
     count: i64,
+    /// The Auto tags group it is listed under (`tags::CATEGORIES`).
+    category: String,
+    /// How many different photos carry a tag of that category (a photo with two of them counts once).
+    category_photos: i64,
 }
 
-/// Every tag in use with its photo count, most common first.
+/// Every tag in use with its photo count and category. Categories come biggest first (by photos, "Other" last),
+/// and the tags inside one most common first.
 #[tauri::command]
 fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagCount>, PixieError> {
-    Ok(state.db.tag_counts()?.into_iter().map(|(tag, count)| TagCount { tag, count }).collect())
+    let mut rows: Vec<(usize, TagCount)> = Vec::new();
+    for (tag, count) in state.db.tag_counts()? {
+        let (category, order) = pixie_analysis::tags::category_of(&tag);
+        rows.push((order, TagCount { tag, count, category: category.to_string(), category_photos: 0 }));
+    }
+    let mut photos: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
+    for (order, _) in &rows {
+        if photos.contains_key(order) {
+            continue;
+        }
+        let members: Vec<&str> = rows.iter().filter(|(o, _)| o == order).map(|(_, t)| t.tag.as_str()).collect();
+        photos.insert(*order, state.db.photos_with_any_tag(&members)?);
+    }
+    for (order, t) in &mut rows {
+        t.category_photos = photos[order];
+    }
+    let other = pixie_analysis::tags::CATEGORIES.len();
+    rows.sort_by(|a, b| {
+        (a.0 == other).cmp(&(b.0 == other)) // "Other" last
+            .then(b.1.category_photos.cmp(&a.1.category_photos))
+            .then(a.0.cmp(&b.0))
+            .then(b.1.count.cmp(&a.1.count))
+            .then(a.1.tag.cmp(&b.1.tag))
+    });
+    Ok(rows.into_iter().map(|(_, t)| t).collect())
 }
 
 #[derive(Serialize)]
