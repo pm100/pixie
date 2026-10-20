@@ -60,7 +60,7 @@ and photo queries; `src-tauri` adds commands and events only.
 - User actions: name or rename, merge two people, "not this person" (face detaches and is pinned so it is not
   re-assigned), hide a person.
 - Filter: a person filter joins `search_hits` like the text search and tag filter (photos must be in every active set), so no new `PhotoQuery` field.
-- Built differently from the first sketch: faces get their own background pass and `PeopleService` (separate model download and status event) beside the CLIP one; a `face_scans` table (one row per photo and model version, also for photos with no faces) is the queue marker; face crops are cut on demand from the 1600 px viewer thumbnail (`pixie://face/{id}`), not stored; unnamed people seen in only one photo are not listed in the nav; there is no automatic "tidy" merge yet, manual Merge is the remedy.
+- Built differently from the first sketch: faces get their own background pass and `PeopleService` (separate model download and status event) beside the CLIP one; a `face_scans` table (one row per photo and model version, also for photos with no faces) is the queue marker; face crops are cut on demand from the 1600 px viewer thumbnail (`pixie://face/{id}`), not stored; only named people are listed in the nav (unnamed groups are worked on in the People tab; with nobody named the nav says so); there is no automatic "tidy" merge yet, manual Merge is the remedy.
 
 ## UI
 

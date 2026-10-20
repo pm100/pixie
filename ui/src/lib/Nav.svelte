@@ -7,7 +7,7 @@
   import { personLabel, personRows, type PersonInfo } from './people';
   import { faceUrl } from './url';
 
-  let { groups, activeGroup, kind, recent, scanLine, filterDates, period, recentText, tags, tag, people, person, ongroup, onperiod, onkind, onrecent, ontag, onperson }: {
+  let { groups, activeGroup, kind, recent, scanLine, filterDates, period, recentText, tags, tag, people, facesFound, person, ongroup, onperiod, onkind, onrecent, ontag, onperson }: {
     groups: DayGroup[]; activeGroup: number; kind: MediaKind | null; recent: boolean; scanLine: string | null;
     /** On the map, a date filters the pins and photos; elsewhere it scrolls the grid. */
     filterDates: boolean; period: string | null;
@@ -17,6 +17,8 @@
     tags: TagCount[]; tag: string | null; ontag: (t: string | null) => void;
     /** The people found in the photos, and the one chosen as a filter (if any). */
     people: PersonInfo[]; person: number | null; onperson: (id: number | null) => void;
+    /** Some photos have been checked for faces: with nobody named yet, the section says where to name people. */
+    facesFound: boolean;
     ongroup: (group: number) => void; onperiod: (key: string) => void;
     onkind: (k: MediaKind | null) => void; onrecent: (on: boolean) => void;
   } = $props();
@@ -46,7 +48,10 @@
   <button class="item" class:active={kind === 'photo'} onclick={() => onkind('photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span>Photos only</button>
   <button class="item" class:active={kind === 'video'} onclick={() => onkind('video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span>Videos only</button>
 
-  {#if people.length > 0}
+  {#if people.length === 0 && facesFound}
+    <h3>People</h3>
+    <p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>
+  {:else if people.length > 0}
     <h3>People</h3>
     {#each shownPeople.rows as p (p.id)}
       <button class="item" class:active={person === p.id} aria-pressed={person === p.id} onclick={() => onperson(person === p.id ? null : p.id)}>
@@ -99,5 +104,6 @@
   .mark { width: 14px; flex: none; display: inline-flex; }
   .item:hover { background: #eef2fb; }
   .item.active { background: #e3ecff; font-weight: 600; }
+  .hint { margin: 2px 12px 4px; font-size: 12px; color: #777; }
   .scan { margin: 16px 12px 0; font-size: 12px; color: #777; }
 </style>

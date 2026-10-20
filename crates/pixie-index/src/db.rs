@@ -923,8 +923,8 @@ impl Db {
                    FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0
                   WHERE p.hidden = 0
                   GROUP BY p.id
-                 HAVING p.name IS NOT NULL OR cnt >= 2
-                  ORDER BY (p.name IS NULL), cnt DESC, p.id",
+                 HAVING p.name IS NOT NULL
+                  ORDER BY cnt DESC, p.id",
             )
             .map_err(db_err)?;
         let rows = s.query_map([], |r| Ok(PersonInfo { id: r.get(0)?, name: r.get(1)?, count: r.get(2)?, face_id: r.get(3)? })).map_err(db_err)?;
@@ -990,7 +990,7 @@ impl Db {
         let mut out = Vec::with_capacity(rows.len());
         for (id, name, hidden, photos, faces) in rows {
             let samples = samples.query_map(params![id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<Vec<i64>>>().map_err(db_err)?;
-            let listed = !hidden && (name.is_some() || photos >= 2);
+            let listed = !hidden && name.is_some();
             out.push(FacePerson { id, name, hidden, listed, photos, faces, samples });
         }
         Ok(out)
@@ -2182,23 +2182,24 @@ mod tests {
     }
 
     #[test]
-    fn list_people_hides_noise_counts_photos_and_orders_named_first() {
+    fn list_people_lists_only_named_people_biggest_first_and_counts_photos() {
         let db = Db::open_in_memory().unwrap();
         let (_f, ids) = photos(&db, 6);
         let big = person_of(&db, &ids[0..3], [1.0, 0.0]);
         let pair = person_of(&db, &ids[3..5], [0.0, 1.0]);
         let single = person_of(&db, &ids[5..6], [0.6, 0.8]);
-        let l = db.list_people().unwrap();
-        assert_eq!(l.iter().map(|p| (p.id, p.count)).collect::<Vec<_>>(), vec![(big, 3), (pair, 2)]); // the lone unnamed one is not listed
+        assert!(db.list_people().unwrap().is_empty()); // nobody is named yet: nobody is listed
         db.rename_person(single, Some("Gran")).unwrap();
+        db.rename_person(big, Some("Sam")).unwrap();
         let l = db.list_people().unwrap();
-        assert_eq!(l[0].id, single); // named first
-        assert_eq!(l[0].name.as_deref(), Some("Gran"));
-        assert!(l[0].face_id.is_some());
+        assert_eq!(l.iter().map(|p| (p.id, p.count)).collect::<Vec<_>>(), vec![(big, 3), (single, 1)]); // biggest first; the unnamed pair is left out
+        assert_eq!(l[1].name.as_deref(), Some("Gran"));
+        assert!(l[1].face_id.is_some());
         db.rename_person(single, None).unwrap();
-        assert_eq!(db.list_people().unwrap().len(), 2);
+        assert_eq!(db.list_people().unwrap().len(), 1);
         db.hide_person(big).unwrap();
-        assert_eq!(db.list_people().unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![pair]);
+        assert!(db.list_people().unwrap().is_empty());
+        let _ = pair;
     }
 
     #[test]
@@ -2320,11 +2321,11 @@ mod tests {
         db.hide_person(hidden).unwrap();
         let l = db.list_face_people(false).unwrap();
         assert_eq!(l.iter().map(|p| p.id).collect::<Vec<_>>(), vec![big, single]); // most faces first; the hidden one is left out
-        assert_eq!((l[0].photos, l[0].faces, l[0].listed), (4, 4, true));
+        assert_eq!((l[0].photos, l[0].faces, l[0].listed), (4, 4, false)); // listed in the nav only once named
         assert_eq!(l[0].samples.len(), 3);
         let best = db.faces_of(ids[3]).unwrap()[0].id;
         assert_eq!(l[0].samples[0], best);
-        assert!(!l[1].listed); // a single unnamed photo is not in the nav
+        assert!(!l[1].listed);
         let all = db.list_face_people(true).unwrap();
         assert_eq!(all.len(), 3);
         assert!(all.iter().find(|p| p.id == hidden).unwrap().hidden);

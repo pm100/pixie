@@ -633,7 +633,7 @@
           <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
                {tags} tag={activeTag} ontag={setTag}
-               people={peopleList} person={activePerson} onperson={setPerson}
+               people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}

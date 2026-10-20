@@ -311,7 +311,7 @@ mod tests {
         let s = r.svc.status();
         assert_eq!((s.done, s.total, s.error.clone()), (3, 3, None));
         assert!(r.events.lock().unwrap().iter().any(|e| e.models == "downloading"));
-        assert_eq!(r.db.list_people().unwrap().len(), 1); // three photos of the same "person"
+        assert_eq!(r.db.people_centroids().unwrap().len(), 1); // three photos of the same "person" (unnamed, so not in the nav)
     }
 
     #[test]
