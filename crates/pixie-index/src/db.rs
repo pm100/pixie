@@ -1,6 +1,6 @@
-use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -79,6 +79,38 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (photo_id, tag)
      );
      CREATE INDEX idx_photo_tags_tag ON photo_tags(tag);",
+    // V7: faces and the people they are grouped into. Boxes are fractions of the upright image. `face_scans` says a
+    // photo was scanned for faces with a given model version (also when it has none), so it is not scanned again.
+    // `pinned` marks a face the user said is not that person: it is never grouped automatically again.
+    "CREATE TABLE people (
+        id       INTEGER PRIMARY KEY,
+        name     TEXT,
+        hidden   INTEGER NOT NULL DEFAULT 0,
+        centroid BLOB NOT NULL,
+        n        INTEGER NOT NULL DEFAULT 0
+     );
+     CREATE TABLE faces (
+        id        INTEGER PRIMARY KEY,
+        photo_id  INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+        x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+        score     REAL NOT NULL,
+        embedding BLOB NOT NULL,
+        person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+        pinned    INTEGER NOT NULL DEFAULT 0
+     );
+     CREATE INDEX idx_faces_photo ON faces(photo_id);
+     CREATE INDEX idx_faces_person ON faces(person_id);
+     CREATE TABLE face_scans (
+        photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+        version  TEXT NOT NULL
+     );",
+    // V8: "not this person" no longer parks a face for good. The face is guessed again automatically, but never as a
+    // person it was rejected from: those rejections are kept here.
+    "CREATE TABLE face_rejections (
+        face_id   INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
+        person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        PRIMARY KEY (face_id, person_id)
+     );",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +148,10 @@ fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
         },
         missing: r.get::<_, i64>(11)? != 0,
     })
+}
+
+fn row_to_tile(r: &rusqlite::Row) -> rusqlite::Result<FaceTile> {
+    Ok(FaceTile { id: r.get(0)?, photo_id: r.get(1)?, mtime: r.get(2)?, size: r.get(3)?, x: r.get(4)?, y: r.get(5)?, w: r.get(6)?, h: r.get(7)? })
 }
 
 fn order_sql(o: SortOrder) -> &'static str {
@@ -217,16 +253,107 @@ fn list_sql(q: &PhotoQuery, f: &Filter) -> String {
 /// Rebuild `search_hits` as the photos in every active hit set (text search, tag filter).
 fn refresh_hits(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute("DELETE FROM search_hits", []).map_err(db_err)?;
-    let active = |name: &str| -> Result<bool> {
-        tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get::<_, i64>(0)).map(|n| n > 0).map_err(db_err)
-    };
-    let sql = match (active("text")?, active("tag")?) {
-        (true, true) => "INSERT INTO search_hits SELECT photo_id FROM text_hits INTERSECT SELECT photo_id FROM tag_hits",
-        (true, false) => "INSERT INTO search_hits SELECT photo_id FROM text_hits",
-        (false, true) => "INSERT INTO search_hits SELECT photo_id FROM tag_hits",
-        (false, false) => return Ok(()),
-    };
-    tx.execute(sql, []).map_err(db_err)?;
+    let mut sets = Vec::new();
+    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits")] {
+        let n: i64 = tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get(0)).map_err(db_err)?;
+        if n > 0 {
+            sets.push(format!("SELECT photo_id FROM {table}"));
+        }
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    tx.execute(&format!("INSERT INTO search_hits {}", sets.join(" INTERSECT ")), []).map_err(db_err)?;
+    Ok(())
+}
+
+fn blob_of(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+fn vector_of(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+}
+
+/// A person's centroid and face count from the faces they have now. A person with no faces is left as it is.
+fn recompute_person(tx: &Connection, id: i64) -> Result<()> {
+    let mut sum: Vec<f32> = Vec::new();
+    let mut n = 0i64;
+    {
+        let mut st = tx.prepare("SELECT embedding FROM faces WHERE person_id = ?1").map_err(db_err)?;
+        let rows = st.query_map(params![id], |r| r.get::<_, Vec<u8>>(0)).map_err(db_err)?;
+        for row in rows {
+            let v = vector_of(&row.map_err(db_err)?);
+            if sum.is_empty() {
+                sum = vec![0.0; v.len()];
+            }
+            for (a, b) in sum.iter_mut().zip(&v) {
+                *a += b;
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return Ok(()); // no faces left: `n` stays as it was, which is how `prune_people` tells an emptied person from a new one
+    }
+    let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        sum.iter_mut().for_each(|x| *x /= norm);
+    }
+    tx.execute("UPDATE people SET centroid = ?2, n = ?3 WHERE id = ?1", params![id, blob_of(&sum), n]).map_err(db_err)?;
+    Ok(())
+}
+
+/// The people with faces in the photos matched by `where_sql` (a condition on `photos p`), taken before those photos
+/// or their faces are deleted: the cascade does not tell their centroids and counts.
+fn people_in(c: &Connection, where_sql: &str, args: impl rusqlite::Params) -> Result<Vec<i64>> {
+    let mut st = c
+        .prepare(&format!("SELECT DISTINCT f.person_id FROM faces f JOIN photos p ON p.id = f.photo_id WHERE f.person_id IS NOT NULL AND {where_sql}"))
+        .map_err(db_err)?;
+    let rows = st.query_map(args, |r| r.get(0)).map_err(db_err)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+}
+
+/// Bring the given people up to date after faces were deleted, and drop unnamed ones left with none.
+fn refresh_people(c: &Connection, ids: &[i64]) -> Result<()> {
+    for id in ids {
+        recompute_person(c, *id)?;
+    }
+    prune_people(c)
+}
+
+/// "Not this person": the face leaves its person and is remembered as not theirs. It then waits to be guessed again
+/// (see `unassigned_faces`), and that guess never lands on a person it was rejected from.
+fn reject_face_in(tx: &Connection, face_id: i64) -> Result<()> {
+    let person: Option<i64> = tx.query_row("SELECT person_id FROM faces WHERE id = ?1", params![face_id], |r| r.get(0)).optional().map_err(db_err)?.flatten();
+    tx.execute("UPDATE faces SET person_id = NULL WHERE id = ?1", params![face_id]).map_err(db_err)?;
+    if let Some(p) = person {
+        tx.execute("INSERT OR IGNORE INTO face_rejections(face_id, person_id) VALUES (?1, ?2)", params![face_id, p]).map_err(db_err)?;
+        recompute_person(tx, p)?;
+        prune_people(tx)?;
+    }
+    Ok(())
+}
+
+/// Put a face in a person (clearing any "not this person" mark) and bring both people up to date.
+fn move_face_in(tx: &Connection, face_id: i64, person_id: i64) -> Result<()> {
+    let old: Option<i64> = tx.query_row("SELECT person_id FROM faces WHERE id = ?1", params![face_id], |r| r.get(0)).optional().map_err(db_err)?.flatten();
+    tx.execute("UPDATE faces SET person_id = ?2, pinned = 0 WHERE id = ?1", params![face_id, person_id]).map_err(db_err)?;
+    tx.execute("DELETE FROM face_rejections WHERE face_id = ?1 AND person_id = ?2", params![face_id, person_id]).map_err(db_err)?; // put back by hand
+    recompute_person(tx, person_id)?;
+    if let Some(o) = old.filter(|o| *o != person_id) {
+        recompute_person(tx, o)?;
+    }
+    prune_people(tx)
+}
+
+/// Unnamed people left with no faces are not worth keeping (`n = 0` ones are brand new, not yet given their first face).
+fn prune_people(tx: &Connection) -> Result<()> {
+    tx.execute(
+        "DELETE FROM people WHERE name IS NULL AND n > 0 AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)",
+        [],
+    )
+    .map_err(db_err)?;
     Ok(())
 }
 
@@ -259,7 +386,8 @@ impl Db {
             "CREATE TEMP TABLE IF NOT EXISTS search_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS text_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS tag_hits (photo_id INTEGER PRIMARY KEY);
-             CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY);",
+             CREATE TEMP TABLE IF NOT EXISTS person_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
         )
         .map_err(db_err)?;
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
@@ -314,7 +442,12 @@ impl Db {
 
     /// Forget a folder and its items (the `ON DELETE CASCADE` on photos). Files are never touched.
     pub fn remove_folder(&self, id: FolderId) -> Result<()> {
-        self.conn().execute("DELETE FROM folders WHERE id = ?1", params![id]).map_err(db_err)?;
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let affected = people_in(&tx, "p.folder_id = ?1", params![id])?; // its photos' faces go with the cascade
+        tx.execute("DELETE FROM folders WHERE id = ?1", params![id]).map_err(db_err)?;
+        refresh_people(&tx, &affected)?;
+        tx.commit().map_err(db_err)?;
         Ok(())
     }
 
@@ -331,13 +464,15 @@ impl Db {
         let c = self.conn();
         // A file that changed on disk is a different picture: whatever was learned from the old one (including a
         // "could not analyse" marker from a half-copied file) no longer applies.
-        for table in ["embeddings", "photo_tags"] {
+        let affected = people_in(&c, "p.path = ?1 AND (p.size != ?2 OR p.mtime != ?3)", params![path, size, mtime])?;
+        for table in ["embeddings", "photo_tags", "face_scans", "faces"] {
             c.execute(
                 &format!("DELETE FROM {table} WHERE photo_id = (SELECT id FROM photos WHERE path = ?1 AND (size != ?2 OR mtime != ?3))"),
                 params![path, size, mtime],
             )
             .map_err(db_err)?;
         }
+        refresh_people(&c, &affected)?;
         c
             .query_row(
                 "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms)
@@ -642,6 +777,15 @@ impl Db {
         Ok(())
     }
 
+    /// The tag and the person the listings are really restricted to (the UI draws its chips from these).
+    pub fn active_filters(&self) -> Result<(Option<String>, Option<i64>)> {
+        let c = self.conn();
+        let value = |name: &str| -> Result<Option<String>> {
+            c.query_row("SELECT value FROM filter_state WHERE name = ?1", params![name], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err).map(Option::flatten)
+        };
+        Ok((value("tag")?, value("person")?.and_then(|v| v.parse().ok())))
+    }
+
     /// Show only photos with this tag; `None` turns the tag filter off.
     pub fn set_tag_filter(&self, tag: Option<&str>) -> Result<()> {
         let mut c = self.conn();
@@ -650,10 +794,363 @@ impl Db {
         match tag {
             Some(t) => {
                 tx.execute("INSERT INTO tag_hits(photo_id) SELECT photo_id FROM photo_tags WHERE tag = ?1", params![t]).map_err(db_err)?;
-                tx.execute("INSERT OR IGNORE INTO filter_state(name) VALUES ('tag')", []).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('tag', ?1)", params![t]).map_err(db_err)?;
             }
             None => {
                 tx.execute("DELETE FROM filter_state WHERE name = 'tag'", []).map_err(db_err)?;
+            }
+        }
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    // ---- faces and people ----
+
+    /// Photos (not videos, not missing) not yet scanned for faces with this version, newest id first.
+    pub fn photos_needing_faces(&self, version: &str, limit: i64) -> Result<Vec<Photo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND kind = 0
+                   AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?1)
+                 ORDER BY id DESC LIMIT ?2"
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map(params![version, limit], row_to_photo).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// (photos scanned with this version, photos that should be).
+    pub fn face_counts(&self, version: &str) -> Result<(i64, i64)> {
+        let c = self.conn();
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let done: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM face_scans s JOIN photos p ON p.id = s.photo_id
+                  WHERE s.version = ?1 AND p.missing = 0 AND p.kind = 0",
+                params![version],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        Ok((done, total))
+    }
+
+    /// Store the faces found in a photo (replacing any it had) and mark the photo scanned. Returns the new face ids.
+    pub fn replace_faces(&self, photo_id: PhotoId, version: &str, faces: &[NewFace]) -> Result<Vec<i64>> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let old: Vec<i64> = {
+            let mut st = tx.prepare("SELECT DISTINCT person_id FROM faces WHERE photo_id = ?1 AND person_id IS NOT NULL").map_err(db_err)?;
+            let rows = st.query_map(params![photo_id], |r| r.get(0)).map_err(db_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)?
+        };
+        tx.execute("DELETE FROM faces WHERE photo_id = ?1", params![photo_id]).map_err(db_err)?;
+        for p in old {
+            recompute_person(&tx, p)?;
+        }
+        prune_people(&tx)?;
+        let mut ids = Vec::with_capacity(faces.len());
+        for f in faces {
+            tx.execute(
+                "INSERT INTO faces(photo_id, x, y, w, h, score, embedding) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![photo_id, f.x, f.y, f.w, f.h, f.score, blob_of(&f.embedding)],
+            )
+            .map_err(db_err)?;
+            ids.push(tx.last_insert_rowid());
+        }
+        tx.execute("INSERT OR REPLACE INTO face_scans(photo_id, version) VALUES (?1, ?2)", params![photo_id, version]).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(ids)
+    }
+
+    /// For each face, the people it was rejected from: it is never grouped with them.
+    pub fn face_rejections(&self) -> Result<HashMap<i64, Vec<i64>>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT face_id, person_id FROM face_rejections ORDER BY face_id, person_id").map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(db_err)?;
+        let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+        for row in rows {
+            let (face, person) = row.map_err(db_err)?;
+            out.entry(face).or_default().push(person);
+        }
+        Ok(out)
+    }
+
+    /// Faces not yet grouped: no person, and not parked in the rejects. Oldest first.
+    pub fn unassigned_faces(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, embedding FROM faces WHERE person_id IS NULL AND pinned = 0 ORDER BY id").map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok((r.get(0)?, vector_of(&r.get::<_, Vec<u8>>(1)?)))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Every person (hidden ones too: a face still joins them rather than starting a new person) as (id, centroid, faces).
+    pub fn people_centroids(&self) -> Result<Vec<(i64, Vec<f32>, i64)>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, centroid, n FROM people ORDER BY id").map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok((r.get(0)?, vector_of(&r.get::<_, Vec<u8>>(1)?), r.get(2)?))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// A new, unnamed person with no faces yet.
+    pub fn create_person(&self, centroid: &[f32]) -> Result<i64> {
+        let c = self.conn();
+        c.execute("INSERT INTO people(centroid, n) VALUES (?1, 0)", params![blob_of(centroid)]).map_err(db_err)?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Put a face in a person and store that person's updated centroid and face count.
+    pub fn assign_face(&self, face_id: i64, person_id: i64, centroid: &[f32], n: i64) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("UPDATE faces SET person_id = ?2 WHERE id = ?1", params![face_id, person_id]).map_err(db_err)?;
+        tx.execute("UPDATE people SET centroid = ?2, n = ?3 WHERE id = ?1", params![person_id, blob_of(centroid), n]).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The people to list in the nav: not hidden, in at least one visible photo, and either named or in two or more
+    /// photos (a face seen once is mostly noise). Named people first, then the most photos.
+    pub fn list_people(&self) -> Result<Vec<PersonInfo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT p.id, p.name, COUNT(DISTINCT f.photo_id) AS cnt,
+                        (SELECT f2.id FROM faces f2 JOIN photos h2 ON h2.id = f2.photo_id
+                          WHERE f2.person_id = p.id AND h2.missing = 0
+                          ORDER BY f2.score * f2.w * f2.h DESC, f2.id LIMIT 1)
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                  WHERE p.hidden = 0
+                  GROUP BY p.id
+                 HAVING p.name IS NOT NULL OR cnt >= 2
+                  ORDER BY (p.name IS NULL), cnt DESC, p.id",
+            )
+            .map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok(PersonInfo { id: r.get(0)?, name: r.get(1)?, count: r.get(2)?, face_id: r.get(3)? })).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// The faces in one photo.
+    pub fn faces_of(&self, photo_id: PhotoId) -> Result<Vec<FaceInfo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT f.id, f.person_id, p.name, f.x, f.y, f.w, f.h FROM faces f LEFT JOIN people p ON p.id = f.person_id
+                  WHERE f.photo_id = ?1 ORDER BY f.id",
+            )
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![photo_id], |r| {
+                Ok(FaceInfo { id: r.get(0)?, person_id: r.get(1)?, person_name: r.get(2)?, x: r.get(3)?, y: r.get(4)?, w: r.get(5)?, h: r.get(6)? })
+            })
+            .map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// The photo a face is in and its `[x, y, w, h]` box (fractions of the upright image).
+    pub fn face_location(&self, face_id: i64) -> Result<Option<(Photo, [f32; 4])>> {
+        let found: Option<(PhotoId, [f32; 4])> = {
+            let c = self.conn();
+            c.query_row("SELECT photo_id, x, y, w, h FROM faces WHERE id = ?1", params![face_id], |r| {
+                Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))
+            })
+            .optional()
+            .map_err(db_err)?
+        };
+        match found {
+            Some((pid, b)) => Ok(self.get_photo(pid)?.map(|p| (p, b))),
+            None => Ok(None),
+        }
+    }
+
+    /// Everyone for the Faces tab, most faces first: counts over visible photos and up to three best faces each.
+    /// Hidden people only when `include_hidden`.
+    pub fn list_face_people(&self, include_hidden: bool) -> Result<Vec<FacePerson>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT p.id, p.name, p.hidden, COUNT(DISTINCT f.photo_id), COUNT(f.id)
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                  WHERE (?1 OR p.hidden = 0)
+                  GROUP BY p.id ORDER BY COUNT(f.id) DESC, p.id",
+            )
+            .map_err(db_err)?;
+        let rows: Vec<(i64, Option<String>, bool, i64, i64)> = s
+            .query_map(params![include_hidden], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?, r.get(4)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db_err)?;
+        let mut samples = c
+            .prepare(
+                "SELECT f.id FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                  WHERE f.person_id = ?1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT 3",
+            )
+            .map_err(db_err)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, name, hidden, photos, faces) in rows {
+            let samples = samples.query_map(params![id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<Vec<i64>>>().map_err(db_err)?;
+            let listed = !hidden && (name.is_some() || photos >= 2);
+            out.push(FacePerson { id, name, hidden, listed, photos, faces, samples });
+        }
+        Ok(out)
+    }
+
+    /// A person's faces in visible photos: the best (largest, most certain) first, or with `doubtful_first` the ones
+    /// least like the rest of the person first, which is where the wrongly grouped faces are.
+    pub fn faces_of_person(&self, person_id: i64, limit: i64, doubtful_first: bool) -> Result<Vec<FaceTile>> {
+        let c = self.conn();
+        if !doubtful_first {
+            let mut s = c
+                .prepare(
+                    "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                      WHERE f.person_id = ?1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?2",
+                )
+                .map_err(db_err)?;
+            let rows = s.query_map(params![person_id, limit], row_to_tile).map_err(db_err)?;
+            return rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err);
+        }
+        let centroid: Vec<f32> = c
+            .query_row("SELECT centroid FROM people WHERE id = ?1", params![person_id], |r| r.get::<_, Vec<u8>>(0))
+            .optional()
+            .map_err(db_err)?
+            .map(|b| vector_of(&b))
+            .unwrap_or_default();
+        let mut s = c
+            .prepare(
+                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                  WHERE f.person_id = ?1",
+            )
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![person_id], |r| {
+                let sim: f32 = vector_of(&r.get::<_, Vec<u8>>(8)?).iter().zip(&centroid).map(|(a, b)| a * b).sum();
+                Ok((sim, row_to_tile(r)?))
+            })
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_err)?;
+        let mut rows = rows;
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.id.cmp(&b.1.id)));
+        Ok(rows.into_iter().take(limit.max(0) as usize).map(|(_, t)| t).collect())
+    }
+
+    /// Faces marked "not this person" that have not been given to anyone since, best first.
+    pub fn rejected_faces(&self, limit: i64) -> Result<Vec<FaceTile>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                  WHERE f.person_id IS NULL AND f.pinned = 1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?1",
+            )
+            .map_err(db_err)?;
+        let rows = s.query_map(params![limit], row_to_tile).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Park a face nobody matched in the "not this person" rejects, until the user says who it is.
+    pub fn park_face(&self, face_id: i64) -> Result<()> {
+        self.conn().execute("UPDATE faces SET pinned = 1 WHERE id = ?1 AND person_id IS NULL", params![face_id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Give a face to a person (from another person, or from "not this person").
+    pub fn move_face(&self, face_id: i64, person_id: i64) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        move_face_in(&tx, face_id, person_id)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Start a new person from this face (optionally named) and return their id.
+    pub fn new_person_from_face(&self, face_id: i64, name: Option<&str>) -> Result<i64> {
+        let name = name.map(str::trim).filter(|n| !n.is_empty());
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let embedding: Vec<u8> = tx.query_row("SELECT embedding FROM faces WHERE id = ?1", params![face_id], |r| r.get(0)).map_err(db_err)?;
+        tx.execute("INSERT INTO people(name, centroid, n) VALUES (?1, ?2, 0)", params![name, embedding]).map_err(db_err)?;
+        let id = tx.last_insert_rowid();
+        move_face_in(&tx, face_id, id)?;
+        tx.commit().map_err(db_err)?;
+        Ok(id)
+    }
+
+    /// Bring a hidden person back into the nav.
+    pub fn unhide_person(&self, id: i64) -> Result<()> {
+        self.conn().execute("UPDATE people SET hidden = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Name a person; `None` (or blank) clears the name.
+    pub fn rename_person(&self, id: i64, name: Option<&str>) -> Result<()> {
+        let name = name.map(str::trim).filter(|n| !n.is_empty());
+        self.conn().execute("UPDATE people SET name = ?2 WHERE id = ?1", params![id, name]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Leave a person out of the nav. Their faces stay theirs, so they are not grouped into a new person.
+    pub fn hide_person(&self, id: i64) -> Result<()> {
+        self.conn().execute("UPDATE people SET hidden = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Fold `from` into `into`: its faces move, the centroid is recomputed, an unnamed `into` takes `from`'s name.
+    pub fn merge_people(&self, from: i64, into: i64) -> Result<()> {
+        if from == into {
+            return Ok(());
+        }
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("UPDATE faces SET person_id = ?2 WHERE person_id = ?1", params![from, into]).map_err(db_err)?;
+        tx.execute("UPDATE people SET name = (SELECT name FROM people WHERE id = ?1) WHERE id = ?2 AND name IS NULL", params![from, into]).map_err(db_err)?;
+        // what was rejected as `from` is now rejected as `into` (rows that would clash go with `from`)
+        tx.execute("UPDATE OR IGNORE face_rejections SET person_id = ?2 WHERE person_id = ?1", params![from, into]).map_err(db_err)?;
+        tx.execute("DELETE FROM people WHERE id = ?1", params![from]).map_err(db_err)?;
+        recompute_person(&tx, into)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// "Not this person": the face leaves its person and is never grouped automatically again.
+    pub fn reject_face(&self, face_id: i64) -> Result<()> {
+        self.reject_faces(&[face_id])
+    }
+
+    /// `reject_face` for several faces at once.
+    pub fn reject_faces(&self, face_ids: &[i64]) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        for id in face_ids {
+            reject_face_in(&tx, *id)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// `move_face` for several faces at once.
+    pub fn move_faces(&self, face_ids: &[i64], person_id: i64) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        for id in face_ids {
+            move_face_in(&tx, *id, person_id)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Show only photos this person is in; `None` turns the person filter off.
+    pub fn set_person_filter(&self, person: Option<i64>) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM person_hits", []).map_err(db_err)?;
+        match person {
+            Some(p) => {
+                tx.execute("INSERT INTO person_hits(photo_id) SELECT DISTINCT photo_id FROM faces WHERE person_id = ?1", params![p]).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('person', ?1)", params![p.to_string()]).map_err(db_err)?;
+            }
+            None => {
+                tx.execute("DELETE FROM filter_state WHERE name = 'person'", []).map_err(db_err)?;
             }
         }
         refresh_hits(&tx)?;
@@ -1587,5 +2084,332 @@ mod tests {
         assert!(hits(&db).is_empty()); // nothing active: the flag matches nothing (the UI turns the flag off)
         db.set_tag_filter(Some("nothing-has-this")).unwrap();
         assert!(hits(&db).is_empty());
+    }
+
+    // ---- faces and people ----
+
+    fn nf(score: f32, v: [f32; 2]) -> NewFace {
+        NewFace { x: 0.1, y: 0.1, w: 0.2, h: 0.2, score, embedding: v.to_vec() }
+    }
+
+    fn photos(db: &Db, n: usize) -> (FolderId, Vec<PhotoId>) {
+        let f = db.add_folder("/p").unwrap();
+        (f, (0..n).map(|i| db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &meta(None)).unwrap()).collect())
+    }
+
+    /// A person made of the given photos' faces (one face each).
+    fn person_of(db: &Db, ids: &[PhotoId], v: [f32; 2]) -> i64 {
+        let p = db.create_person(&v).unwrap();
+        for id in ids {
+            let f = db.replace_faces(*id, "fv", &[nf(0.9, v)]).unwrap()[0];
+            db.assign_face(f, p, &v, 1).unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn photos_needing_faces_and_counts() {
+        let db = Db::open_in_memory().unwrap();
+        let (f, ids) = photos(&db, 3);
+        assert_eq!(db.face_counts("fv").unwrap(), (0, 3));
+        assert_eq!(db.photos_needing_faces("fv", 10).unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![ids[2], ids[1], ids[0]]);
+        db.replace_faces(ids[2], "fv", &[]).unwrap(); // scanned, no faces: still done
+        db.replace_faces(ids[1], "old", &[]).unwrap(); // scanned with another version: still needed
+        assert_eq!(db.photos_needing_faces("fv", 10).unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![ids[1], ids[0]]);
+        assert_eq!(db.face_counts("fv").unwrap(), (1, 3));
+        db.mark_missing_except(f, &HashSet::new()).unwrap();
+        assert_eq!(db.face_counts("fv").unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn replace_faces_replaces_and_returns_ids() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 1);
+        let first = db.replace_faces(ids[0], "fv", &[nf(0.9, [1.0, 0.0]), nf(0.8, [0.0, 1.0])]).unwrap();
+        assert_eq!(db.faces_of(ids[0]).unwrap().iter().map(|f| f.id).collect::<Vec<_>>(), first);
+        let second = db.replace_faces(ids[0], "fv", &[nf(0.7, [1.0, 0.0])]).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(db.faces_of(ids[0]).unwrap().len(), 1);
+        assert_eq!(db.face_location(second[0]).unwrap().unwrap().0.id, ids[0]);
+        assert!(db.face_location(9999).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_changed_file_loses_its_faces_and_scan_row() {
+        let db = Db::open_in_memory().unwrap();
+        let (f, ids) = photos(&db, 1);
+        db.replace_faces(ids[0], "fv", &[nf(0.9, [1.0, 0.0])]).unwrap();
+        db.upsert_photo(f, "/p/0.jpg", 1, 99, &meta(None)).unwrap();
+        assert!(db.faces_of(ids[0]).unwrap().is_empty());
+        assert_eq!(db.photos_needing_faces("fv", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unassigned_faces_exclude_assigned_rejected_and_hidden_ones() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 4);
+        let ff: Vec<i64> = ids.iter().map(|i| db.replace_faces(*i, "fv", &[nf(0.9, [1.0, 0.0])]).unwrap()[0]).collect();
+        assert_eq!(db.unassigned_faces().unwrap().len(), 4);
+        let p = db.create_person(&[1.0, 0.0]).unwrap();
+        db.assign_face(ff[0], p, &[1.0, 0.0], 1).unwrap();
+        db.reject_face(ff[1]).unwrap(); // rejected: waiting to be guessed again, so it counts as unassigned
+        db.hide_person(p).unwrap();
+        let left: Vec<i64> = db.unassigned_faces().unwrap().into_iter().map(|f| f.0).collect();
+        assert_eq!(left, vec![ff[1], ff[2], ff[3]]);
+        assert_eq!(db.people_centroids().unwrap().len(), 1); // the hidden person is still a candidate to join
+    }
+
+    #[test]
+    fn list_people_hides_noise_counts_photos_and_orders_named_first() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 6);
+        let big = person_of(&db, &ids[0..3], [1.0, 0.0]);
+        let pair = person_of(&db, &ids[3..5], [0.0, 1.0]);
+        let single = person_of(&db, &ids[5..6], [0.6, 0.8]);
+        let l = db.list_people().unwrap();
+        assert_eq!(l.iter().map(|p| (p.id, p.count)).collect::<Vec<_>>(), vec![(big, 3), (pair, 2)]); // the lone unnamed one is not listed
+        db.rename_person(single, Some("Gran")).unwrap();
+        let l = db.list_people().unwrap();
+        assert_eq!(l[0].id, single); // named first
+        assert_eq!(l[0].name.as_deref(), Some("Gran"));
+        assert!(l[0].face_id.is_some());
+        db.rename_person(single, None).unwrap();
+        assert_eq!(db.list_people().unwrap().len(), 2);
+        db.hide_person(big).unwrap();
+        assert_eq!(db.list_people().unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), vec![pair]);
+    }
+
+    #[test]
+    fn merge_moves_faces_recomputes_the_centroid_and_keeps_a_name() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 4);
+        let a = person_of(&db, &ids[0..2], [1.0, 0.0]);
+        let b = person_of(&db, &ids[2..4], [0.0, 1.0]);
+        db.rename_person(b, Some("Sam")).unwrap();
+        db.merge_people(b, a).unwrap();
+        let cs = db.people_centroids().unwrap();
+        assert_eq!(cs.len(), 1);
+        assert_eq!((cs[0].0, cs[0].2), (a, 4));
+        assert!((cs[0].1[0] - cs[0].1[1]).abs() < 1e-5);
+        let l = db.list_people().unwrap();
+        assert_eq!((l[0].id, l[0].count, l[0].name.as_deref()), (a, 4, Some("Sam"))); // the empty name adopts the other's
+    }
+
+    #[test]
+    fn rejecting_a_face_detaches_pins_and_recomputes() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 3);
+        let p = person_of(&db, &ids, [1.0, 0.0]);
+        let f0 = db.faces_of(ids[0]).unwrap()[0].id;
+        db.reject_face(f0).unwrap();
+        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id, None);
+        assert_eq!(db.unassigned_faces().unwrap().len(), 1); // waiting to be guessed again
+        assert_eq!(db.face_rejections().unwrap().get(&f0), Some(&vec![p])); // but never as the person it was rejected from
+        assert_eq!(db.people_centroids().unwrap()[0].2, 2);
+        for id in &ids[1..] {
+            db.reject_face(db.faces_of(*id).unwrap()[0].id).unwrap();
+        }
+        assert!(db.people_centroids().unwrap().iter().all(|c| c.0 != p)); // an unnamed person with no faces goes
+    }
+
+    #[test]
+    fn person_filter_lists_their_photos_and_combines_with_search() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 4);
+        let p = person_of(&db, &ids[0..3], [1.0, 0.0]);
+        let q = PhotoQuery { search: true, ..Default::default() };
+        let hits = |db: &Db| {
+            let mut v: Vec<_> = db.list_photos_in(&q, 0, 10).unwrap().iter().map(|p| p.id).collect();
+            v.sort();
+            v
+        };
+        db.set_person_filter(Some(p)).unwrap();
+        assert_eq!(hits(&db), vec![ids[0], ids[1], ids[2]]);
+        db.set_search_hits(&[ids[2], ids[3]]).unwrap();
+        assert_eq!(hits(&db), vec![ids[2]]);
+        db.set_person_filter(None).unwrap();
+        assert_eq!(hits(&db), vec![ids[2], ids[3]]);
+        db.clear_search_hits().unwrap();
+        db.set_person_filter(Some(p)).unwrap();
+        db.set_tag_filter(Some("nothing")).unwrap();
+        assert!(hits(&db).is_empty());
+    }
+
+    #[test]
+    fn the_active_tag_and_person_can_be_read_back() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, None));
+        db.set_tag_filter(Some("museum")).unwrap();
+        db.set_person_filter(Some(7)).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (Some("museum".to_string()), Some(7)));
+        db.set_tag_filter(None).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, Some(7)));
+        db.set_person_filter(None).unwrap();
+        assert_eq!(db.active_filters().unwrap(), (None, None));
+    }
+
+    #[test]
+    fn removing_a_folder_updates_the_people_who_had_faces_in_it() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.add_folder("/a").unwrap();
+        let b = db.add_folder("/b").unwrap();
+        let pa: Vec<_> = (0..2).map(|i| db.upsert_photo(a, &format!("/a/{i}.jpg"), 1, 1, &meta(None)).unwrap()).collect();
+        let pb = db.upsert_photo(b, "/b/0.jpg", 1, 1, &meta(None)).unwrap();
+        let only_a = person_of(&db, &pa, [1.0, 0.0]); // unnamed, faces only in /a
+        let both = db.create_person(&[0.0, 1.0]).unwrap();
+        for (n, id) in [pa[0], pb].into_iter().enumerate() {
+            let f = db.replace_faces(id, "fv", &[nf(0.9, [0.0, 1.0])]).unwrap()[0];
+            db.assign_face(f, both, &[0.0, 1.0], n as i64 + 1).unwrap(); // the person now has 2 faces
+        }
+        db.remove_folder(a).unwrap();
+        let cs = db.people_centroids().unwrap();
+        assert!(cs.iter().all(|c| c.0 != only_a), "an unnamed person with no faces left is removed");
+        let c = cs.iter().find(|c| c.0 == both).unwrap();
+        assert_eq!(c.2, 1, "the person who is still in /b is counted from the faces that remain");
+    }
+
+    #[test]
+    fn a_changed_file_updates_the_person_who_was_in_it() {
+        let db = Db::open_in_memory().unwrap();
+        let (f, ids) = photos(&db, 2);
+        let alone = person_of(&db, &ids[0..1], [1.0, 0.0]);
+        let shared = person_of(&db, &ids[1..2], [0.0, 1.0]);
+        let extra = db.replace_faces(db.upsert_photo(f, "/p/x.jpg", 1, 1, &meta(None)).unwrap(), "fv", &[nf(0.9, [0.0, 1.0])]).unwrap()[0];
+        db.assign_face(extra, shared, &[0.0, 1.0], 2).unwrap();
+        db.upsert_photo(f, "/p/0.jpg", 1, 99, &meta(None)).unwrap(); // the only photo of `alone` changed
+        db.upsert_photo(f, "/p/1.jpg", 1, 99, &meta(None)).unwrap(); // one of two photos of `shared` changed
+        let cs = db.people_centroids().unwrap();
+        assert!(cs.iter().all(|c| c.0 != alone));
+        assert_eq!(cs.iter().find(|c| c.0 == shared).unwrap().2, 1);
+    }
+
+    #[test]
+    fn face_people_lists_everyone_with_best_samples_and_counts() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 6);
+        let big = db.create_person(&[1.0, 0.0]).unwrap();
+        for (i, id) in ids[0..4].iter().enumerate() {
+            // scores rise with i, so the best faces are the last ones
+            let f = db.replace_faces(*id, "fv", &[NewFace { x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.5 + i as f32 / 10.0, embedding: vec![1.0, 0.0] }]).unwrap()[0];
+            db.assign_face(f, big, &[1.0, 0.0], i as i64 + 1).unwrap();
+        }
+        let single = person_of(&db, &ids[4..5], [0.0, 1.0]);
+        let hidden = person_of(&db, &ids[5..6], [0.6, 0.8]);
+        db.hide_person(hidden).unwrap();
+        let l = db.list_face_people(false).unwrap();
+        assert_eq!(l.iter().map(|p| p.id).collect::<Vec<_>>(), vec![big, single]); // most faces first; the hidden one is left out
+        assert_eq!((l[0].photos, l[0].faces, l[0].listed), (4, 4, true));
+        assert_eq!(l[0].samples.len(), 3);
+        let best = db.faces_of(ids[3]).unwrap()[0].id;
+        assert_eq!(l[0].samples[0], best);
+        assert!(!l[1].listed); // a single unnamed photo is not in the nav
+        let all = db.list_face_people(true).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().find(|p| p.id == hidden).unwrap().hidden);
+        db.unhide_person(hidden).unwrap();
+        assert_eq!(db.list_face_people(false).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_persons_faces_and_the_rejected_ones_are_listed_best_first() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 3);
+        let p = db.create_person(&[1.0, 0.0]).unwrap();
+        let mut fs = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            let f = db.replace_faces(*id, "fv", &[NewFace { x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.6 + i as f32 / 10.0, embedding: vec![1.0, 0.0] }]).unwrap()[0];
+            db.assign_face(f, p, &[1.0, 0.0], i as i64 + 1).unwrap();
+            fs.push(f);
+        }
+        let tiles = db.faces_of_person(p, 10, false).unwrap();
+        assert_eq!(tiles.iter().map(|t| t.id).collect::<Vec<_>>(), vec![fs[2], fs[1], fs[0]]);
+        assert_eq!(tiles[0].photo_id, ids[2]);
+        // what the viewer needs to show the whole photo and outline the face
+        assert_eq!((tiles[0].mtime, tiles[0].size), (1, 1));
+        assert_eq!((tiles[0].x, tiles[0].y, tiles[0].w, tiles[0].h), (0.1, 0.1, 0.2, 0.2));
+        assert_eq!(db.faces_of_person(p, 2, false).unwrap().len(), 2);
+        assert!(db.rejected_faces(10).unwrap().is_empty());
+        db.reject_face(fs[1]).unwrap();
+        db.park_face(fs[1]).unwrap();
+        assert_eq!(db.rejected_faces(10).unwrap().len(), 1);
+        assert!(db.unassigned_faces().unwrap().is_empty(), "a parked face is not grouped again");
+        assert_eq!(db.faces_of_person(p, 10, false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_face_can_move_to_a_person_or_start_a_new_one_and_both_sides_are_updated() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 4);
+        let a = person_of(&db, &ids[0..2], [1.0, 0.0]);
+        let b = person_of(&db, &ids[2..4], [0.0, 1.0]);
+        let fa = db.faces_of(ids[0]).unwrap()[0].id;
+        db.move_face(fa, b).unwrap();
+        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id, Some(b));
+        let cs = db.people_centroids().unwrap();
+        assert_eq!(cs.iter().find(|c| c.0 == a).unwrap().2, 1);
+        assert_eq!(cs.iter().find(|c| c.0 == b).unwrap().2, 3);
+        // a rejected face can be put back, and is no longer pinned away
+        db.reject_face(fa).unwrap();
+        db.move_face(fa, a).unwrap(); // put back by hand: allowed, and the rejection of `a`... (see below)
+        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id, Some(a));
+        // or it can become someone new, with a name
+        let n = db.new_person_from_face(fa, Some(" Gran ")).unwrap();
+        assert_ne!(n, a);
+        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_name.as_deref(), Some("Gran"));
+        assert_eq!(db.people_centroids().unwrap().iter().find(|c| c.0 == n).unwrap().2, 1);
+        // moving the last face out of an unnamed person removes that person
+        let lone = person_of(&db, &ids[0..1], [0.6, 0.8]);
+        let fl = db.faces_of(ids[0]).unwrap()[0].id;
+        db.move_face(fl, b).unwrap();
+        assert!(db.people_centroids().unwrap().iter().all(|c| c.0 != lone)); // (the named one stays)
+    }
+
+    #[test]
+    fn faces_can_be_listed_most_doubtful_first() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 3);
+        let p = db.create_person(&[1.0, 0.0]).unwrap();
+        let embeddings = [[1.0f32, 0.0], [0.0, 1.0], [0.8, 0.6]]; // the middle one is nothing like the centroid
+        let mut fs = Vec::new();
+        for (i, (id, e)) in ids.iter().zip(embeddings).enumerate() {
+            let f = db.replace_faces(*id, "fv", &[NewFace { x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.9, embedding: e.to_vec() }]).unwrap()[0];
+            db.assign_face(f, p, &[1.0, 0.0], i as i64 + 1).unwrap();
+            fs.push(f);
+        }
+        let order = |doubtful| db.faces_of_person(p, 10, doubtful).unwrap().iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(order(true), vec![fs[1], fs[2], fs[0]]);
+        assert_eq!(db.faces_of_person(p, 2, true).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), vec![fs[1], fs[2]]);
+    }
+
+    #[test]
+    fn several_faces_can_be_moved_or_rejected_at_once() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 6);
+        let a = person_of(&db, &ids[0..4], [1.0, 0.0]);
+        let b = person_of(&db, &ids[4..6], [0.0, 1.0]);
+        let fa: Vec<i64> = ids[0..4].iter().map(|i| db.faces_of(*i).unwrap()[0].id).collect();
+        db.move_faces(&fa[0..2], b).unwrap();
+        let cs = db.people_centroids().unwrap();
+        assert_eq!(cs.iter().find(|c| c.0 == a).unwrap().2, 2);
+        assert_eq!(cs.iter().find(|c| c.0 == b).unwrap().2, 4);
+        db.reject_faces(&fa[2..4]).unwrap();
+        assert_eq!(db.unassigned_faces().unwrap().len(), 2);
+        assert!(db.people_centroids().unwrap().iter().all(|c| c.0 != a)); // an unnamed person with no faces left is gone
+        db.move_faces(&[], b).unwrap(); // nothing to do is fine
+    }
+
+    #[test]
+    fn rejections_follow_a_merge_and_are_lifted_by_putting_the_face_back() {
+        let db = Db::open_in_memory().unwrap();
+        let (_f, ids) = photos(&db, 4);
+        let a = person_of(&db, &ids[0..2], [1.0, 0.0]);
+        let b = person_of(&db, &ids[2..4], [0.0, 1.0]);
+        let fa = db.faces_of(ids[0]).unwrap()[0].id;
+        db.reject_face(fa).unwrap();
+        assert_eq!(db.face_rejections().unwrap().get(&fa), Some(&vec![a]));
+        db.merge_people(a, b).unwrap(); // `a` is now part of `b`: the face must not be guessed into `b` either
+        assert_eq!(db.face_rejections().unwrap().get(&fa), Some(&vec![b]));
+        db.move_face(fa, b).unwrap(); // the user puts it back
+        assert!(db.face_rejections().unwrap().get(&fa).is_none());
     }
 }

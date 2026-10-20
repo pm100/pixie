@@ -113,3 +113,34 @@ export type PhotoTag = { tag: string; score: number };
 export const tagsFor = (photoId: number) => invoke<PhotoTag[]>('tags_for', { photoId });
 /** Show only photos with this tag (null: off). List with `View.search`, like a text search. */
 export const setTagFilter = (tag: string | null) => invoke<void>('set_tag_filter', { tag });
+
+// ---- people ----
+import type { FaceInfo, PeopleStatus, PersonInfo } from './people';
+export const peopleStatus = () => invoke<PeopleStatus>('people_status');
+export const listPeople = () => invoke<PersonInfo[]>('list_people');
+export const facesFor = (photoId: number) => invoke<FaceInfo[]>('faces_for', { photoId });
+/** Name a person; an empty name clears it. */
+export const renamePerson = (id: number, name: string | null) => invoke<void>('rename_person', { id, name });
+export const hidePerson = (id: number) => invoke<void>('hide_person', { id });
+export const mergePeople = (from: number, into: number) => invoke<void>('merge_people', { from, into });
+/** "Not this person": the face leaves its person and is not grouped automatically again. */
+export const rejectFace = (faceId: number) => invoke<void>('reject_face', { faceId });
+/** Show only photos with this person (null: off). List with `View.search`, like a text search. */
+/** The tag and person the listings are really restricted to. */
+export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
+export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
+
+// ---- the Faces tab ----
+import type { FacePerson, FaceTile } from './people';
+/** Everyone, most faces first (hidden people only when asked). */
+export const listFacePeople = (includeHidden: boolean) => invoke<FacePerson[]>('list_face_people', { includeHidden });
+/** A person's faces: best first, or the most doubtful (least like the rest) first. */
+export const facesOfPerson = (personId: number, limit?: number, doubtfulFirst?: boolean) => invoke<FaceTile[]>('faces_of_person', { personId, limit, doubtfulFirst });
+/** Faces marked "not this person" and not given to anyone since. */
+export const rejectedFaces = (limit?: number) => invoke<FaceTile[]>('rejected_faces', { limit });
+export const moveFace = (faceId: number, personId: number) => invoke<void>('move_face', { faceId, personId });
+export const moveFaces = (faceIds: number[], personId: number) => invoke<void>('move_faces', { faceIds, personId });
+export const rejectFaces = (faceIds: number[]) => invoke<void>('reject_faces', { faceIds });
+/** Start a new person from a face; returns their id. */
+export const newPersonFromFace = (faceId: number, name: string | null) => invoke<number>('new_person_from_face', { faceId, name });
+export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id });

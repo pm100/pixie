@@ -12,5 +12,6 @@ export function tagRows(tags: TagCount[], chosen: string | null, expanded: boole
   return { rows, hidden: tags.length - limit };
 }
 
-/** The listing is restricted to hits when a text search or a tag is applied. */
-export const searchActive = (searchTerm: string | null, tag: string | null): boolean => searchTerm !== null || tag !== null;
+/** The listing is restricted to hits when a text search, a tag or a person is applied. */
+export const searchActive = (searchTerm: string | null, tag: string | null, person: number | null = null): boolean =>
+  searchTerm !== null || tag !== null || person !== null;

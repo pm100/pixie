@@ -8,7 +8,7 @@ semantic search ("dog on a beach") and people (faces clustered, named by the use
 - **Semantic search model: OpenAI CLIP ViT-B/32** (MIT). Image and text towers as ONNX, int8-quantised
   (about 90 MB image tower, 65 MB text tower plus tokenizer). Chosen over SigLIP: smaller, well-supported
   ONNX exports, fast on CPU, and good enough for personal-library search.
-- **Face detector: YuNet** (OpenCV Zoo, Apache 2.0, under 1 MB). **Face recognizer: SFace** (OpenCV Zoo,
+- **Face detector: YuNet** (OpenCV Zoo, MIT, under 1 MB). **Face recognizer: SFace** (OpenCV Zoo,
   Apache 2.0, about 37 MB, 128-d embeddings). Chosen over InsightFace/ArcFace weights because those are
   non-commercial research licences and Pixie is MIT.
 - **No opt-in gate.** Analysis is part of the app: models download on first run and the work runs in the
@@ -59,7 +59,8 @@ and photo queries; `src-tauri` adds commands and events only.
   threshold, else starts a new person. A background "tidy" merges clusters that drifted together.
 - User actions: name or rename, merge two people, "not this person" (face detaches and is pinned so it is not
   re-assigned), hide a person.
-- Filter: `PhotoQuery.person_id`.
+- Filter: a person filter joins `search_hits` like the text search and tag filter (photos must be in every active set), so no new `PhotoQuery` field.
+- Built differently from the first sketch: faces get their own background pass and `PeopleService` (separate model download and status event) beside the CLIP one; a `face_scans` table (one row per photo and model version, also for photos with no faces) is the queue marker; face crops are cut on demand from the 1600 px viewer thumbnail (`pixie://face/{id}`), not stored; unnamed people seen in only one photo are not listed in the nav; there is no automatic "tidy" merge yet, manual Merge is the remedy.
 
 ## UI
 

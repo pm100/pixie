@@ -28,3 +28,8 @@ export function videoUrl(id: number, mtime: number, size: number, isWindows: boo
 export function posterUrl(id: number, mtime: number, size: number, isWindows: boolean = win(), retry = 0): string {
   return `${base(isWindows)}/poster/${id}?v=${mtime}-${size}${retry ? `&r=${retry}` : ''}`;
 }
+
+/** A square picture of one face (the backend cuts it from the photo); `size` is 96 (default), 160 or 320 pixels. */
+export function faceUrl(id: number, isWindows: boolean = win(), size?: 96 | 160 | 320): string {
+  return `${base(isWindows)}/face/${id}${size ? `?s=${size}` : ''}`;
+}
