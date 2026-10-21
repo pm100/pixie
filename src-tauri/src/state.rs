@@ -16,6 +16,8 @@ pub struct AppState {
     pub mailer: Arc<dyn pixie_mail::Mailer>,
     pub cancel_scan: Arc<AtomicBool>,
     pub gate: pixie_index::ScanGate,
+    /// Folders added while a scan job runs; the job takes them.
+    pub queue: pixie_index::ScanQueue,
     pub analysis: Arc<pixie_analysis::service::AnalysisService>,
     pub people: Arc<pixie_analysis::people_service::PeopleService>,
 }

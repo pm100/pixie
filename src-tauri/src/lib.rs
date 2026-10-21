@@ -1,3 +1,4 @@
+mod placement;
 mod state;
 
 use pixie_core::{
@@ -9,7 +10,8 @@ use pixie_image::posters::{poster_path, save_poster as write_poster, validate_po
 use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
-use pixie_index::{scan_folder_with, Db, ScanMode};
+use pixie_index::suggest::{count_media, known_places, look_further, Places, Suggestion};
+use pixie_index::{scan_folder_with, Db, ScanGuard, ScanMode, ScanQueue};
 use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
 use serde::{Deserialize, Serialize};
 use state::AppState;
@@ -23,6 +25,54 @@ use tauri::{Emitter, Manager};
 #[tauri::command]
 fn add_folder(state: tauri::State<AppState>, path: String) -> Result<i64, PixieError> {
     state.db.add_folder(&path)
+}
+
+/// An approximate item count for one suggested folder (`suggestion-count` event).
+#[derive(Serialize, Clone)]
+struct SuggestionCount {
+    path: String,
+    n: usize,
+    capped: bool,
+}
+
+/// First-run folder suggestions. Returns the well-known places that exist at once, then in the background emits
+/// `suggestion-count` for each (a time-boxed count, capped at 10,000), then `suggestion-found` for each further
+/// candidate under the home folder (unticked), then `suggestions-done`. Subscribe to the events before calling.
+/// Only the home folder is looked through: drive roots are not, because a network or removable drive could stall.
+#[tauri::command]
+async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, PixieError> {
+    let path = app.path();
+    let mut onedrive: Vec<PathBuf> = Vec::new();
+    for key in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+        if let Some(p) = std::env::var_os(key).map(PathBuf::from) {
+            if !onedrive.contains(&p) {
+                onedrive.push(p);
+            }
+        }
+    }
+    let places = Places {
+        pictures: path.picture_dir().ok(),
+        videos: path.video_dir().ok(),
+        downloads: path.download_dir().ok(),
+        desktop: path.desktop_dir().ok(),
+        home: path.home_dir().ok(),
+        onedrive,
+    };
+    let list = known_places(&places);
+    let (events, counted, home) = (app.clone(), list.clone(), places.home.clone());
+    std::thread::spawn(move || {
+        for s in &counted {
+            let c = count_media(std::path::Path::new(&s.path), Duration::from_secs(2), 10_000);
+            let _ = events.emit("suggestion-count", SuggestionCount { path: s.path.clone(), n: c.n, capped: c.capped });
+        }
+        if let Some(home) = home {
+            for s in look_further(&[home], &counted, Duration::from_secs(8), 50) {
+                let _ = events.emit("suggestion-found", s);
+            }
+        }
+        let _ = events.emit("suggestions-done", ());
+    });
+    Ok(list)
 }
 
 #[tauri::command]
@@ -152,6 +202,61 @@ struct ScanErrorEvent {
     message: String,
 }
 
+/// Tells the scan queue its job is over when the job thread ends however it ends.
+struct JobEnd(ScanQueue);
+
+impl Drop for JobEnd {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
+
+/// Run one scan job on its own thread: `ids` first, then any folders added to the queue while it runs. The caller
+/// holds the gate; it is released when the job ends.
+fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids: Vec<i64>, mode: ScanMode) {
+    let db = state.db.clone();
+    let thumbs = state.thumbs.clone();
+    let cancel = state.cancel_scan.clone();
+    let analysis = state.analysis.clone();
+    let people = state.people.clone();
+    let queue = state.queue.clone();
+    cancel.store(false, Ordering::Relaxed);
+    queue.start_job();
+    std::thread::spawn(move || {
+        let _guard = guard; // released when the job ends
+        let _end = JobEnd(queue.clone()); // dropped first: a job that dies stops accepting folders
+        let mut todo = ids;
+        let mut scanned = 0;
+        loop {
+            for id in todo {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let progress_app = app.clone();
+                match scan_folder_with(&db, id, mode, &cancel, |p| {
+                    let _ = progress_app.emit("scan-progress", p);
+                }) {
+                    Ok(_) => scanned += 1,
+                    Err(e) => {
+                        let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
+                    }
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            todo = queue.next_batch(); // folders added while this job ran; empty means the job is over
+            if todo.is_empty() {
+                break;
+            }
+        }
+        let _ = app.emit("scan-done", ScanDone { folders: scanned });
+        analysis.kick(); // new photos to analyse; the worker waits while this scan job runs
+        people.kick();
+        prefetch_all(&db, &thumbs); // queue thumbnails for anything new, in the background
+    });
+}
+
 #[tauri::command]
 /// `full` re-reads every file of the chosen folder(s); otherwise only new and changed files.
 fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: Option<i64>, full: Option<bool>) -> Result<(), PixieError> {
@@ -160,40 +265,57 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
         .gate
         .try_start()
         .ok_or_else(|| PixieError::Busy("a scan is already running".into()))?;
-    let db = state.db.clone();
-    let thumbs = state.thumbs.clone();
-    let cancel = state.cancel_scan.clone();
-    let analysis = state.analysis.clone();
-    let people = state.people.clone();
     let mode = if full.unwrap_or(false) { ScanMode::Full } else { ScanMode::Quick };
-    cancel.store(false, Ordering::Relaxed);
     let ids: Vec<i64> = match folder_id {
         Some(id) => vec![id],
-        None => db.list_folders()?.into_iter().map(|f| f.id).collect(),
+        None => state.db.list_folders()?.into_iter().map(|f| f.id).collect(),
     };
-    std::thread::spawn(move || {
-        let _guard = guard; // released when the job ends
-        let mut scanned = 0;
-        for id in ids {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            let progress_app = app.clone();
-            match scan_folder_with(&db, id, mode, &cancel, |p| {
-                let _ = progress_app.emit("scan-progress", p);
-            }) {
-                Ok(_) => scanned += 1,
-                Err(e) => {
-                    let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
-                }
-            }
-        }
-        let _ = app.emit("scan-done", ScanDone { folders: scanned });
-        analysis.kick(); // new photos to analyse; the worker waits while this scan job (and its thumbnails) runs
-        people.kick();
-        prefetch_all(&db, &thumbs); // build thumbnails for anything new, in the background
-    });
+    spawn_scan_job(app, state.inner(), guard, ids, mode);
     Ok(())
+}
+
+/// How many thumbnails are still being prepared (the first-run flow's "Preparing previews" line).
+#[tauri::command]
+fn previews_pending(state: tauri::State<AppState>) -> usize {
+    state.thumbs.pending_count()
+}
+
+/// What `scan_folders` did: the folders' ids, and whether they joined a scan that was already running.
+#[derive(Serialize)]
+struct ScanStart {
+    folder_ids: Vec<i64>,
+    queued: bool,
+}
+
+/// Add folders and scan them. When a scan job is already running (a launch rescan, say) they join it, so a folder
+/// added at the wrong moment is never left unscanned; otherwise a new job starts over them all.
+#[tauri::command]
+fn scan_folders(app: tauri::AppHandle, state: tauri::State<AppState>, paths: Vec<String>) -> Result<ScanStart, PixieError> {
+    let mut ids: Vec<i64> = Vec::new();
+    for p in &paths {
+        let id = state.db.add_folder(p)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let app_job = app.clone();
+    let mut placed = placement::place_folders(&ids, &state.gate, &state.queue, 200, Duration::from_millis(10), &mut |rest, guard| {
+        spawn_scan_job(app_job.clone(), state.inner(), guard, rest, ScanMode::Quick);
+    });
+    if let placement::Outcome::Waiting(rest) = std::mem::replace(&mut placed.outcome, placement::Outcome::Queued) {
+        // A job is finishing (closing steps after its last folder) and neither takes folders nor has freed the gate yet.
+        // The folders are already saved: start their scan the moment the gate frees, however long that takes.
+        let shared = state.inner().clone();
+        std::thread::spawn(move || loop {
+            if let Some(guard) = shared.gate.try_start() {
+                spawn_scan_job(app, &shared, guard, rest, ScanMode::Quick);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        });
+        placed.queued = true; // it will be scanned after the running job, which is what "queued" tells the caller
+    }
+    Ok(ScanStart { folder_ids: ids, queued: placed.queued })
 }
 
 #[tauri::command]
@@ -458,6 +580,22 @@ fn save_mail_account(state: tauri::State<AppState>, account: MailAccount, passwo
         }
     }
     Ok(())
+}
+
+/// Whether this is a debug build: the Developer page in Settings exists only there.
+#[tauri::command]
+fn is_debug_build() -> bool {
+    cfg!(debug_assertions)
+}
+
+/// Debug builds only: show Pixie's data folder (database, caches, models) in the file manager.
+#[tauri::command]
+fn open_data_folder(app: tauri::AppHandle) -> Result<(), PixieError> {
+    if !cfg!(debug_assertions) {
+        return Err(PixieError::Unsupported("only available in debug builds".into()));
+    }
+    let dir = app.path().app_local_data_dir().map_err(|e| PixieError::Io(e.to_string()))?;
+    open::that_detached(&dir).map_err(|e| PixieError::Io(e.to_string()))
 }
 
 #[tauri::command]
@@ -841,7 +979,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            // The local (not roaming) data folder: a big database and caches do not belong in a roaming profile, and
+            // it is where the app window keeps its own storage too.
+            let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db = Db::open(&dir.join("pixie.db"))?;
             // Leave one core for the UI; decoding is the heavy part.
@@ -902,13 +1042,14 @@ pub fn run() {
                 mailer: Arc::new(SmtpMailer),
                 cancel_scan: Arc::new(Default::default()),
                 gate,
+                queue: ScanQueue::default(),
                 analysis,
                 people,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, previews_pending, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])

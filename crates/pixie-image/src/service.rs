@@ -93,6 +93,11 @@ impl ThumbService {
         self.inner.cv.notify_one();
     }
 
+    /// How many thumbnails are waiting or being made right now (on-demand and prefetched alike).
+    pub fn pending_count(&self) -> usize {
+        self.inner.state.lock().unwrap_or_else(|p| p.into_inner()).pending.len()
+    }
+
     /// Queue thumbnails at the lowest priority, in the given order, skipping ones
     /// already on disk or already queued. Nobody waits for the result.
     pub fn prefetch(&self, jobs: Vec<(ThumbClass, i64, i64, i64, PathBuf)>) {
@@ -290,5 +295,29 @@ mod tests {
         svc.prefetch(vec![(ThumbClass::Grid, 9, 1, 0, PathBuf::from("x"))]);
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn blocked_until_released(_: &Path, _: ThumbClass, _: i64, _: i64, _: i64, src: &Path) -> Result<PathBuf> {
+        while !RELEASE.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(src.to_path_buf())
+    }
+
+    #[test]
+    fn pending_count_rises_with_prefetch_and_returns_to_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ThumbService::with_generator(dir.path().join("cache"), 2, blocked_until_released);
+        assert_eq!(svc.pending_count(), 0);
+        svc.prefetch((0..5).map(|i| (ThumbClass::Grid, i, 1, 1, PathBuf::from(format!("/nowhere/{i}.jpg")))).collect());
+        assert_eq!(svc.pending_count(), 5, "queued and in-flight jobs both count");
+        RELEASE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while svc.pending_count() > 0 {
+            assert!(start.elapsed() < Duration::from_secs(5), "the queue never drained");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }

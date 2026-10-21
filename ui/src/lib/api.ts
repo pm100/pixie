@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { Bounds, GeoPoint } from './geo';
 
 export type { Bounds, GeoPoint } from './geo';
@@ -126,6 +127,29 @@ export const mergePeople = (from: number, into: number) => invoke<void>('merge_p
 /** "Not this person": the face leaves its person and is not grouped automatically again. */
 export const rejectFace = (faceId: number) => invoke<void>('reject_face', { faceId });
 /** Show only photos with this person (null: off). List with `View.search`, like a text search. */
+// ---- first run ----
+/** A place Pixie thinks holds photos (mirrors the Rust `Suggestion`). `included_in`: already part of another suggestion. */
+export type Suggestion = { path: string; name: string; kind: 'known' | 'further'; ticked: boolean; note: string | null; included_in: string | null };
+/** An approximate item count for one suggested folder. */
+export type SuggestionCount = { path: string; n: number; capped: boolean };
+export const onSuggestionCount = (f: (c: SuggestionCount) => void) => listen<SuggestionCount>('suggestion-count', (e) => f(e.payload));
+export const onSuggestionFound = (f: (s: Suggestion) => void) => listen<Suggestion>('suggestion-found', (e) => f(e.payload));
+export const onSuggestionsDone = (f: () => void) => listen('suggestions-done', () => f());
+/** The well-known photo places that exist; counts and further candidates then arrive as events (subscribe first). */
+export const suggestFolders = () => invoke<Suggestion[]>('suggest_folders');
+
+/** What `scanFolders` did: the folders' ids, and whether they joined a scan that was already running. */
+export type ScanStart = { folder_ids: number[]; queued: boolean };
+/** Add folders and scan them together; folders added while a scan runs join it instead of being left unscanned. */
+export const scanFolders = (paths: string[]) => invoke<ScanStart>('scan_folders', { paths });
+
+/** How many thumbnails are still being prepared. */
+export const previewsPending = () => invoke<number>('previews_pending');
+
+/** Debug builds only: whether the Developer page is offered. */
+export const isDebugBuild = () => invoke<boolean>('is_debug_build');
+/** Debug builds only: show the data folder in the file manager. */
+export const openDataFolder = () => invoke<void>('open_data_folder');
 /** The tag and person the listings are really restricted to. */
 export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });

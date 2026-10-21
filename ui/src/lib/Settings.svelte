@@ -1,11 +1,11 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'analysis' | 'email' | 'about';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'analysis' | 'email' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
   import { getVersion } from '@tauri-apps/api/app';
   import { onMount } from 'svelte';
-  import type { FolderInfo } from './api';
+  import { isDebugBuild, openDataFolder, type FolderInfo } from './api';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import type { AnalysisStatus } from './analysis';
   import PhotoFolders from './PhotoFolders.svelte';
@@ -26,12 +26,23 @@
     { id: 'analysis', label: 'Search' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
   ];
   let version = $state('');
-  onMount(() => { getVersion().then((v) => (version = v)).catch(() => {}); });
+  // Debug builds only: a Developer page.
+  let debug = $state(false);
+  let devError = $state('');
+  onMount(() => {
+    getVersion().then((v) => (version = v)).catch(() => {});
+    isDebugBuild().then((d) => (debug = d)).catch(() => {});
+  });
+  const shownPages = $derived(debug ? [...pages, { id: 'developer' as SettingsPage, label: 'Developer' }] : pages);
+  async function openData() {
+    devError = '';
+    try { await openDataFolder(); } catch (e) { devError = String(e); }
+  }
 </script>
 
 <div class="settings">
   <nav aria-label="Settings">
-    {#each pages as p (p.id)}
+    {#each shownPages as p (p.id)}
       <button class:on={page === p.id} onclick={() => onpage(p.id)}>{p.label}</button>
     {/each}
   </nav>
@@ -54,6 +65,11 @@
       <h2>Email</h2>
       <p>Set up the account Pixie uses to send photos.</p>
       <button onclick={onemail}>Email account…</button>
+    {:else if page === 'developer' && debug}
+      <h2>Developer</h2>
+      <p>Debug builds only.</p>
+      <button onclick={openData}>Open data folder</button>
+      {#if devError}<p class="err">{devError}</p>{/if}
     {:else}
       <h2>About</h2>
       <p>Pixie {version}</p>
@@ -73,5 +89,6 @@
   .page :global(h2) { margin: 0 0 8px; font-size: 18px; }
   .page :global(p) { margin: 0 0 8px; }
   .opt { display: block; margin: 6px 0; }
+  .err { color: #b00020; }
   .days { width: 4.5em; font: inherit; padding: 2px 4px; }
 </style>

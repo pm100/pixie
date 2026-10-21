@@ -92,9 +92,17 @@ Installers and code signing are not set up yet.
 | `assets` | Source artwork (the app icon). |
 | `docs/superpowers` | Design specs and implementation plans. |
 
+## First run
+
+With no folders yet, Pixie opens a welcome screen that suggests where your photos probably are (Pictures, Videos,
+OneDrive and similar, plus a bounded look under your home folder). Tick what you want and press Start: a full-screen
+scan reads the files, then "now analysing" runs the search and face passes, then an "All set" screen says what was
+found. "Carry on in the background" leaves the analysis running while you browse. Adding a folder later in
+Settings, Photo folders, uses the same scan without the welcome. Launch rescans stay in the background.
+
 ## Data and caches
 
-Pixie keeps its database, thumbnails, map tiles and place cache in its app data folder (on Windows, `%APPDATA%\app.pixie.desktop`). Deleting that folder resets Pixie; your photos are untouched.
+Pixie keeps its database, thumbnails, map tiles and place cache in its app data folder (on Windows, `%LOCALAPPDATA%\app.pixie.desktop`). Deleting that folder resets Pixie; your photos are untouched.
 
 ## Contributing
 

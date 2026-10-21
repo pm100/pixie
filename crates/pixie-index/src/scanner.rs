@@ -1,12 +1,12 @@
 use crate::db::Db;
-use pixie_core::{media_kind, FolderId, MediaKind, PhotoMeta, PixieError, Result};
+use pixie_core::{media_kind, FolderId, MediaKind, PhotoId, PhotoMeta, PixieError, Result};
 use pixie_image::media::read_media_meta;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
@@ -56,6 +56,21 @@ pub struct ScanProgress {
     pub indexed: usize,
     /// How many files will be read in all: 0 while the folder is still being walked, then fixed.
     pub to_index: usize,
+    /// A photo or video stored a moment ago, for a "now reading" view; set on the calls made while reading, at most one
+    /// every `LATEST_EVERY` (and always for the first one).
+    pub latest: Option<LatestItem>,
+}
+
+/// How often at most a progress call names a stored photo.
+const LATEST_EVERY: Duration = Duration::from_millis(200);
+
+/// A stored file, with what a client needs to ask for its thumbnail.
+#[derive(Debug, Clone, Serialize)]
+pub struct LatestItem {
+    pub id: PhotoId,
+    pub mtime: i64,
+    pub size: i64,
+    pub name: String,
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -151,18 +166,19 @@ pub fn scan_folder_with(
             existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some(), kind }),
         }
         if seen.len() % 100 == 0 {
-            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0 });
+            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None });
         }
     }
 
     // Phase 2: read metadata in parallel, store results as they arrive.
     // Say how much there is to read, so the UI can show real progress instead of the finished walk's count.
-    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len() });
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len(), latest: None });
     let next = AtomicUsize::new(0);
     let (todo_ref, next_ref) = (&todo, &next);
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PhotoMeta)>();
     let mut db_error: Option<PixieError> = None;
     let mut indexed = 0;
+    let mut last_latest: Option<Instant> = None;
     std::thread::scope(|scope| {
         for _ in 0..metadata_workers().min(todo.len().max(1)) {
             let tx = tx.clone();
@@ -179,6 +195,9 @@ pub fn scan_folder_with(
         }
         drop(tx);
         for (i, mut meta) in rx {
+            if cancel.load(Ordering::Relaxed) {
+                break; // what was already read but not saved is found again by the next scan; dropping `rx` stops the workers
+            }
             let c = &todo[i];
             if meta.width.is_none() {
                 stats.unreadable += 1;
@@ -186,15 +205,24 @@ pub fn scan_folder_with(
             if meta.taken_at.is_none() {
                 meta.taken_at = Some(c.mtime / 1000);
             }
-            if let Err(e) = db.upsert_photo(folder_id, &c.path, c.size, c.mtime, &meta) {
-                db_error = Some(e);
-                cancel_workers(next_ref, todo_ref.len());
-                break;
-            }
+            let id = match db.upsert_photo(folder_id, &c.path, c.size, c.mtime, &meta) {
+                Ok(id) => id,
+                Err(e) => {
+                    db_error = Some(e);
+                    cancel_workers(next_ref, todo_ref.len());
+                    break;
+                }
+            };
             if c.is_update { stats.updated += 1 } else { stats.added += 1 }
             indexed += 1;
-            if indexed % 50 == 0 {
-                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len() });
+            let due = last_latest.map_or(true, |t| t.elapsed() >= LATEST_EVERY);
+            if due || indexed % 50 == 0 {
+                let latest = due.then(|| {
+                    last_latest = Some(Instant::now());
+                    let name = Path::new(&c.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    LatestItem { id, mtime: c.mtime, size: c.size, name }
+                });
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len(), latest });
             }
         }
     });
@@ -214,7 +242,7 @@ pub fn scan_folder_with(
     if stats.walk_errors == 0 {
         stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
     }
-    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo.len() });
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo.len(), latest: None });
     Ok(stats)
 }
 
@@ -491,5 +519,32 @@ mod tests {
         assert!(s.cancelled);
         assert_eq!(s.marked_missing, 0);
         assert!(db.count_photos().unwrap() < 400);
+    }
+
+    #[test]
+    fn progress_during_reading_names_a_stored_photo() {
+        let (dir, db, f) = setup();
+        for i in 0..400 {
+            fs::write(dir.path().join(format!("{i}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let mut latest = Vec::new();
+        scan_folder(&db, f, &AtomicBool::new(false), |p| latest.extend(p.latest.clone())).unwrap();
+        assert!(!latest.is_empty(), "the first stored photo is always reported");
+        for l in latest {
+            let photo = db.get_photo(l.id).unwrap().expect("the named photo is stored");
+            assert!(photo.path.ends_with(&l.name), "{} vs {}", photo.path, l.name);
+            assert_eq!((photo.mtime, photo.size), (l.mtime, l.size));
+        }
+    }
+
+    #[test]
+    fn progress_is_throttled() {
+        let (dir, db, f) = setup();
+        for i in 0..400 {
+            fs::write(dir.path().join(format!("{i}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let mut with_latest = 0;
+        scan_folder(&db, f, &AtomicBool::new(false), |p| with_latest += usize::from(p.latest.is_some())).unwrap();
+        assert!(with_latest < 100, "a call per photo would be 400, got {with_latest}");
     }
 }
