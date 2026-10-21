@@ -41,11 +41,13 @@ Answers are cached on your machine. With no network the map shows "Map unavailab
     ```powershell
     git clone https://github.com/microsoft/vcpkg C:\vcpkg
     C:\vcpkg\bootstrap-vcpkg.bat
-    C:\vcpkg\vcpkg install libheif:x64-windows-static-md
+    C:\vcpkg\vcpkg install "libheif[core]:x64-windows"
     setx VCPKG_ROOT C:\vcpkg
-    setx VCPKGRS_TRIPLET x64-windows-static-md
+    setx VCPKGRS_TRIPLET x64-windows
+    setx VCPKGRS_DYNAMIC 1
+    setx PATH "%PATH%;C:\vcpkg\installed\x64-windows\bin"
     ```
-    Open a new shell afterwards.
+    Open a new shell afterwards. libheif and libde265 are LGPL, so they are linked as DLLs (`heif.dll`, `libde265.dll`); the build copies them next to the program and into the installer. The `PATH` entry lets `cargo test` find them.
   - **macOS:** `brew install libheif pkg-config` (not yet tested by the author).
   - To build without HEIC support, pass `--no-default-features` to cargo.
 
@@ -110,4 +112,4 @@ Issues and pull requests are welcome. See [`AGENTS.md`](AGENTS.md) for working r
 
 ## License
 
-[MIT](LICENSE). HEIC support links libheif, libde265 and x265, which have their own licenses; review them before distributing binaries.
+[MIT](LICENSE). HEIC support uses libheif and libde265 (both LGPL-3.0). On Windows they ship as separate DLLs beside the program, so you can replace them with your own build; they are built without the GPL x265 encoder (hence `libheif[core]`) because Pixie only decodes HEIC. HEVC, the codec inside HEIC, is also covered by patents that a code licence does not address; review that before distributing binaries.
