@@ -24,7 +24,7 @@ export interface View {
   since: number | null;
   /** Only items taken before this time (unix seconds, exclusive). */
   until: number | null;
-  /** Only items in the current search result (see `searchPhotos`). */
+  /** Only items in the current tag / person filter result. */
   search: boolean;
 }
 /** Photos taken on one day ("YYYY-MM-DD"; null = no date), in listing order. */
@@ -99,20 +99,18 @@ export const photosAt = (indexes: number[], v: View) =>
   invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId, since: v.since, until: v.until, search: v.search });
 export const sendEmail = (request: SendEmailRequest) => invoke<string[]>('send_email', { request });
 
-// ---- content analysis and search ----
+// ---- picture analysis (Auto tags) ----
 import type { AnalysisStatus } from './analysis';
 export const analysisStatus = () => invoke<AnalysisStatus>('analysis_status');
 export const analysisSetPaused = (paused: boolean) => invoke<void>('analysis_set_paused', { paused });
 export const analysisRetry = () => invoke<void>('analysis_retry');
-/** Make `text` the current search and return how many photos match; blank text clears it. List with `View.search`. */
-export const searchPhotos = (text: string) => invoke<number>('search_photos', { text });
 
 // ---- tags ----
 import type { TagCount } from './tagNav';
 export const listTags = () => invoke<TagCount[]>('list_tags');
 export type PhotoTag = { tag: string; score: number };
 export const tagsFor = (photoId: number) => invoke<PhotoTag[]>('tags_for', { photoId });
-/** Show only photos with this tag (null: off). List with `View.search`, like a text search. */
+/** Show only photos with this tag (null: off). List with `View.search`. */
 export const setTagFilter = (tag: string | null) => invoke<void>('set_tag_filter', { tag });
 
 // ---- people ----
@@ -126,7 +124,7 @@ export const hidePerson = (id: number) => invoke<void>('hide_person', { id });
 export const mergePeople = (from: number, into: number) => invoke<void>('merge_people', { from, into });
 /** "Not this person": the face leaves its person and is not grouped automatically again. */
 export const rejectFace = (faceId: number) => invoke<void>('reject_face', { faceId });
-/** Show only photos with this person (null: off). List with `View.search`, like a text search. */
+/** Show only photos with this person (null: off). List with `View.search`. */
 // ---- first run ----
 /** A place Pixie thinks holds photos (mirrors the Rust `Suggestion`). `included_in`: already part of another suggestion. */
 export type Suggestion = { path: string; name: string; kind: 'known' | 'further'; ticked: boolean; note: string | null; included_in: string | null };

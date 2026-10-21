@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { categoryOf, searchActive, tagLabel, tagTree } from './tagNav';
+import { categoryOf, hitsActive, tagLabel, tagTree } from './tagNav';
 
 const t = (tag: string, count: number, category: string, category_photos: number) => ({ tag, count, category, category_photos });
 const list = [t('beach', 9, 'Settings', 12), t('lake', 4, 'Settings', 12), t('dog', 7, 'Animals', 8), t('museum', 3, 'Places', 3), t('cat', 2, 'Animals', 8)];
@@ -34,11 +34,11 @@ describe('categoryOf', () => {
   });
 });
 
-describe('searchActive', () => {
-  it('is on when either a text search or a tag is applied', () => {
-    expect(searchActive(null, null)).toBe(false);
-    expect(searchActive('dog', null)).toBe(true);
-    expect(searchActive(null, 'beach')).toBe(true);
-    expect(searchActive('dog', 'beach')).toBe(true);
+describe('hitsActive', () => {
+  it('is on when a tag or a person is applied', () => {
+    expect(hitsActive(null, null)).toBe(false);
+    expect(hitsActive('beach', null)).toBe(true);
+    expect(hitsActive(null, 3)).toBe(true);
+    expect(hitsActive('beach', 3)).toBe(true);
   });
 });

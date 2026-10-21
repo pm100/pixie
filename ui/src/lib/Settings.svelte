@@ -23,7 +23,7 @@
 
   const pages: { id: SettingsPage; label: string }[] = [
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' },
-    { id: 'analysis', label: 'Search' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
+    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
   ];
   let version = $state('');
   // Debug builds only: a Developer page.

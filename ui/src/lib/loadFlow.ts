@@ -1,7 +1,8 @@
 import type { AnalysisStatus } from './analysis';
 
-/** The first-run / add-a-folder flow: which full-screen step is showing ('off': Browse). */
-export type Phase = 'off' | 'welcome' | 'scanning' | 'analysing' | 'allset';
+/** The first-run / add-a-folder flow: which full-screen step is showing ('off': Browse). 'background' is the note shown
+ *  after "Carry on in the background": what is still running, how to tell when it ends, what to do meanwhile. */
+export type Phase = 'off' | 'welcome' | 'scanning' | 'analysing' | 'allset' | 'background';
 
 const n = (x: number) => x.toLocaleString();
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
@@ -28,7 +29,7 @@ export type Line = {
 };
 
 /** A line for one analysis pass (search or faces); `label` is "search" or "face" in the model messages. */
-function passLine(key: 'search' | 'faces', title: string, why: string, label: 'search' | 'face', s: AnalysisStatus | null, extra: string, expect: number): Line {
+function passLine(key: 'search' | 'faces', title: string, why: string, label: 'picture-analysis' | 'face', s: AnalysisStatus | null, extra: string, expect: number): Line {
   const line: Line = { key, title, why, text: 'Starting…', fraction: null, error: null, paused: false, done: false };
   if (!s) return line;
   if (s.models === 'error') {
@@ -39,7 +40,7 @@ function passLine(key: 'search' | 'faces', title: string, why: string, label: 's
     const fraction = s.model_total > 0 ? Math.min(1, s.model_done / s.model_total) : 0;
     return { ...line, text: `Getting the ${label} model… ${Math.floor(fraction * 100)}%`, fraction };
   }
-  if (s.error) return { ...line, text: `${n(s.done)} of ${n(s.total)}`, error: `${key === 'search' ? 'Analysis' : 'People search'} is having trouble: ${s.error}` };
+  if (s.error) return { ...line, text: `${n(s.done)} of ${n(s.total)}`, error: `${key === 'search' ? 'Picture analysis' : 'Face finding'} is having trouble: ${s.error}` };
   // The status can still describe the library as it was before this scan: until it has counted at least the photos the
   // scan found, an empty or small status says nothing about whether the work is done.
   if (s.total < expect) return { ...line, text: 'Getting ready…' };
@@ -60,7 +61,7 @@ export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | nul
       fraction: previews.max > 0 ? Math.min(1, Math.max(0, done) / previews.max) : previewsDone ? 1 : null,
       error: null, paused: false, done: previewsDone,
     },
-    passLine('search', 'Understanding your photos', 'So you can search for "dog on a beach" and browse by what is in them (Auto tags).', 'search', a, '', expect),
+    passLine('search', 'Understanding your photos', 'So you can browse by Auto tags, the labels Pixie adds to say what is in each photo (Beach, Museum, Dog and so on).', 'picture-analysis', a, '', expect),
     passLine('faces', 'Finding faces', 'So you can name the people and browse by person.', 'face', p, ` · ${peopleCount === 1 ? '1 person' : `${n(peopleCount)} people`} so far`, expect),
   ];
 }

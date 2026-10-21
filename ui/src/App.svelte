@@ -4,14 +4,14 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, searchPhotos, setTagFilter, startScan,
+    listTags, removeFolder, setTagFilter, startScan,
     listPeople, peopleStatus, setPersonFilter, activeFilters,
     listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
-  import { searchNote, type AnalysisStatus } from './lib/analysis';
+  import type { AnalysisStatus } from './lib/analysis';
   import { createLatest } from './lib/latest';
-  import { searchActive, tagLabel, type TagCount } from './lib/tagNav';
+  import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import FacesTab from './lib/FacesTab.svelte';
   import Details from './lib/Details.svelte';
@@ -28,6 +28,9 @@
   import { scanText } from './lib/scanProgress';
   import { folderName } from './lib/format';
   import AllSet from './lib/AllSet.svelte';
+  import BackgroundNote from './lib/BackgroundNote.svelte';
+  import BackgroundProgress from './lib/BackgroundProgress.svelte';
+  import { backgroundProgress } from './lib/backgroundProgress';
   import LoadModal from './lib/LoadModal.svelte';
   import Welcome from './lib/Welcome.svelte';
   import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, type Phase } from './lib/loadFlow';
@@ -125,55 +128,14 @@
       if (mode === 'map') loadPoints();
     }
   }
-  // Search: the box holds what is being typed; `searchTerm` is the search that is applied to the view.
   let analysis = $state<AnalysisStatus | null>(null);
-  let searchText = $state(''), searchTerm = $state<string | null>(null), searching = $state(false);
-  const searchReady = $derived(analysis?.models === 'ready');
 
-  // Only the latest search or clear may change the view; an older one finishing late is ignored.
-  const latestSearch = createLatest();
-  /** The pop-out pages through the search result by position, so it cannot outlive a change of that result. */
+  /** The pop-out pages through the listing by position, so it cannot outlive a change of what the listing shows. */
   function closePopout() {
     if (popoutOpen) { void emit(POPOUT_CLOSE); popoutOpen = false; popoutSnap = null; }
   }
 
-  async function runSearch() {
-    const text = searchText.trim();
-    if (text === '') return clearSearch();
-    const token = latestSearch.next();
-    searching = true;
-    try {
-      await searchPhotos(text);
-      if (!latestSearch.isCurrent(token)) return;
-      closePopout();
-      searchTerm = text;
-      view = { ...view, search: true };
-      selection = emptySelection;
-      await refresh(true);
-      if (mode === 'map') loadPoints();
-    } catch (e) {
-      message = String(e);
-    } finally {
-      if (latestSearch.isCurrent(token)) searching = false;
-    }
-  }
-
-  async function clearSearch() {
-    latestSearch.next(); // a search still in flight must not bring the results back
-    searching = false;
-    searchText = '';
-    searchTerm = null;
-    const next = searchActive(null, activeTag, activePerson); // a chosen tag or person keeps the view restricted
-    if (!view.search && !next) return;
-    closePopout();
-    view = { ...view, search: next };
-    selection = emptySelection;
-    searchPhotos('').catch(() => {}); // forget the text hits
-    refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
-  }
-
-  // Tags: what the photos show, as a filter. It combines with a text search (a photo must match both).
+  // Auto tags: what the photos show, as a filter. It combines with a person (a photo must match both).
   let tags = $state<TagCount[]>([]), activeTag = $state<string | null>(null);
   let tagsAt = 0;
   async function loadTags() {
@@ -201,13 +163,13 @@
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     closePopout();
-    view = { ...view, search: searchActive(searchTerm, next, activePerson) };
+    view = { ...view, search: hitsActive(next, activePerson) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
   }
 
-  // People: faces grouped by who they are, as a filter. It combines with a text search and a tag.
+  // People: faces grouped by who they are, as a filter. It combines with a tag.
   let peopleList = $state<PersonInfo[]>([]), activePerson = $state<number | null>(null);
   let peopleState = $state<PeopleStatus | null>(null);
   let peopleAt = 0;
@@ -227,7 +189,7 @@
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
     if (await syncFilters()) { // a filter was on that the screen did not show: show it now
-      view = { ...view, search: searchActive(searchTerm, activeTag, activePerson) };
+      view = { ...view, search: hitsActive(activeTag, activePerson) };
       refresh(true).catch((e) => (message = String(e)));
     }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
@@ -241,7 +203,7 @@
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     closePopout();
-    view = { ...view, search: searchActive(searchTerm, activeTag, next) };
+    view = { ...view, search: hitsActive(activeTag, next) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -367,21 +329,17 @@
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
-  const filtered = $derived(searchTerm !== null || activeTag !== null || activePerson !== null || periodKey !== null || view.since !== null);
+  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || view.since !== null);
 
-  /** "Show all": drop the text search, tag, person and date range in one go. */
+  /** "Show all": drop the tag, person and date range in one go. */
   async function showAll() {
-    latestSearch.next(); // a search still in flight must not bring the results back
-    searching = false;
-    searchText = '';
-    searchTerm = null;
     closePopout();
     try {
-      await Promise.all([searchPhotos(''), setTagFilter(null), setPersonFilter(null)]);
+      await Promise.all([setTagFilter(null), setPersonFilter(null)]);
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
-    view = { ...view, search: searchActive(null, activeTag, activePerson), since: null, until: null };
+    view = { ...view, search: hitsActive(activeTag, activePerson), since: null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -638,14 +596,18 @@
     });
   }
 
-  /** Leave the modal: Browse opens and whatever is still running (the scan, then the analysis) carries on in the
-   *  background, with its progress in the navigation as for any scan Pixie starts itself. */
+  /** Leave the modal: whatever is still running (the scan, then the analysis) carries on in the background. A note says
+   *  so, and says how to tell when it has finished (the indicator at the top right, below). */
   const carryOnInBackground = () => {
     feed?.stop();
     feed = null;
-    phase = 'off';
+    phase = 'background';
     refresh(true).catch((e) => (message = String(e)));
   };
+
+  /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
+  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState }));
+  const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While analysing: poll the preview queue and the people count once a second.
   $effect(() => {
@@ -716,7 +678,7 @@
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number; latest: Sample | null }>('scan-progress', (e) => {
         seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
-        if (phase === 'off') { refreshLive(); return; }
+        if (phase !== 'scanning') { if (phase === 'off' || phase === 'background') refreshLive(); return; }
         const f = folders.find((x) => x.id === e.payload.folder_id);
         flowFolder = f ? folderName(f.path) : flowFolder;
         if (e.payload.latest) feed?.offer(e.payload.latest);
@@ -756,6 +718,7 @@
 <main inert={phase !== 'off'}>
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
+      <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
       <span>{total.toLocaleString()} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
@@ -764,16 +727,6 @@
         <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
           {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
         </button>
-        <form class="search" onsubmit={(e) => { e.preventDefault(); runSearch(); }}>
-          <input type="search" bind:value={searchText} placeholder="Search, e.g. dog on a beach" aria-label="Search photos"
-                 disabled={!searchReady || searching}
-                 title={searchReady ? 'Describe what you are looking for' : 'Search is not ready yet: see Settings, Search'}
-                 onkeydown={(e) => { if (e.key === 'Escape') clearSearch(); }} />
-        </form>
-        {#if view.search && searchTerm !== null}
-          <span class="filter">Matching “{searchTerm}”
-            <button onclick={clearSearch} aria-label="Clear search" title="Clear search">✕</button></span>
-        {/if}
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
@@ -782,12 +735,11 @@
           <span class="filter">Person “{personLabel(activeInfo)}”
             <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
         {/if}
-        {#if view.search && analysis && searchNote(analysis)}<span class="note">{searchNote(analysis)}</span>{/if}
         {#if periodKey !== null}
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
         {/if}
-        {#if filtered}<button class="showall" onclick={showAll} title="Clear the search, tag, person and dates">Show all</button>{/if}
+        {#if filtered}<button class="showall" onclick={showAll} title="Clear the tag, person and dates">Show all</button>{/if}
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -827,7 +779,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{view.search ? (searchTerm !== null ? `Nothing matches “${searchTerm}”.` : activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -873,6 +825,9 @@
   <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} lines={flowLines} notice={message}
              onstop={() => { flowStopped = true; cancelScan(); }} onbackground={carryOnInBackground}
              onretry={() => analysisRetry()} onresume={() => analysisSetPaused(false)} />
+{:else if phase === 'background'}
+  <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}
+                  onbrowse={() => { phase = 'off'; refresh(true).catch((e) => (message = String(e))); }} />
 {:else if phase === 'allset' && allSet}
   <AllSet summary={allSet} onpeople={() => { phase = 'off'; pickTab('faces'); }}
           onbrowse={() => { phase = 'off'; refresh(true).catch((e) => (message = String(e))); }}
@@ -885,9 +840,6 @@
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
   .content { flex: 1; min-height: 0; }
-  .search input { width: 260px; max-width: 40vw; font: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid #c3c8d4; border-radius: 12px; }
-  .search input:disabled { background: #f3f4f7; color: #888; }
-  .note { font-size: 12px; color: #666; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   .showall { font: inherit; font-size: 13px; }

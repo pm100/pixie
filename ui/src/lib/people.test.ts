@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { faceCardLine, peopleLine, personLabel, personRows, resolveFaceName, sameNamePerson, type PeopleStatus, type PersonInfo } from './people';
+import { faceCardLine, peopleLine, personLabel, personRows, resolveFaceName, sameNamePerson, shouldRefreshOnShow, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
-import { searchActive } from './tagNav';
+import { hitsActive } from './tagNav';
 
 const status = (o: Partial<PeopleStatus> = {}): PeopleStatus => ({
   models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, error: null, ...o,
@@ -25,7 +25,7 @@ describe('peopleLine', () => {
     expect(peopleLine(status({ done: 1200, total: 5000 }))).toBe('Looking for people… 1,200 of 5,000 photos');
     expect(peopleLine(status({ done: 5000, total: 5000 }))).toBe('Faces checked in all 5,000 photos');
     expect(peopleLine(status({ done: 10, total: 50, paused: true }))).toBe('Paused at 10 of 50');
-    expect(peopleLine(status({ done: 10, total: 50, error: 'out of memory' }))).toBe('People search is having trouble: out of memory');
+    expect(peopleLine(status({ done: 10, total: 50, error: 'out of memory' }))).toBe('Face finding is having trouble: out of memory');
   });
 });
 
@@ -57,12 +57,11 @@ describe('faceUrl', () => {
   });
 });
 
-describe('searchActive with a person', () => {
-  it('is on when any of search, tag or person is applied', () => {
-    expect(searchActive(null, null, null)).toBe(false);
-    expect(searchActive(null, null, 3)).toBe(true);
-    expect(searchActive('dog', null, null)).toBe(true);
-    expect(searchActive(null, 'beach', null)).toBe(true);
+describe('hitsActive with a person', () => {
+  it('is on when a tag or a person is applied', () => {
+    expect(hitsActive(null, null)).toBe(false);
+    expect(hitsActive(null, 3)).toBe(true);
+    expect(hitsActive('beach', null)).toBe(true);
   });
 });
 
@@ -99,5 +98,25 @@ describe('resolveFaceName', () => {
   });
   it('starts a new person for a name nobody has', () => {
     expect(resolveFaceName(list, ' Grandad ', 1)).toEqual({ kind: 'new', name: 'Grandad' });
+  });
+});
+
+describe('shouldRefreshOnShow', () => {
+  const base = { wasActive: false, active: true, loaded: true, onOverview: true, more: true };
+  it('refreshes when the tab is switched to, on the overview, and the scan has found more faces', () => {
+    expect(shouldRefreshOnShow(base)).toBe(true);
+  });
+  it('does nothing when there is nothing new', () => {
+    expect(shouldRefreshOnShow({ ...base, more: false })).toBe(false);
+  });
+  it('does not move things under the user while the tab is showing: that is what the button is for', () => {
+    expect(shouldRefreshOnShow({ ...base, wasActive: true })).toBe(false);
+  });
+  it('leaves the faces of one person alone when the user is partway through reviewing them', () => {
+    expect(shouldRefreshOnShow({ ...base, onOverview: false })).toBe(false);
+  });
+  it('waits for the first load, and does nothing while the tab is hidden', () => {
+    expect(shouldRefreshOnShow({ ...base, loaded: false })).toBe(false);
+    expect(shouldRefreshOnShow({ ...base, active: false })).toBe(false);
   });
 });

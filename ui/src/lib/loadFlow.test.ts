@@ -29,10 +29,12 @@ describe('analysingLines', () => {
     expect(lines.map((l) => l.key)).toEqual(['previews', 'search', 'faces']);
     expect(lines.map((l) => l.title)).toEqual(['Preparing previews', 'Understanding your photos', 'Finding faces']);
     expect(lines.every((l) => l.why.length > 10)).toBe(true);
+    expect(lines[1].why).toContain('Auto tags'); // the term the Browse list uses, so the user knows what it means
+    expect(lines[1].why.toLowerCase()).not.toContain('search'); // there is no text search for now
   });
   it('shows a model download in the same line, with its fraction, until counting starts', () => {
     const lines = analysingLines(status({ models: 'downloading', model_done: 62, model_total: 100 }), status({ models: 'downloading', model_done: 1, model_total: 4 }), idle, 0);
-    expect(line(lines, 'search').text).toBe('Getting the search model… 62%');
+    expect(line(lines, 'search').text).toBe('Getting the picture-analysis model… 62%');
     expect(line(lines, 'search').fraction).toBeCloseTo(0.62);
     expect(line(lines, 'faces').text).toBe('Getting the face model… 25%');
     expect(line(lines, 'search').done).toBe(false);
@@ -46,12 +48,12 @@ describe('analysingLines', () => {
   });
   it('a failed model is an error line with the reason, not done', () => {
     const l = line(analysingLines(status({ models: 'error', error: 'offline' }), status(), idle, 0), 'search');
-    expect(l.error).toBe('Could not get the search model: offline');
+    expect(l.error).toBe('Could not get the picture-analysis model: offline');
     expect(l.done).toBe(false);
   });
   it('a model that is ready but failing on photos is an error line too', () => {
     const l = line(analysingLines(status({ done: 1, total: 5, error: 'decoder' }), status(), idle, 0), 'search');
-    expect(l.error).toBe('Analysis is having trouble: decoder');
+    expect(l.error).toBe('Picture analysis is having trouble: decoder');
   });
   it('paused shows paused and is not done', () => {
     const l = line(analysingLines(status({ done: 10, total: 100, paused: true }), status(), idle, 0), 'search');

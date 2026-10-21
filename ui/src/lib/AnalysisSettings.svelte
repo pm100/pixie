@@ -11,9 +11,9 @@
   const failed = $derived(status?.models === 'error' || people?.models === 'error');
 </script>
 
-<h2>Search</h2>
-<p>Pixie studies your photos on this computer so you can search them by what they show, such as “dog on a beach”.
-  Nothing leaves your computer except the one-time download of the search model.</p>
+<h2>Picture analysis</h2>
+<p>Pixie studies your photos on this computer. It adds <b>Auto tags</b>, labels such as Beach, Museum or Dog that you can
+  browse by in the left-hand list. Nothing leaves your computer except the one-time download of the picture-analysis model.</p>
 {#if status === null}
   <p>Checking…</p>
 {:else}

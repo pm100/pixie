@@ -3,7 +3,7 @@
   import {
     facesOfPerson, hidePerson, listFacePeople, mergePeople, moveFace, newPersonFromFace, rejectedFaces, rejectFace, renamePerson, unhidePerson,
   } from './api';
-  import { faceCardLine, peopleLine, personLabel, sameNamePerson, type FacePerson, type FaceTile, type PeopleStatus } from './people';
+  import { faceCardLine, peopleLine, personLabel, sameNamePerson, shouldRefreshOnShow, type FacePerson, type FaceTile, type PeopleStatus } from './people';
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import { faceUrl, thumbUrl } from './url';
@@ -87,6 +87,14 @@
   $effect(() => {
     showHidden;
     untrack(load);
+  });
+  // Switching to this tab shows what the scan has found meanwhile. (While the tab is showing it does not reload by
+  // itself: new faces are offered with a button, so cards never jump under the user.)
+  let wasActive = false;
+  $effect(() => {
+    const refresh = shouldRefreshOnShow({ wasActive, active, loaded, onOverview: selected === null, more });
+    wasActive = active;
+    if (refresh) untrack(load);
   });
   // Edits made in Browse (naming, hiding, merging): reload when the user comes back, not while they are looking elsewhere.
   $effect(() => {
@@ -219,7 +227,7 @@
 
     {#if loaded && selected === null}
       {#if people.length === 0 && rejectedCount === 0}
-        <p class="hint">No faces yet. Pixie looks for faces in the background once the face models are downloaded: see Settings, Search.</p>
+        <p class="hint">No faces yet. Pixie looks for faces in the background once the face models are downloaded: see Settings, Picture analysis.</p>
       {:else}
         <p class="hint">Click a person to see all their pictures and to reject some. If this person has already been named, just type that name.</p>
       {/if}

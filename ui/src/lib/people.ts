@@ -19,7 +19,7 @@ export function peopleLine(s: PeopleStatus): string {
     const pct = s.model_total > 0 ? Math.floor((s.model_done * 100) / s.model_total) : 0;
     return `Downloading face models… ${pct}%`;
   }
-  if (s.error) return `People search is having trouble: ${s.error}`;
+  if (s.error) return `Face finding is having trouble: ${s.error}`;
   if (s.total === 0) return 'No photos to check for faces yet';
   if (s.paused && s.done < s.total) return `Paused at ${n(s.done)} of ${n(s.total)}`;
   if (s.done >= s.total) return `Faces checked in all ${n(s.total)} photos`;
@@ -31,6 +31,12 @@ export type FacePerson = { id: number; name: string | null; hidden: boolean; lis
 /** One face to look at: the photo it is in (with that photo's version, to show it) and the face's box as fractions
  *  (0..1) of the upright photo (mirrors the Rust `FaceTile`). */
 export type FaceTile = { id: number; photo_id: number; mtime: number; size: number; x: number; y: number; w: number; h: number };
+
+/** Reload the People tab when it is switched to: only at that moment, only on the overview (not partway through one
+ *  person's faces), and only when the scan has found something new. While the tab is showing, new faces are offered
+ *  with a button instead, so cards never jump under the user. */
+export const shouldRefreshOnShow = (o: { wasActive: boolean; active: boolean; loaded: boolean; onOverview: boolean; more: boolean }): boolean =>
+  o.active && !o.wasActive && o.loaded && o.onOverview && o.more;
 
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
 /** "12 photos · 15 faces". */

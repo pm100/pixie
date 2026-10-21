@@ -52,7 +52,7 @@
     <p class="name">{newest?.name ?? ' '}</p>
   {:else}
     <h1>Pictures loaded — now analysing</h1>
-    <p class="sub">Pixie is now looking at each photo so you can search them and find the people in them. This all happens on your computer; nothing is uploaded.</p>
+    <p class="sub">Pixie is now looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
     {#if notice}<p class="err" role="alert">{notice}</p>{/if}
     {#each lines as l (l.key)}
       <div class="line">
