@@ -4,12 +4,14 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, setTagFilter, startScan,
+    listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip,
     listPeople, peopleStatus, setPersonFilter, activeFilters,
     listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
-    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
+    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
+  import { cleanCollapsed, toggleSection, type SectionId } from './lib/sections';
+  import { cleanTripPrefs, tripLabel, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
@@ -69,6 +71,9 @@
   // stay whole so another period can still be picked, so it is built without that period.
   let navGroups = $state<DayGroup[]>([]);
   let periodKey = $state<string | null>(null); // y:2025, m:2025-06 or d:2025-06-14, only on the map
+  // A chosen trip (its `since`). Like Recent and a chosen period it is a date range, so choosing one replaces the others.
+  let tripKey = $state<number | null>(null);
+  const recentOn = $derived(view.since !== null && periodKey === null && tripKey === null);
   let folders = $state<Folder[]>([]);
   let selection = $state(emptySelection);
   let selectedPhoto = $state<Photo | null>(null);
@@ -121,7 +126,7 @@
     if (days === recentDays) return;
     recentDays = days;
     savePref('recentDays', days);
-    if (view.since !== null && periodKey === null) {
+    if (recentOn) {
       view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
       selection = emptySelection;
       refresh(true).catch((e) => (message = String(e)));
@@ -320,8 +325,9 @@
   }
 
   function setRecent(on: boolean) {
-    if (on === (view.since !== null && periodKey === null)) return; // already in that state
-    periodKey = null; // Recent and a chosen period are both a date range: one replaces the other
+    if (on === recentOn) return; // already in that state
+    periodKey = null; // Recent, a chosen period and a chosen trip are all a date range: one replaces the others
+    tripKey = null;
     view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -329,7 +335,7 @@
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
-  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || view.since !== null);
+  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || tripKey !== null || view.folderId !== null || view.since !== null);
 
   /** "Show all": drop the tag, person and date range in one go. */
   async function showAll() {
@@ -339,7 +345,8 @@
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
-    view = { ...view, search: hitsActive(activeTag, activePerson), since: null, until: null };
+    tripKey = null;
+    view = { ...view, search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -351,6 +358,7 @@
     const r = next === null ? null : periodRange(next);
     if (next !== null && !r) return;
     periodKey = next;
+    tripKey = null;
     view = { ...view, since: r?.since ?? null, until: r?.until ?? null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -364,6 +372,63 @@
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
+  }
+
+  /** Show only one photo folder (the same folder again clears it). */
+  function setFolder(id: number | null) {
+    if (id === view.folderId) return;
+    view = { ...view, folderId: id };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  /** Show only one trip (the same trip again clears it): its days become the date range. */
+  function setTrip(t: Trip | null) {
+    if (t === null || t.since === tripKey) {
+      if (tripKey === null) return;
+      tripKey = null;
+      view = { ...view, since: null, until: null };
+    } else {
+      periodKey = null;
+      tripKey = t.since;
+      view = { ...view, since: t.since, until: t.until };
+    }
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  // Trips: runs of days away from home. Home is the user's to confirm (in Settings), so none are shown before that.
+  let tripPrefs = $state<TripPrefs>(cleanTripPrefs(loadPref<unknown>('trips', null)));
+  let trips = $state<Trip[]>([]);
+  let tripsAsked = 0;
+  async function loadTrips() {
+    const mine = ++tripsAsked;
+    const p = tripPrefs;
+    if (!p.confirmed || !p.home) { trips = []; return; }
+    try {
+      const got = await listTrips(p.home.lat, p.home.lon, p.radiusKm, p.minDays);
+      if (mine === tripsAsked) trips = got;
+    } catch (e) { message = String(e); }
+  }
+  function setTripPrefs(next: TripPrefs) {
+    tripPrefs = next;
+    savePref('trips', next);
+    if (tripKey !== null) setTrip(null); // the chosen trip may no longer exist
+    void loadTrips();
+  }
+  async function renameTripTo(t: Trip, name: string) {
+    try { await renameTrip(t.since, t.until, name); } catch (e) { message = String(e); }
+    void loadTrips();
+  }
+  const openTripSettings = () => { settingsPage = 'trips'; pickTab('settings'); };
+
+  // Sections of the Browse list the user has folded away.
+  let collapsed = $state<SectionId[]>(cleanCollapsed(loadPref<unknown>('collapsedSections', null)));
+  function toggleNav(id: SectionId) {
+    collapsed = toggleSection(collapsed, id);
+    savePref('collapsedSections', collapsed);
   }
 
   const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
@@ -661,6 +726,7 @@
   onMount(() => {
     refresh().catch((e) => (message = String(e)));
     loadFolderInfos();
+    void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
     loadTags();
@@ -689,6 +755,7 @@
         scanning = false;
         scanFolder = null;
         loadFolderInfos();
+        void loadTrips();
         if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
         else refresh().catch((e) => (message = String(e)));
         if (mode === 'map') loadPoints();
@@ -735,6 +802,14 @@
           <span class="filter">Person “{personLabel(activeInfo)}”
             <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
         {/if}
+        {#if view.folderId !== null}
+          <span class="filter">Folder “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'}”
+            <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
+        {/if}
+        {#if tripKey !== null}
+          <span class="filter">Trip “{trips.find((t) => t.since === tripKey) ? tripLabel(trips.find((t) => t.since === tripKey)!) : 'unknown'}”
+            <button onclick={() => setTrip(null)} aria-label="Clear trip" title="Clear trip">✕</button></span>
+        {/if}
         {#if periodKey !== null}
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
@@ -750,10 +825,13 @@
         {:else}
       <Shell>
         {#snippet left()}
-          <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
+          <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={recentOn}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
                {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
+               folders={folderInfos} folderId={view.folderId} onfolder={setFolder}
+               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} onrenametrip={renameTripTo} onsettrips={openTripSettings}
+               {collapsed} ontoggle={toggleNav}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
@@ -779,7 +857,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -804,7 +882,7 @@
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   {analysis} people={peopleState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}

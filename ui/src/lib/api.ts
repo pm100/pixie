@@ -150,6 +150,14 @@ export const previewsPending = () => invoke<number>('previews_pending');
 export const isDebugBuild = () => invoke<boolean>('is_debug_build');
 /** Debug builds only: show the data folder in the file manager. */
 export const openDataFolder = () => invoke<void>('open_data_folder');
+
+/** A run of days spent away from home. `since` is inclusive and `until` exclusive, in unix seconds. */
+export interface Trip { start: string; end: string; since: number; until: number; days: number; photos: number; videos: number; name: string | null }
+export const listTrips = (homeLat: number, homeLon: number, radiusKm: number, minDays: number) =>
+  invoke<Trip[]>('list_trips', { homeLat, homeLon, radiusKm, minDays });
+/** Where home probably is, as [latitude, longitude]; null when no photo has a position. */
+export const suggestHome = () => invoke<[number, number] | null>('suggest_home');
+export const renameTrip = (since: number, until: number, name: string) => invoke<void>('rename_trip', { since, until, name });
 /** The tag and person the listings are really restricted to. */
 export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });

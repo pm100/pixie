@@ -607,6 +607,29 @@ fn open_data_folder(app: tauri::AppHandle) -> Result<(), PixieError> {
     open::that_detached(&dir).map_err(|e| PixieError::Io(e.to_string()))
 }
 
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Runs of days spent away from home, newest first. Home and the thresholds come from the caller (they are settings
+/// of the interface), so changing them needs no stored state here.
+#[tauri::command]
+fn list_trips(state: tauri::State<AppState>, home_lat: f64, home_lon: f64, radius_km: f64, min_days: u32) -> Result<Vec<pixie_index::trips::Trip>, PixieError> {
+    state.db.trips(&pixie_index::trips::TripSettings { home_lat, home_lon, radius_km, min_days }, now_secs())
+}
+
+/// A guess at where home is, as [latitude, longitude]; None when no photo has a position.
+#[tauri::command]
+fn suggest_home(state: tauri::State<AppState>) -> Result<Option<(f64, f64)>, PixieError> {
+    state.db.suggest_home(now_secs())
+}
+
+/// Names the trip covering `since` to `until` (as given by `list_trips`); an empty name removes it.
+#[tauri::command]
+fn rename_trip(state: tauri::State<AppState>, since: i64, until: i64, name: String) -> Result<(), PixieError> {
+    state.db.rename_trip(since, until, &name)
+}
+
 #[tauri::command]
 fn delete_mail_account(state: tauri::State<AppState>) -> Result<(), PixieError> {
     if let Some(a) = state.db.get_mail_account()? {
@@ -1058,7 +1081,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, previews_pending, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, previews_pending, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, photos_at, send_test_email, send_email
         ])

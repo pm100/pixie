@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'analysis' | 'email' | 'about' | 'developer';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
@@ -9,20 +9,23 @@
   import AnalysisSettings from './AnalysisSettings.svelte';
   import type { AnalysisStatus } from './analysis';
   import PhotoFolders from './PhotoFolders.svelte';
+  import TripSettings from './TripSettings.svelte';
+  import type { TripPrefs } from './trips';
   import type { ScanState } from './scanProgress';
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, analysis, people, onanalysispause, onanalysisretry }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, onanalysispause, onanalysisretry }: {
     folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     onrescan: (id: number, full: boolean) => void; onemail: () => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
+    tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
     analysis: AnalysisStatus | null; people: AnalysisStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
-    { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' },
+    { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
     { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
   ];
   let version = $state('');
@@ -59,6 +62,8 @@
       <p>The "recent" shortcut at the top of the date list shows items from the last
         <input class="days" type="number" min="1" max={MAX_RECENT_DAYS} step="1" value={recentDays} aria-label="Days counted as recent"
                onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} /> days.</p>
+    {:else if page === 'trips'}
+      <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
       <AnalysisSettings status={analysis} {people} onpause={onanalysispause} onretry={onanalysisretry} />
     {:else if page === 'email'}
