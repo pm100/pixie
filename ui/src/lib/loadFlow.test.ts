@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, startLabel, throttleSamples } from './loadFlow';
+import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, startLabel } from './loadFlow';
 import type { AnalysisStatus } from './analysis';
 
 const status = (o: Partial<AnalysisStatus> = {}): AnalysisStatus => ({
@@ -10,13 +10,16 @@ const line = (lines: ReturnType<typeof analysingLines>, key: string) => lines.fi
 
 describe('phaseAfterScan', () => {
   it('a stopped scan ends the flow and Browse opens with what was found', () => {
-    expect(phaseAfterScan({ stopped: true, found: 500 })).toBe('off');
+    expect(phaseAfterScan({ stopped: true, found: 500, photos: 400 })).toBe('off');
   });
   it('finding nothing goes straight to the end screen, which says so', () => {
-    expect(phaseAfterScan({ stopped: false, found: 0 })).toBe('allset');
+    expect(phaseAfterScan({ stopped: false, found: 0, photos: 0 })).toBe('allset');
   });
   it('finding photos goes on to analysing', () => {
-    expect(phaseAfterScan({ stopped: false, found: 12 })).toBe('analysing');
+    expect(phaseAfterScan({ stopped: false, found: 12, photos: 10 })).toBe('analysing');
+  });
+  it('finding only videos has nothing to analyse, so it goes straight to the end screen', () => {
+    expect(phaseAfterScan({ stopped: false, found: 12, photos: 0 })).toBe('allset');
   });
 });
 
@@ -74,6 +77,27 @@ describe('analysingLines', () => {
   });
 });
 
+describe('analysingLines when the scan found photos', () => {
+  const stale = status({ done: 0, total: 0 }); // the status still describes the library from before the scan
+  it('a pass that has not yet seen the new photos is not done, however empty its status looks', () => {
+    const lines = analysingLines(stale, stale, idle, 0, 5000);
+    expect(line(lines, 'search').done).toBe(false);
+    expect(line(lines, 'faces').done).toBe(false);
+    expect(line(lines, 'search').text).toBe('Getting ready…');
+    expect(analysingFinished(lines)).toBe(false);
+  });
+  it('a pass that has seen the new photos and finished them is done', () => {
+    const lines = analysingLines(status({ done: 5000, total: 5000 }), status({ done: 5200, total: 5200 }), idle, 3, 5000);
+    expect(line(lines, 'search').done && line(lines, 'faces').done).toBe(true);
+  });
+  it('a pass that has seen them but is still working is not done', () => {
+    expect(line(analysingLines(status({ done: 10, total: 5000 }), status(), idle, 0, 5000), 'search').done).toBe(false);
+  });
+  it('with nothing expected, an empty status really is nothing to do', () => {
+    expect(line(analysingLines(status(), status(), idle, 0, 0), 'search').done).toBe(true);
+  });
+});
+
 describe('analysingFinished', () => {
   it('needs every line done', () => {
     const ok = analysingLines(status({ done: 2, total: 2 }), status({ done: 2, total: 2 }), idle, 0);
@@ -121,20 +145,9 @@ describe('allSetSummary', () => {
 });
 
 describe('startLabel', () => {
-  it('counts the ticked folders and is off with none', () => {
+  it('says just Start, and is off with nothing ticked', () => {
     expect(startLabel(0)).toEqual({ label: 'Start', disabled: true });
-    expect(startLabel(1)).toEqual({ label: 'Start — look in 1 folder', disabled: false });
-    expect(startLabel(4)).toEqual({ label: 'Start — look in 4 folders', disabled: false });
-  });
-});
-
-describe('throttleSamples', () => {
-  it('passes the first sample and then at most one every 200 ms', () => {
-    const t = throttleSamples<string>();
-    expect(t('a', 1000)).toBe('a');
-    expect(t('b', 1100)).toBeNull();
-    expect(t('c', 1199)).toBeNull();
-    expect(t('d', 1200)).toBe('d');
-    expect(t('e', 1250)).toBeNull();
+    expect(startLabel(1)).toEqual({ label: 'Start', disabled: false });
+    expect(startLabel(4)).toEqual({ label: 'Start', disabled: false });
   });
 });

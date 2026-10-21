@@ -1,4 +1,6 @@
+mod drives;
 mod placement;
+mod sniff;
 mod state;
 
 use pixie_core::{
@@ -10,7 +12,7 @@ use pixie_image::posters::{poster_path, save_poster as write_poster, validate_po
 use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
-use pixie_index::suggest::{count_media, known_places, look_further, Places, Suggestion};
+use pixie_index::suggest::{known_places, Places, Suggestion};
 use pixie_index::{scan_folder_with, Db, ScanGuard, ScanMode, ScanQueue};
 use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
 use serde::{Deserialize, Serialize};
@@ -37,8 +39,10 @@ struct SuggestionCount {
 
 /// First-run folder suggestions. Returns the well-known places that exist at once, then in the background emits
 /// `suggestion-count` for each (a time-boxed count, capped at 10,000), then `suggestion-found` for each further
-/// candidate under the home folder (unticked), then `suggestions-done`. Subscribe to the events before calling.
-/// Only the home folder is looked through: drive roots are not, because a network or removable drive could stall.
+/// candidate (unticked) as it is found, then `suggestions-done`; `suggestion-looking` names what is being sniffed now.
+/// Subscribe to the events before calling. The look-around covers the home folder, then every other built-in drive and
+/// mapped network drive: each is checked for pictures on a thread of its own, at the same time, with a deadline, so
+/// an unreachable network share costs only its own row ("not reachable right now") and never freezes anything.
 #[tauri::command]
 async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, PixieError> {
     let path = app.path();
@@ -53,24 +57,29 @@ async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, Pixie
     let places = Places {
         pictures: path.picture_dir().ok(),
         videos: path.video_dir().ok(),
+        documents: path.document_dir().ok(),
         downloads: path.download_dir().ok(),
         desktop: path.desktop_dir().ok(),
         home: path.home_dir().ok(),
         onedrive,
     };
     let list = known_places(&places);
-    let (events, counted, home) = (app.clone(), list.clone(), places.home.clone());
+    let (events, known, home) = (app.clone(), list.clone(), places.home.clone());
     std::thread::spawn(move || {
-        for s in &counted {
-            let c = count_media(std::path::Path::new(&s.path), Duration::from_secs(2), 10_000);
-            let _ = events.emit("suggestion-count", SuggestionCount { path: s.path.clone(), n: c.n, capped: c.capped });
-        }
-        if let Some(home) = home {
-            for s in look_further(&[home], &counted, Duration::from_secs(8), 50) {
-                let _ = events.emit("suggestion-found", s);
-            }
-        }
-        let _ = events.emit("suggestions-done", ());
+        // The system drive is covered by the home folder; every other built-in and network drive is sniffed as a whole.
+        let system = std::env::var("SystemDrive").unwrap_or_default().to_uppercase();
+        let others: Vec<drives::DriveRoot> = drives::drive_roots()
+            .into_iter()
+            .filter(|d| system.is_empty() || !d.root.to_string_lossy().to_uppercase().starts_with(&system))
+            .collect();
+        sniff::run_sniff(known, home, others, drives::volume_label, &sniff::Budgets::app(), &mut |event| {
+            let _ = match event {
+                sniff::SniffEvent::Looking(what) => events.emit("suggestion-looking", what),
+                sniff::SniffEvent::Count { path, n, capped } => events.emit("suggestion-count", SuggestionCount { path, n, capped }),
+                sniff::SniffEvent::Found(s) => events.emit("suggestion-found", s),
+                sniff::SniffEvent::Done => events.emit("suggestions-done", ()),
+            };
+        });
     });
     Ok(list)
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addFound, applyCount, countText, tickedPaths, toRows, toggle } from './suggestions';
+import { addFound, applyCount, countText, listedRows, lookingText, tickedPaths, toRows, toggle } from './suggestions';
 import type { Suggestion } from './api';
 
 const s = (path: string, o: Partial<Suggestion> = {}): Suggestion => ({
@@ -47,6 +47,10 @@ describe('toggle', () => {
 });
 
 describe('tickedPaths', () => {
+  it('never returns a folder known to be empty, even if it is ticked', () => {
+    const rows = applyCount(toRows([s('C:\Videos'), s('C:\Pictures')]), { path: 'C:\Videos', n: 0, capped: false });
+    expect(tickedPaths(rows)).toEqual(['C:\Pictures']);
+  });
   it('returns ticked rows, never one already included in another', () => {
     const rows = toRows([s('C:\\Pictures'), s('C:\\Pictures\\Camera Roll', { included_in: 'Pictures' }), s('C:\\Downloads', { ticked: false })]);
     expect(tickedPaths(rows)).toEqual(['C:\\Pictures']);
@@ -62,5 +66,29 @@ describe('countText', () => {
   });
   it('a found candidate has no count to wait for', () => {
     expect(countText(null, 'further')).toBe('');
+  });
+});
+
+describe('lookingText', () => {
+  it('says what is being looked at, and nothing before the first answer', () => {
+    expect(lookingText('your home folder')).toBe('Looking in your home folder…');
+    expect(lookingText('your other drives')).toBe('Looking in your other drives…');
+    expect(lookingText(null)).toBe('');
+  });
+});
+
+describe('listedRows', () => {
+  const counted = (path: string, n: number, capped = false, o: Partial<Suggestion> = {}) => applyCount(toRows([s(path, o)]), { path, n, capped })[0];
+  it('hides folders known to hold nothing, but not ones still being counted or capped', () => {
+    const rows = [counted('C:\Empty', 0), counted('C:\Full', 12), counted('C:\Huge', 10000, true), ...toRows([s('C:\Counting')])];
+    expect(listedRows(rows).map((r) => r.path)).toEqual(['C:\Full', 'C:\Huge', 'C:\Counting']);
+  });
+  it('hides folders that are included in another suggestion', () => {
+    const rows = toRows([s('C:\Pictures'), s('C:\Pictures\Camera Roll', { included_in: 'Pictures' })]);
+    expect(listedRows(rows).map((r) => r.path)).toEqual(['C:\Pictures']);
+  });
+  it('keeps the order the rows came in', () => {
+    const rows = toRows([s('C:\B'), s('C:\A', { kind: 'further' })]);
+    expect(listedRows(rows).map((r) => r.path)).toEqual(['C:\B', 'C:\A']);
   });
 });

@@ -2,9 +2,10 @@
   import FlowStage from './FlowStage.svelte';
   import type { Line } from './loadFlow';
   import { readFraction, scanText, type ScanState } from './scanProgress';
+  import type { StripItem } from './stripFeed';
   import { thumbUrl } from './url';
 
-  type Sample = { id: number; mtime: number; size: number; name: string };
+  type Sample = StripItem;
 
   let { phase, scan, folder, strip, lines, notice = '', onstop, onbackground, onretry, onresume }: {
     phase: 'scanning' | 'analysing';
@@ -39,14 +40,16 @@
     <div class="strip" aria-hidden="true">
       {#each slots as s (s.rank)}
         <div class="slot r{s.rank}">
-          {#if s.item && !broken.has(s.item.id)}
+          {#if s.item && s.item.kind === 'video'}
+            <!-- A video has no thumbnail yet while it is scanned: a film tile stands in for it. -->
+            <div class="video"><svg viewBox="0 0 24 24" width="40%" height="40%" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg></div>
+          {:else if s.item && !broken.has(s.item.id)}
             <img alt="" src={thumbUrl('grid', s.item.id, s.item.mtime, s.item.size)} onerror={() => hide(s.item!.id)} />
           {/if}
         </div>
       {/each}
     </div>
     <p class="name">{newest?.name ?? ' '}</p>
-    <div class="actions"><button onclick={onstop}>Stop</button></div>
   {:else}
     <h1>Pictures loaded — now analysing</h1>
     <p class="sub">Pixie is now looking at each photo so you can search them and find the people in them. This all happens on your computer; nothing is uploaded.</p>
@@ -66,14 +69,20 @@
       </div>
     {/each}
     <p class="note">This can take a while for a big library. You don't have to wait here.</p>
-    <div class="actions"><button class="primary" onclick={onbackground}>Carry on in the background</button></div>
   {/if}
+  {#snippet footer()}
+    {#if phase === 'scanning'}
+      <button onclick={onstop}>Stop</button>
+    {/if}
+    <button class="primary" onclick={onbackground}>Carry on in the background</button>
+  {/snippet}
 </FlowStage>
 
 <style>
   .strip { display: flex; align-items: center; justify-content: center; gap: 8px; height: 150px; margin: 18px 0 6px; }
   .slot { background: #dde2ee; border-radius: 6px; overflow: hidden; flex: none; }
   .slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .video { width: 100%; height: 100%; display: grid; place-items: center; background: #2b3550; color: #dfe6fb; }
   .r0 { width: 150px; height: 106px; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); order: 3; }
   .r1 { width: 60px; height: 80px; opacity: .7; order: 2; }
   .r3 { width: 40px; height: 56px; opacity: .45; order: 1; }

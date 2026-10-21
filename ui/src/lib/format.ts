@@ -41,6 +41,11 @@ export function formatBytes(n: number): string {
 
 const cut = (p: string) => Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
 export const basename = (p: string): string => p.slice(cut(p) + 1);
+/** The name to show for a folder: its last part, or the whole path for a drive root (`P:\`) or `/`, which have none. */
+export function folderName(p: string): string {
+  const name = basename(p.replace(/[\\/]+$/, ''));
+  return name === '' || /^[A-Za-z]:$/.test(name) ? p : name;
+}
 export const dirname = (p: string): string => (cut(p) < 0 ? '' : p.slice(0, cut(p)));
 
 export function formatGps(lat: number | null, lon: number | null): string | null {

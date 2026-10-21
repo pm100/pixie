@@ -20,6 +20,9 @@ describe('scanText', () => {
   it('counts files found while the folder is still being walked', () => {
     expect(scanText({ seen: 10_000, indexed: 0, toIndex: 0 })).toBe('Scanning… 10,000 found');
   });
+  it('says the folder is being opened before anything has been found, so a slow or sleeping drive shows life', () => {
+    expect(scanText({ seen: 0, indexed: 0, toIndex: 0 })).toBe('Opening the folder…');
+  });
   it('shows how many of the files to read are done once reading starts', () => {
     expect(scanText({ seen: 10_000, indexed: 3_200, toIndex: 10_000 })).toBe('Reading 3,200 of 10,000');
     expect(scanText({ seen: 10_000, indexed: 0, toIndex: 10_000 })).toBe('Reading 0 of 10,000');

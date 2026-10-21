@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basename, dirname, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, weekday } from './format';
+import { basename, dirname, folderName, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, weekday } from './format';
 
 describe('dates', () => {
   it('knows the weekday of a day string', () => {
@@ -55,5 +55,18 @@ describe('formatDuration', () => {
     expect(formatDuration(null)).toBe('');
     expect(formatDuration(-5)).toBe('');
     expect(formatDuration(Number.NaN)).toBe('');
+  });
+});
+
+describe('folderName', () => {
+  it('is the last part of a folder path, with or without a trailing slash', () => {
+    expect(folderName('C:\\Users\\me\\Pictures')).toBe('Pictures');
+    expect(folderName('C:\\Users\\me\\Pictures\\')).toBe('Pictures');
+    expect(folderName('/home/me/photos/')).toBe('photos');
+  });
+  it('is the whole path for a drive root or a share, which has no last part to show', () => {
+    expect(folderName('P:\\')).toBe('P:\\');
+    expect(folderName('E:/')).toBe('E:/');
+    expect(folderName('/')).toBe('/');
   });
 });

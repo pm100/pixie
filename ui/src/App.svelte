@@ -6,7 +6,7 @@
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, searchPhotos, setTagFilter, startScan,
     listPeople, peopleStatus, setPersonFilter, activeFilters,
-    listFacePeople, onSuggestionCount, onSuggestionFound, previewsPending, scanFolders, suggestFolders,
+    listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
   } from './lib/api';
   import { searchNote, type AnalysisStatus } from './lib/analysis';
@@ -26,11 +26,13 @@
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { scanText } from './lib/scanProgress';
-  import { basename } from './lib/format';
+  import { folderName } from './lib/format';
   import AllSet from './lib/AllSet.svelte';
   import LoadModal from './lib/LoadModal.svelte';
   import Welcome from './lib/Welcome.svelte';
-  import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, throttleSamples, type Phase } from './lib/loadFlow';
+  import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, type Phase } from './lib/loadFlow';
+  import { createStripFeed, type StripItem } from './lib/stripFeed';
+  import { thumbUrl } from './lib/url';
   import { addFound, applyCount, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
   import { click, emptySelection, single } from './lib/selection';
   import SelectionBar from './lib/SelectionBar.svelte';
@@ -511,9 +513,11 @@
   }
 
   // ---- First run and adding folders: welcome, modal scan, analysing, all set ----
-  type Sample = { id: number; mtime: number; size: number; name: string };
+  type Sample = StripItem;
   let phase = $state<Phase>('off');
   let rows = $state<Row[]>([]);
+  let sniffing = $state(false); // still sniffing for photo folders
+  let looking = $state<string | null>(null);
   let strip = $state<Sample[]>([]); // the photos read most recently, oldest first
   let flowFolder = $state<string | null>(null);
   let previews = $state({ left: 0, max: 0 });
@@ -521,17 +525,29 @@
   let allSet = $state<ReturnType<typeof allSetSummary> | null>(null);
   let flowProblems: string[] = []; // folders that could not be read during this flow, for the end screen
   let flowIds: number[] = [];
-  let flowStopped = false, flowStartedAt = 0, analysingSince = 0;
+  let flowStopped = false, flowStartedAt = 0;
+  let flowPhotos = 0; // photos (not videos) the scan found in this flow's folders
+  let finishing = false; // the end screen is being prepared
   let flowStarted: Promise<void> = Promise.resolve(); // scan-done can arrive before scanFolders has answered
   let welcomeSubs: Promise<() => void>[] = [];
-  const sampleGate = throttleSamples<Sample>();
-  const flowLines = $derived(analysingLines(analysis, peopleState, previews, facePeople));
+  let feed: ReturnType<typeof createStripFeed> | null = null; // decides which loaded picture the strip shows next
+  /** Load a thumbnail in the background so the strip can show it the moment it is ready (the browser caches it). */
+  const preload = (item: Sample) =>
+    new Promise<boolean>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = thumbUrl('grid', item.id, item.mtime, item.size);
+    });
+  const flowLines = $derived(analysingLines(analysis, peopleState, previews, facePeople, flowPhotos));
 
-  const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; };
+  const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
   /** Suggest where the photos probably are. Counts and further candidates arrive as events, possibly before the list. */
   async function openWelcome() {
     rows = [];
+    sniffing = true;
+    looking = null;
     phase = 'welcome';
     let ready = false;
     const early: (() => void)[] = [];
@@ -539,8 +555,10 @@
     welcomeSubs = [
       onSuggestionCount((c) => later(() => (rows = applyCount(rows, c)))),
       onSuggestionFound((s) => later(() => (rows = addFound(rows, s)))),
+      onSuggestionLooking((what) => (looking = what)),
+      onSuggestionsDone(() => (sniffing = false)),
     ];
-    try { rows = toRows(await suggestFolders()); } catch (e) { message = String(e); }
+    try { rows = toRows(await suggestFolders()); } catch (e) { message = String(e); sniffing = false; }
     ready = true;
     early.forEach((f) => f());
   }
@@ -548,15 +566,17 @@
   async function welcomeAdd() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== 'string') return;
-    rows = addFound(rows, { path: dir, name: basename(dir) || dir, kind: 'known', ticked: true, note: 'chosen by you', included_in: null });
+    rows = addFound(rows, { path: dir, name: folderName(dir), kind: 'known', ticked: true, note: 'chosen by you', included_in: null });
   }
 
   /** Add these folders and scan them with the modal screens. A folder added while another scan runs joins that scan. */
   async function beginLoad(paths: string[]) {
     stopWelcomeSubs();
     message = '';
-    flowStopped = false; flowStartedAt = Date.now(); flowIds = [];
+    flowStopped = false; flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
     strip = []; flowFolder = null; allSet = null; flowProblems = []; previews = { left: 0, max: 0 };
+    feed?.stop();
+    feed = createStripFeed({ load: preload, onShow: (item) => (strip = [...strip.slice(-4), item]), minGapMs: 100 });
     scanning = true; seen = 0; indexed = 0; toIndex = 0; scanFolder = null;
     phase = 'scanning';
     flowStarted = (async () => {
@@ -565,6 +585,7 @@
         folders = await listFolders();
       } catch (e) {
         message = String(e);
+        feed?.stop();
         scanning = false;
         phase = 'off';
         refresh(true).catch((err) => (message = String(err)));
@@ -583,12 +604,24 @@
 
   /** The scan ended: stopped, nothing found, or on to the analysing step. */
   async function finishScanPhase() {
+    feed?.stop();
+    feed = null;
     await flowStarted;
     await loadFolderInfos();
-    const found = folderInfos.filter((f) => flowIds.includes(f.id)).reduce((n, f) => n + f.count, 0);
-    phase = phaseAfterScan({ stopped: flowStopped, found });
-    if (phase === 'off') refresh(true).catch((e) => (message = String(e)));
-    else if (phase === 'allset') await buildAllSet();
+    const mine = folderInfos.filter((f) => flowIds.includes(f.id));
+    const found = mine.reduce((n, f) => n + f.count, 0);
+    flowPhotos = 0;
+    for (const f of mine) flowPhotos += await countPhotos(f.id, 'photo');
+    const next = phaseAfterScan({ stopped: flowStopped, found, photos: flowPhotos });
+    if (next === 'off') {
+      phase = 'off';
+      refresh(true).catch((e) => (message = String(e)));
+    } else if (next === 'allset') {
+      await buildAllSet(); // the screen is ready before it is shown, so nothing blinks in between
+      phase = 'allset';
+    } else {
+      phase = 'analysing';
+    }
   }
 
   async function buildAllSet() {
@@ -600,17 +633,23 @@
     }
     const people = await listFacePeople(false).catch(() => []);
     allSet = allSetSummary({
-      folders: infos.map((f) => ({ name: basename(f.path) || f.path, count: f.count })),
+      folders: infos.map((f) => ({ name: folderName(f.path), count: f.count })),
       photos, videos, seconds: (Date.now() - flowStartedAt) / 1000, facesFound: people.length > 0, problems: flowProblems,
     });
   }
 
-  const carryOnInBackground = () => { phase = 'off'; refresh(true).catch((e) => (message = String(e))); };
+  /** Leave the modal: Browse opens and whatever is still running (the scan, then the analysis) carries on in the
+   *  background, with its progress in the navigation as for any scan Pixie starts itself. */
+  const carryOnInBackground = () => {
+    feed?.stop();
+    feed = null;
+    phase = 'off';
+    refresh(true).catch((e) => (message = String(e)));
+  };
 
   // While analysing: poll the preview queue and the people count once a second.
   $effect(() => {
     if (phase !== 'analysing') return;
-    analysingSince = Date.now();
     let max = 0;
     const tick = async () => {
       try {
@@ -624,13 +663,14 @@
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   });
-  // The step ends when every line is done; the first moments are ignored, because the status may still describe the
-  // library as it was before this scan.
+  // The step ends when every line is done (each pass has counted the photos the scan found, so a stale status cannot
+  // end it early). The end screen is prepared first and swapped in only when ready, so it never flashes or blinks.
   $effect(() => {
-    if (phase === 'analysing' && Date.now() - analysingSince > 2500 && analysingFinished(flowLines)) {
-      phase = 'allset';
-      void buildAllSet();
-    }
+    if (phase !== 'analysing' || finishing || !analysingFinished(flowLines)) return;
+    finishing = true;
+    void buildAllSet().then(() => {
+      if (phase === 'analysing') phase = 'allset'; // still here: not sent to the background meanwhile
+    });
   });
 
   async function removeFolderAndRefresh(id: number) {
@@ -678,9 +718,8 @@
         seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
         if (phase === 'off') { refreshLive(); return; }
         const f = folders.find((x) => x.id === e.payload.folder_id);
-        flowFolder = f ? basename(f.path) : flowFolder;
-        const item = e.payload.latest ? sampleGate(e.payload.latest, Date.now()) : null;
-        if (item) strip = [...strip.slice(-4), item];
+        flowFolder = f ? folderName(f.path) : flowFolder;
+        if (e.payload.latest) feed?.offer(e.payload.latest);
       }),
       listen('scan-done', () => {
         loadTags();
@@ -828,7 +867,7 @@
 </main>
 
 {#if phase === 'welcome'}
-  <Welcome {rows} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
+  <Welcome {rows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
            onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
   <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} lines={flowLines} notice={message}

@@ -31,7 +31,7 @@
     <p class="note">Pixie now carries on working quietly in the background (search, tags and faces). You can use it straight away.</p>
   {/if}
 
-  <div class="actions">
+  {#snippet footer()}
     {#if nothing}
       <button onclick={onbrowse}>Not now</button>
       <button class="primary" onclick={onadd}>Add another folder…</button>
@@ -39,7 +39,7 @@
       {#if summary.showPeopleBox}<button onclick={onpeople}>Open People</button>{/if}
       <button class="primary" onclick={onbrowse}>Start browsing</button>
     {/if}
-  </div>
+  {/snippet}
 </FlowStage>
 
 <style>

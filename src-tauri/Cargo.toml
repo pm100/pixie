@@ -26,3 +26,6 @@ pixie-geo = { path = "../crates/pixie-geo" }
 pixie-image = { path = "../crates/pixie-image" }
 pixie-index = { path = "../crates/pixie-index" }
 pixie-mail = { path = "../crates/pixie-mail" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

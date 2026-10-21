@@ -12,4 +12,8 @@ export const readFraction = (s: ScanState): number | null => (s.toIndex > 0 ? Ma
 
 /** The status words: the count found while walking, then "Reading X of Y" while the details of each file are read. */
 export const scanText = (s: ScanState): string =>
-  s.toIndex > 0 ? `Reading ${s.indexed.toLocaleString()} of ${s.toIndex.toLocaleString()}` : `Scanning… ${s.seen.toLocaleString()} found`;
+  s.toIndex > 0
+    ? `Reading ${s.indexed.toLocaleString()} of ${s.toIndex.toLocaleString()}`
+    : s.seen === 0
+      ? 'Opening the folder…'
+      : `Scanning… ${s.seen.toLocaleString()} found`;

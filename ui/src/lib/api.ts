@@ -135,6 +135,8 @@ export type SuggestionCount = { path: string; n: number; capped: boolean };
 export const onSuggestionCount = (f: (c: SuggestionCount) => void) => listen<SuggestionCount>('suggestion-count', (e) => f(e.payload));
 export const onSuggestionFound = (f: (s: Suggestion) => void) => listen<Suggestion>('suggestion-found', (e) => f(e.payload));
 export const onSuggestionsDone = (f: () => void) => listen('suggestions-done', () => f());
+/** What the look-around is sniffing now ("your home folder", "your other drives"), for the spinner. */
+export const onSuggestionLooking = (f: (what: string) => void) => listen<string>('suggestion-looking', (e) => f(e.payload));
 /** The well-known photo places that exist; counts and further candidates then arrive as events (subscribe first). */
 export const suggestFolders = () => invoke<Suggestion[]>('suggest_folders');
 

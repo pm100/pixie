@@ -97,7 +97,7 @@ Installers and code signing are not set up yet.
 With no folders yet, Pixie opens a welcome screen that suggests where your photos probably are (Pictures, Videos,
 OneDrive and similar, plus a bounded look under your home folder). Tick what you want and press Start: a full-screen
 scan reads the files, then "now analysing" runs the search and face passes, then an "All set" screen says what was
-found. "Carry on in the background" leaves the analysis running while you browse. Adding a folder later in
+found. "Carry on in the background", on either of the last two steps, lets you browse while the rest finishes. Adding a folder later in
 Settings, Photo folders, uses the same scan without the welcome. Launch rescans stay in the background.
 
 ## Data and caches

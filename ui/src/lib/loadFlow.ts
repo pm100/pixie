@@ -6,10 +6,11 @@ export type Phase = 'off' | 'welcome' | 'scanning' | 'analysing' | 'allset';
 const n = (x: number) => x.toLocaleString();
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
 
-/** Where the flow goes when the scan ends. Stopping keeps what was found and shows Browse; finding nothing says so. */
-export function phaseAfterScan(o: { stopped: boolean; found: number }): Phase {
+/** Where the flow goes when the scan ends. Stopping keeps what was found and shows Browse; finding nothing, or only
+ *  videos (which are not analysed), has nothing to analyse and goes straight to the end screen. */
+export function phaseAfterScan(o: { stopped: boolean; found: number; photos: number }): Phase {
   if (o.stopped) return 'off';
-  return o.found === 0 ? 'allset' : 'analysing';
+  return o.found === 0 || o.photos === 0 ? 'allset' : 'analysing';
 }
 
 /** One row of the "now analysing" step. */
@@ -27,7 +28,7 @@ export type Line = {
 };
 
 /** A line for one analysis pass (search or faces); `label` is "search" or "face" in the model messages. */
-function passLine(key: 'search' | 'faces', title: string, why: string, label: 'search' | 'face', s: AnalysisStatus | null, extra: string): Line {
+function passLine(key: 'search' | 'faces', title: string, why: string, label: 'search' | 'face', s: AnalysisStatus | null, extra: string, expect: number): Line {
   const line: Line = { key, title, why, text: 'Starting…', fraction: null, error: null, paused: false, done: false };
   if (!s) return line;
   if (s.models === 'error') {
@@ -39,13 +40,17 @@ function passLine(key: 'search' | 'faces', title: string, why: string, label: 's
     return { ...line, text: `Getting the ${label} model… ${Math.floor(fraction * 100)}%`, fraction };
   }
   if (s.error) return { ...line, text: `${n(s.done)} of ${n(s.total)}`, error: `${key === 'search' ? 'Analysis' : 'People search'} is having trouble: ${s.error}` };
+  // The status can still describe the library as it was before this scan: until it has counted at least the photos the
+  // scan found, an empty or small status says nothing about whether the work is done.
+  if (s.total < expect) return { ...line, text: 'Getting ready…' };
   if (s.total === 0) return { ...line, text: 'Nothing to do', fraction: 1, done: true };
   if (s.paused && s.done < s.total) return { ...line, text: `Paused at ${n(s.done)} of ${n(s.total)}`, paused: true, fraction: Math.min(1, s.done / s.total) };
   return { ...line, text: `${n(s.done)} of ${n(s.total)}${extra}`, fraction: Math.min(1, s.done / s.total), done: s.done >= s.total };
 }
 
-/** The three lines of the analysing step. `previews`: thumbnails left now, and the most that were ever queued. */
-export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | null, previews: { left: number; max: number }, peopleCount: number): Line[] {
+/** The three lines of the analysing step. `previews`: thumbnails left now, and the most that were ever queued.
+ *  `expect`: how many photos the scan found, which each pass must have counted before it can be called done. */
+export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | null, previews: { left: number; max: number }, peopleCount: number, expect = 0): Line[] {
   const previewsDone = previews.left === 0;
   const done = previews.max - previews.left;
   return [
@@ -55,8 +60,8 @@ export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | nul
       fraction: previews.max > 0 ? Math.min(1, Math.max(0, done) / previews.max) : previewsDone ? 1 : null,
       error: null, paused: false, done: previewsDone,
     },
-    passLine('search', 'Understanding your photos', 'So you can search for "dog on a beach" and browse by what is in them (Auto tags).', 'search', a, ''),
-    passLine('faces', 'Finding faces', 'So you can name the people and browse by person.', 'face', p, ` · ${peopleCount === 1 ? '1 person' : `${n(peopleCount)} people`} so far`),
+    passLine('search', 'Understanding your photos', 'So you can search for "dog on a beach" and browse by what is in them (Auto tags).', 'search', a, '', expect),
+    passLine('faces', 'Finding faces', 'So you can name the people and browse by person.', 'face', p, ` · ${peopleCount === 1 ? '1 person' : `${n(peopleCount)} people`} so far`, expect),
   ];
 }
 
@@ -86,17 +91,7 @@ export function allSetSummary(o: {
   };
 }
 
-/** The Start button on the welcome screen. */
+/** The Start button on the welcome screen: just "Start", off while nothing is ticked. */
 export function startLabel(ticked: number): { label: string; disabled: boolean } {
-  return ticked === 0 ? { label: 'Start', disabled: true } : { label: `Start — look in ${plural(ticked, 'folder')}`, disabled: false };
-}
-
-/** Lets one item through, then drops the rest until `minGapMs` has passed: the strip never floods the screen. */
-export function throttleSamples<T>(minGapMs = 200): (item: T, now: number) => T | null {
-  let last = -Infinity;
-  return (item, now) => {
-    if (now - last < minGapMs) return null;
-    last = now;
-    return item;
-  };
+  return { label: 'Start', disabled: ticked === 0 };
 }

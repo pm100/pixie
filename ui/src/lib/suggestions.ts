@@ -21,8 +21,16 @@ export function addFound(rows: Row[], s: Suggestion): Row[] {
 
 export const toggle = (rows: Row[], path: string): Row[] => rows.map((r) => (r.path === path ? { ...r, ticked: !r.ticked } : r));
 
-/** The folders to add: ticked ones, except those already included in another suggestion. */
-export const tickedPaths = (rows: Row[]): string[] => rows.filter((r) => r.ticked && r.included_in === null).map((r) => r.path);
+/** The rows worth showing: not inside another suggestion, and not known to be empty (a count of 0; a folder still being
+ *  counted, or only counted up to a cap, stays). Order is kept. */
+export const listedRows = (rows: Row[]): Row[] =>
+  rows.filter((r) => r.included_in === null && !(r.count !== null && r.count.n === 0 && !r.count.capped));
+
+/** The folders to add: the ticked ones among the rows shown. */
+export const tickedPaths = (rows: Row[]): string[] => listedRows(rows).filter((r) => r.ticked).map((r) => r.path);
+
+/** The line under the spinner: what is being sniffed now (`suggestion-looking`); nothing before the first answer. */
+export const lookingText = (what: string | null): string => (what ? `Looking in ${what}…` : '');
 
 /** The count shown beside a folder. */
 export function countText(c: Row['count'], kind: Suggestion['kind']): string {

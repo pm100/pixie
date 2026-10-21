@@ -62,7 +62,7 @@ pub struct ScanProgress {
 }
 
 /// How often at most a progress call names a stored photo.
-const LATEST_EVERY: Duration = Duration::from_millis(200);
+const LATEST_EVERY: Duration = Duration::from_millis(100);
 
 /// A stored file, with what a client needs to ask for its thumbnail.
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +71,8 @@ pub struct LatestItem {
     pub mtime: i64,
     pub size: i64,
     pub name: String,
+    /// A video has no thumbnail yet while it is being scanned, so a client shows a placeholder for it.
+    pub kind: MediaKind,
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -123,6 +125,8 @@ pub fn scan_folder_with(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(&ScanProgress),
 ) -> Result<ScanStats> {
+    // Say right away that this folder has begun: opening a slow or sleeping drive can take a while before anything else.
+    on_progress(&ScanProgress { folder_id, seen: 0, indexed: 0, to_index: 0, latest: None });
     let folder = db
         .get_folder(folder_id)?
         .ok_or_else(|| PixieError::NotFound(format!("folder {folder_id}")))?;
@@ -220,7 +224,7 @@ pub fn scan_folder_with(
                 let latest = due.then(|| {
                     last_latest = Some(Instant::now());
                     let name = Path::new(&c.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    LatestItem { id, mtime: c.mtime, size: c.size, name }
+                    LatestItem { id, mtime: c.mtime, size: c.size, name, kind: c.kind }
                 });
                 on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len(), latest });
             }
@@ -537,6 +541,38 @@ mod tests {
         }
     }
 
+    /// The kind of the first item a scan of a folder holding just this file names as the latest.
+    fn first_latest_kind(file: &str, bytes: &[u8]) -> MediaKind {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join(file), bytes).unwrap();
+        let mut kind = None;
+        scan_folder(&db, f, &AtomicBool::new(false), |p| {
+            if kind.is_none() {
+                kind = p.latest.as_ref().map(|l| l.kind);
+            }
+        })
+        .unwrap();
+        kind.expect("the first stored file is always named")
+    }
+
+    #[test]
+    fn progress_says_whether_the_latest_item_is_a_photo_or_a_video() {
+        assert_eq!(first_latest_kind("a.jpg", &jpeg(8, 8)), MediaKind::Photo);
+        assert_eq!(first_latest_kind("b.mp4", b"junk"), MediaKind::Video); // a video even when it cannot be read
+    }
+
+    #[test]
+    fn the_first_progress_call_comes_before_any_file_is_read_so_a_slow_folder_shows_life() {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join("a.jpg"), jpeg(8, 8)).unwrap();
+        let mut first = None;
+        scan_folder(&db, f, &AtomicBool::new(false), |p| {
+            first.get_or_insert((p.folder_id, p.seen, p.indexed, p.to_index, p.latest.is_some()));
+        })
+        .unwrap();
+        assert_eq!(first, Some((f, 0, 0, 0, false)));
+    }
+
     #[test]
     fn progress_is_throttled() {
         let (dir, db, f) = setup();
@@ -546,5 +582,32 @@ mod tests {
         let mut with_latest = 0;
         scan_folder(&db, f, &AtomicBool::new(false), |p| with_latest += usize::from(p.latest.is_some())).unwrap();
         assert!(with_latest < 100, "a call per photo would be 400, got {with_latest}");
+    }
+
+    /// By hand, read-only: times a scan of a real folder (into memory) to see where the quiet gaps are.
+    /// `PIXIE_LIVE_DIR=P:/ cargo test -p pixie-index --lib live_scan_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_scan_timing() {
+        let dir = std::env::var("PIXIE_LIVE_DIR").expect("set PIXIE_LIVE_DIR");
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder(&dir).unwrap();
+        let cancel = AtomicBool::new(false);
+        let start = Instant::now();
+        let mut last = Instant::now();
+        let mut calls = 0;
+        let stats = scan_folder(&db, f, &cancel, |p| {
+            calls += 1;
+            let gap = last.elapsed().as_secs_f32();
+            last = Instant::now();
+            if gap > 1.0 || calls <= 3 || calls % 20 == 0 {
+                eprintln!("{:>6.1}s (+{:>4.1}s) call {calls}: seen {} indexed {} of {} latest {}", start.elapsed().as_secs_f32(), gap, p.seen, p.indexed, p.to_index, p.latest.as_ref().map_or("-", |l| l.name.as_str()));
+            }
+            if start.elapsed().as_secs() > 40 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        eprintln!("done after {:.1}s: {} progress calls, {stats:?}", start.elapsed().as_secs_f32(), calls);
     }
 }
