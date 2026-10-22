@@ -62,7 +62,8 @@ export const printPage = () => invoke<void>('print_page');
 export interface Place { landmark: string | null; locality: string | null }
 /** The user's language(s), e.g. "en-GB,en", so place names come back in their language. */
 const userLang = () => (navigator.languages?.length ? navigator.languages.join(',') : navigator.language) || 'en';
-export const placeFor = (lat: number, lon: number) => invoke<Place | null>('place_for', { lat, lon, lang: userLang() });
+/** `background`: work nobody is watching (naming trips), which waits its turn without cancelling the lookup for the photo on screen. */
+export const placeFor = (lat: number, lon: number, background = false) => invoke<Place | null>('place_for', { lat, lon, lang: userLang(), background });
 
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');

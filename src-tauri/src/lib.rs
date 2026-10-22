@@ -782,9 +782,11 @@ async fn place_for(
     lat: f64,
     lon: f64,
     lang: String,
+    background: Option<bool>,
 ) -> Result<Option<Place>, String> {
     let places = state.places.clone();
-    tauri::async_runtime::spawn_blocking(move || places.place_for(lat, lon, &lang))
+    // Background lookups (naming trips) must not cancel, or be cancelled by, the one for the photo on screen.
+    tauri::async_runtime::spawn_blocking(move || if background == Some(true) { places.place_for_background(lat, lon, &lang) } else { places.place_for(lat, lon, &lang) })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())

@@ -412,14 +412,15 @@
   let destRun = 0;
   function forgetDestinations() { destDone = new Map(); destinations = {}; }
   /** The place line of each of the stops with the most days (the rest are left unnamed), looked up one after another. */
-  async function placesOf(r: Route, run: () => boolean): Promise<(string | null)[]> {
+  async function placesOf(r: Route, run: () => boolean): Promise<{ names: (string | null)[]; complete: boolean }> {
     const names: (string | null)[] = r.stops.map(() => null);
     const order = r.stops.map((s, i) => i).sort((a, b) => r.stops[b].days - r.stops[a].days).slice(0, 8);
+    let complete = true;
     for (const i of order) {
-      if (!run()) break;
-      try { names[i] = (await placeFor(r.stops[i].lat, r.stops[i].lon))?.locality ?? null; } catch { /* offline: leave it unnamed */ }
+      if (!run()) { complete = false; break; }
+      try { names[i] = (await placeFor(r.stops[i].lat, r.stops[i].lon, true))?.locality ?? null; } catch { complete = false; /* offline or busy: say so */ }
     }
-    return names;
+    return { names, complete };
   }
   async function resolveDestinations(list: Trip[]) {
     const mine = ++destRun, p = tripPrefs;
@@ -429,8 +430,11 @@
       if (destDone.has(t.since)) continue;
       try {
         const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
-        const dest = destinationOf(r, await placesOf(r, () => mine === destRun));
+        const found = await placesOf(r, () => mine === destRun);
         if (mine !== destRun) return;
+        // A lookup that failed (offline) leaves the trip to be tried again later; a partial answer would name the wrong places.
+        if (!found.complete) continue;
+        const dest = destinationOf(r, found.names);
         destDone.set(t.since, dest ?? '');
         if (dest) destinations = { ...destinations, [t.since]: dest };
       } catch { destDone.set(t.since, ''); }
@@ -448,8 +452,8 @@
       const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
       if (mine !== routeRun) return;
       routeData = r;
-      const names = await placesOf(r, () => mine === routeRun);
-      if (mine === routeRun) routeNames = names;
+      const found = await placesOf(r, () => mine === routeRun);
+      if (mine === routeRun) routeNames = found.names;
     } catch (e) { message = String(e); }
   }
 
