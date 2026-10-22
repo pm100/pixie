@@ -1,11 +1,13 @@
 <script lang="ts">
   import { analysisFraction, analysisLine, type AnalysisStatus } from './analysis';
   import { peopleLine } from './people';
+  import { dupLine, type DupStatus } from './dupes';
 
-  let { status, people, onpause, onretry }: { status: AnalysisStatus | null; people: AnalysisStatus | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
+  let { status, people, dupes, onpause, onretry }: { status: AnalysisStatus | null; people: AnalysisStatus | null; dupes: DupStatus | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
   const fraction = $derived(status ? analysisFraction(status) : null);
   const peopleFraction = $derived(people ? analysisFraction(people) : null);
   const unfinished = (s: AnalysisStatus | null) => s !== null && s.models === 'ready' && s.total > 0 && s.done < s.total;
+  const dupFraction = $derived(dupes && dupes.total > 0 ? Math.min(1, dupes.done / dupes.total) : null);
   const working = $derived(unfinished(status) || unfinished(people));
   const paused = $derived((status?.paused ?? false) || (people?.paused ?? false));
   const failed = $derived(status?.models === 'error' || people?.models === 'error');
@@ -24,6 +26,12 @@
     <p>Pixie also looks for faces and groups them into people. The face models are a one-time download too.</p>
     <p class:err={people.models === 'error'}>{peopleLine(people)}</p>
     {#if peopleFraction !== null}<progress value={peopleFraction} max="1"></progress>{/if}
+  {/if}
+  {#if dupes}
+    <h3>Duplicates</h3>
+    <p>Pixie also looks for files that are in your folders more than once, so you can tidy them up on the Duplicates tab.</p>
+    <p>{dupLine(dupes)}</p>
+    {#if dupes.done < dupes.total && dupFraction !== null}<progress value={dupFraction} max="1"></progress>{/if}
   {/if}
   <div class="row">
     {#if failed}

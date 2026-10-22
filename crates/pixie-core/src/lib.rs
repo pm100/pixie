@@ -367,6 +367,29 @@ pub struct FacePerson {
     pub samples: Vec<i64>,
 }
 
+/// Copies of the same file: every live photo whose contents hash to `hash`, the one to keep first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DupGroup {
+    pub hash: String,
+    pub photos: Vec<Photo>,
+    /// The copy Browse shows: the one the user chose, else the oldest.
+    pub keeper: PhotoId,
+}
+
+/// How far the background content hashing has got: `done` of `total` live items are hashed or known to have no
+/// possible copy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DupStatus {
+    pub done: i64,
+    pub total: i64,
+    pub groups: i64,
+    /// Files that are extra copies (all but one of each group), and the space they take.
+    pub extra_files: i64,
+    pub extra_bytes: i64,
+    /// Live items Browse hides because another copy is shown instead.
+    pub hidden: i64,
+}
+
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,
 /// as fractions (0..1) of the upright photo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

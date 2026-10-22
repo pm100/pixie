@@ -23,6 +23,17 @@ describe('phaseAfterScan', () => {
   });
 });
 
+describe('analysingLines with duplicates', () => {
+  it('has a Duplicates line only once its count is known, and it is done when everything is looked at', () => {
+    expect(analysingLines(status(), status(), idle, 0).map((l) => l.key)).toEqual(['previews', 'search', 'faces']);
+    const half = analysingLines(status(), status(), idle, 0, 0, status({ done: 5, total: 10 }));
+    expect(half.map((l) => l.key)).toEqual(['previews', 'search', 'faces', 'dupes']);
+    expect(half[3].text).toBe('5 of 10');
+    expect(half[3].done).toBe(false);
+    expect(analysingLines(status(), status(), idle, 0, 0, status({ done: 10, total: 10 }))[3].done).toBe(true);
+  });
+});
+
 describe('analysingLines', () => {
   it('has the three lines in order, each saying why it matters', () => {
     const lines = analysingLines(status(), status(), idle, 0);

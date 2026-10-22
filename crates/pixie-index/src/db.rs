@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{DupGroup, DupStatus, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -118,6 +118,17 @@ const MIGRATIONS: &[&str] = &[
         start_day INTEGER PRIMARY KEY,
         name      TEXT NOT NULL
      );",
+    // V10: content hashes for finding copies. `quick_key` is cheap (size plus the start and end of the file); `hash` is
+    // the whole file and is only worked out for files whose quick key another file shares. Both are cleared when the
+    // file changes. A quick key starting with "!" marks a file that could not be read (it matches nothing).
+    "ALTER TABLE photos ADD COLUMN quick_key TEXT;
+     ALTER TABLE photos ADD COLUMN hash TEXT;
+     CREATE INDEX idx_photos_quick ON photos(quick_key) WHERE quick_key IS NOT NULL;
+     CREATE INDEX idx_photos_hash  ON photos(hash) WHERE hash IS NOT NULL;",
+    // V11: `dup` marks a live item that is an extra copy of another, so Browse shows one item per set of identical
+    // files. `keep_pick` marks the copy the user chose to show for its set (without one, the oldest is shown).
+    "ALTER TABLE photos ADD COLUMN dup INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE photos ADD COLUMN keep_pick INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,7 +204,8 @@ impl Filter {
         }
     }
     fn sql(&self) -> String {
-        let mut s = String::new();
+        // Extra copies of a duplicate are not listed: one item stands for each set of identical files.
+        let mut s = String::from(" AND dup = 0");
         if self.folder.is_some() {
             s.push_str(" AND folder_id = :folder");
         }
@@ -435,7 +447,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT f.id, f.path, COUNT(p.id) FROM folders f
-                 LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0
+                 LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0 AND p.dup = 0
                  GROUP BY f.id ORDER BY f.path",
             )
             .map_err(db_err)?;
@@ -489,12 +501,193 @@ impl Db {
                     width = excluded.width, height = excluded.height, taken_at = excluded.taken_at,
                     camera = excluded.camera, gps_lat = excluded.gps_lat, gps_lon = excluded.gps_lon,
                     kind = excluded.kind, duration_ms = excluded.duration_ms,
+                    quick_key = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN NULL ELSE photos.quick_key END,
+                    hash      = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN NULL ELSE photos.hash END,
+                    dup       = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN 0 ELSE photos.dup END,
+                    keep_pick = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN 0 ELSE photos.keep_pick END,
                     missing = 0
                  RETURNING id",
                 params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms],
                 |r| r.get(0),
             )
             .map_err(db_err)
+    }
+
+    // ---- copies of the same file ----
+
+    /// Live items not yet given a quick key, newest first: (id, path).
+    pub fn photos_needing_quick_key(&self, limit: i64) -> Result<Vec<(PhotoId, String)>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, path FROM photos WHERE missing = 0 AND quick_key IS NULL ORDER BY id DESC LIMIT ?1").map_err(db_err)?;
+        let rows = s.query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    pub fn set_quick_key(&self, id: PhotoId, key: &str) -> Result<()> {
+        self.conn().execute("UPDATE photos SET quick_key = ?2 WHERE id = ?1", params![id, key]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Live items with no full hash whose quick key another live item shares: the only ones that can be copies.
+    pub fn photos_needing_hash(&self, limit: i64) -> Result<Vec<(PhotoId, String)>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(
+                "SELECT p.id, p.path FROM photos p
+                 WHERE p.missing = 0 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
+                   AND EXISTS (SELECT 1 FROM photos o WHERE o.quick_key = p.quick_key AND o.id != p.id AND o.missing = 0)
+                 ORDER BY p.id DESC LIMIT ?1",
+            )
+            .map_err(db_err)?;
+        let rows = s.query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    pub fn set_hash(&self, id: PhotoId, hash: &str) -> Result<()> {
+        self.conn().execute("UPDATE photos SET hash = ?2 WHERE id = ?1", params![id, hash]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Groups of two or more live items with the same content hash, most wasted space first; each group with the
+    /// copy to keep first (the one the user chose, else the earliest date taken, then the shorter path). One query
+    /// for every group: asking once per group makes SQLite scan all photos each time, which takes seconds for a
+    /// library with many duplicates.
+    pub fn duplicate_groups(&self) -> Result<Vec<DupGroup>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS}, hash, keep_pick FROM photos
+                 WHERE missing = 0 AND hash IN (SELECT hash FROM photos WHERE missing = 0 AND hash IS NOT NULL GROUP BY hash HAVING count(*) > 1)
+                 ORDER BY hash, (taken_at IS NULL), taken_at, length(path), path"
+            ))
+            .map_err(db_err)?;
+        let rows = s
+            .query_map([], |r| Ok((row_to_photo(r)?, r.get::<_, String>(14)?, r.get::<_, i64>(15)? != 0)))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut out: Vec<DupGroup> = Vec::new();
+        let mut picked: Option<PhotoId> = None;
+        for (photo, hash, pick) in rows {
+            let new_group = out.last().map_or(true, |g| g.hash != hash);
+            if new_group {
+                if let (Some(g), Some(p)) = (out.last_mut(), picked) {
+                    g.keeper = p;
+                }
+                picked = None;
+                out.push(DupGroup { hash, keeper: photo.id, photos: vec![photo.clone()] });
+            } else if let Some(g) = out.last_mut() {
+                g.photos.push(photo.clone());
+            }
+            if pick && picked.is_none() {
+                picked = Some(photo.id);
+            }
+        }
+        if let (Some(g), Some(p)) = (out.last_mut(), picked) {
+            g.keeper = p;
+        }
+        let waste = |g: &DupGroup| g.photos.iter().map(|p| p.size).max().unwrap_or(0) * (g.photos.len() as i64 - 1);
+        out.sort_by(|x, y| waste(y).cmp(&waste(x)).then_with(|| x.hash.cmp(&y.hash)));
+        Ok(out)
+    }
+
+    /// Make the `dup` flags match the sets of identical files: in each set every copy but the keeper is hidden from
+    /// Browse, and everything else is shown. Returns how many items changed.
+    pub fn refresh_dup_flags(&self) -> Result<usize> {
+        let want: HashSet<PhotoId> = self
+            .duplicate_groups()?
+            .into_iter()
+            .flat_map(|g| {
+                let keeper = g.keeper;
+                g.photos.into_iter().map(|p| p.id).filter(move |id| *id != keeper)
+            })
+            .collect();
+        let mut c = self.conn();
+        let have: HashSet<PhotoId> = {
+            let mut s = c.prepare("SELECT id FROM photos WHERE dup = 1").map_err(db_err)?;
+            let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<HashSet<_>, _>>().map_err(db_err)?;
+            rows
+        };
+        let hide: Vec<PhotoId> = want.difference(&have).copied().collect();
+        let show: Vec<PhotoId> = have.difference(&want).copied().collect();
+        if hide.is_empty() && show.is_empty() {
+            return Ok(0);
+        }
+        let tx = c.transaction().map_err(db_err)?;
+        for id in &hide {
+            tx.execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+        }
+        for id in &show {
+            tx.execute("UPDATE photos SET dup = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(hide.len() + show.len())
+    }
+
+    /// Show this copy in Browse for its set of identical files (and keep it when the others are removed).
+    pub fn set_keep_pick(&self, id: PhotoId) -> Result<()> {
+        {
+            let c = self.conn();
+            c.execute(
+                "UPDATE photos SET keep_pick = 0 WHERE hash IS NOT NULL AND hash = (SELECT hash FROM photos WHERE id = ?1)",
+                params![id],
+            )
+            .map_err(db_err)?;
+            c.execute("UPDATE photos SET keep_pick = 1 WHERE id = ?1 AND hash IS NOT NULL", params![id]).map_err(db_err)?;
+        }
+        self.refresh_dup_flags()?;
+        Ok(())
+    }
+
+    pub fn dup_status(&self) -> Result<DupStatus> {
+        let c = self.conn();
+        let total: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0", [], |r| r.get(0)).map_err(db_err)?;
+        // Still to do: no quick key yet, or a shared quick key without a full hash.
+        let todo: i64 = c
+            .query_row(
+                "SELECT count(*) FROM photos p WHERE p.missing = 0 AND (p.quick_key IS NULL OR (
+                    p.hash IS NULL AND substr(p.quick_key, 1, 1) != '!'
+                    AND EXISTS (SELECT 1 FROM photos o WHERE o.quick_key = p.quick_key AND o.id != p.id AND o.missing = 0)))",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let (groups, extra_files, extra_bytes): (i64, i64, i64) = c
+            .query_row(
+                "SELECT count(*), coalesce(sum(n - 1), 0), coalesce(sum((n - 1) * sz), 0) FROM (
+                    SELECT count(*) AS n, max(size) AS sz FROM photos WHERE missing = 0 AND hash IS NOT NULL GROUP BY hash HAVING count(*) > 1)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(db_err)?;
+        let hidden: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0 AND dup = 1", [], |r| r.get(0)).map_err(db_err)?;
+        Ok(DupStatus { done: total - todo, total, groups, extra_files, extra_bytes, hidden })
+    }
+
+    /// Of `ids`, those that may be removed: live, hashed, and with another live copy that is not itself in `ids`.
+    /// A whole group can never be removed this way, however the request is built.
+    pub fn removable_copies(&self, ids: &[PhotoId]) -> Result<Vec<Photo>> {
+        let c = self.conn();
+        let mut out = Vec::new();
+        for id in ids {
+            let p: Option<Photo> = c
+                .query_row(&format!("SELECT {PHOTO_COLS} FROM photos WHERE id = ?1 AND missing = 0 AND hash IS NOT NULL"), params![id], row_to_photo)
+                .optional()
+                .map_err(db_err)?;
+            let Some(p) = p else { continue };
+            let mut s = c.prepare("SELECT id FROM photos WHERE hash = (SELECT hash FROM photos WHERE id = ?1) AND hash IS NOT NULL AND missing = 0 AND id != ?1").map_err(db_err)?;
+            let others: Vec<PhotoId> = s.query_map(params![id], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+            if others.iter().any(|o| !ids.contains(o)) {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// An item the user removed (to the Recycle Bin): hidden like any missing file.
+    pub fn mark_removed(&self, id: PhotoId) -> Result<()> {
+        self.conn().execute("UPDATE photos SET missing = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
     }
 
     pub fn get_photo(&self, id: PhotoId) -> Result<Option<Photo>> {
@@ -925,9 +1118,9 @@ impl Db {
             .prepare(
                 "SELECT p.id, p.name, COUNT(DISTINCT f.photo_id) AS cnt,
                         (SELECT f2.id FROM faces f2 JOIN photos h2 ON h2.id = f2.photo_id
-                          WHERE f2.person_id = p.id AND h2.missing = 0
+                          WHERE f2.person_id = p.id AND h2.missing = 0 AND h2.dup = 0
                           ORDER BY f2.score * f2.w * f2.h DESC, f2.id LIMIT 1)
-                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                   WHERE p.hidden = 0
                   GROUP BY p.id
                  HAVING p.name IS NOT NULL
@@ -978,7 +1171,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT p.id, p.name, p.hidden, COUNT(DISTINCT f.photo_id), COUNT(f.id)
-                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                   WHERE (?1 OR p.hidden = 0)
                   GROUP BY p.id ORDER BY COUNT(f.id) DESC, p.id",
             )
@@ -990,7 +1183,7 @@ impl Db {
             .map_err(db_err)?;
         let mut samples = c
             .prepare(
-                "SELECT f.id FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                "SELECT f.id FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                   WHERE f.person_id = ?1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT 3",
             )
             .map_err(db_err)?;
@@ -1010,7 +1203,7 @@ impl Db {
         if !doubtful_first {
             let mut s = c
                 .prepare(
-                    "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                    "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                       WHERE f.person_id = ?1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?2",
                 )
                 .map_err(db_err)?;
@@ -1025,7 +1218,7 @@ impl Db {
             .unwrap_or_default();
         let mut s = c
             .prepare(
-                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                   WHERE f.person_id = ?1",
             )
             .map_err(db_err)?;
@@ -1047,7 +1240,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(
-                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0
+                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
                   WHERE f.person_id IS NULL AND f.pinned = 1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?1",
             )
             .map_err(db_err)?;
@@ -1223,7 +1416,7 @@ impl Db {
         c.query_row(
             &format!(
                 "SELECT COUNT(DISTINCT t.photo_id) FROM photo_tags t JOIN photos p ON p.id = t.photo_id
-                  WHERE p.missing = 0 AND t.tag IN ({marks})"
+                  WHERE p.missing = 0 AND p.dup = 0 AND t.tag IN ({marks})"
             ),
             rusqlite::params_from_iter(tags.iter()),
             |r| r.get(0),
@@ -1237,7 +1430,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT t.tag, COUNT(*) AS n FROM photo_tags t JOIN photos p ON p.id = t.photo_id
-                  WHERE p.missing = 0 GROUP BY t.tag ORDER BY n DESC, t.tag",
+                  WHERE p.missing = 0 AND p.dup = 0 GROUP BY t.tag ORDER BY n DESC, t.tag",
             )
             .map_err(db_err)?;
         let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
@@ -1276,7 +1469,7 @@ impl Db {
     pub fn trip_items(&self, now: i64) -> Result<Vec<DayItem>> {
         let c = self.conn();
         let mut s = c
-            .prepare("SELECT taken_at, gps_lat, gps_lon, kind FROM photos WHERE missing = 0 AND taken_at >= ?1 AND taken_at < ?2")
+            .prepare("SELECT taken_at, gps_lat, gps_lon, kind FROM photos WHERE missing = 0 AND dup = 0 AND taken_at >= ?1 AND taken_at < ?2")
             .map_err(db_err)?;
         let rows = s
             .query_map(params![EARLIEST_REAL, now + 86_400], |r| {
@@ -1317,7 +1510,7 @@ impl Db {
             let mut s = c
                 .prepare(
                     "SELECT taken_at, gps_lat, gps_lon FROM photos
-                      WHERE missing = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+                      WHERE missing = 0 AND dup = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
                       ORDER BY taken_at, id",
                 )
                 .map_err(db_err)?;

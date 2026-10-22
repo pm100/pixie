@@ -183,3 +183,12 @@ export const rejectFaces = (faceIds: number[]) => invoke<void>('reject_faces', {
 /** Start a new person from a face; returns their id. */
 export const newPersonFromFace = (faceId: number, name: string | null) => invoke<number>('new_person_from_face', { faceId, name });
 export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id });
+
+import type { DupGroup, DupStatus } from './dupes';
+/** Sets of identical files, most wasted space first; the copy to keep is first in each. */
+export const duplicateGroups = () => invoke<DupGroup[]>('duplicate_groups');
+export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');
+/** Move extra copies to the Recycle Bin; returns the ids that were moved. A whole set is never removed. */
+/** Show this copy in Browse for its set of identical files (and keep it when the others are removed). */
+export const setDuplicateKeeper = (id: number) => invoke<void>('set_duplicate_keeper', { id });
+export const removeDuplicates = (ids: number[]) => invoke<number[]>('remove_duplicates', { ids });

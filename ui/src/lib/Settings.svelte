@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import { isDebugBuild, openDataFolder, type FolderInfo } from './api';
   import AnalysisSettings from './AnalysisSettings.svelte';
+  import type { DupStatus } from './dupes';
   import type { AnalysisStatus } from './analysis';
   import PhotoFolders from './PhotoFolders.svelte';
   import TripSettings from './TripSettings.svelte';
@@ -15,13 +16,13 @@
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, onanalysispause, onanalysisretry }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, dupes, onanalysispause, onanalysisretry }: {
     folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     onrescan: (id: number, full: boolean) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
-    analysis: AnalysisStatus | null; people: AnalysisStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
+    analysis: AnalysisStatus | null; people: AnalysisStatus | null; dupes: DupStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
@@ -65,7 +66,7 @@
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
-      <AnalysisSettings status={analysis} {people} onpause={onanalysispause} onretry={onanalysisretry} />
+      <AnalysisSettings status={analysis} {people} {dupes} onpause={onanalysispause} onretry={onanalysisretry} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>

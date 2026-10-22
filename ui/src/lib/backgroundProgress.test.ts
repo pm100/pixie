@@ -33,13 +33,20 @@ describe('backgroundProgress', () => {
     expect(p.state).toBe('working');
     expect(p.text).toBe('Analysing photos 20%');
     expect(p.fraction).toBeCloseTo(0.2);
-    expect(p.detail).toBe('Auto tags: 3,000 of 10,000 · Faces: 1,000 of 10,000');
+    expect(p.detail).toBe('Still working on: Auto tags, Faces');
+  });
+
+  it('counts the duplicate check in the one overall percentage, without a count of its own', () => {
+    const p = backgroundProgress({ ...idle, analysis: status({ done: 10000, total: 10000 }), people: status({ done: 10000, total: 10000 }), dupes: status({ done: 2500, total: 10000 }) })!;
+    expect(p.state).toBe('working');
+    expect(p.text).toBe('Analysing photos 25%');
+    expect(p.detail).toBe('Still working on: Duplicates');
   });
 
   it('counts only the passes that have work left, once one of them is finished', () => {
     const p = backgroundProgress({ ...idle, analysis: status({ done: 10000, total: 10000 }), people: status({ done: 2500, total: 10000 }) })!;
     expect(p.fraction).toBeCloseTo(0.25);
-    expect(p.detail).toBe('Faces: 2,500 of 10,000');
+    expect(p.detail).toBe('Still working on: Faces');
   });
 
   it('says a model is being downloaded, with its percentage', () => {

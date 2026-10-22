@@ -17,11 +17,12 @@ const n = (x: number) => x.toLocaleString();
 /** The progress to show, or null when nothing is running (the indicator then disappears). Errors come first, then the
  *  folder scan, then a model download, then the analysis (Auto tags and faces together), then paused work. */
 export function backgroundProgress(o: {
-  scanning: boolean; scan: ScanState; analysis: AnalysisStatus | null; people: AnalysisStatus | null;
+  scanning: boolean; scan: ScanState; analysis: AnalysisStatus | null; people: AnalysisStatus | null; dupes?: AnalysisStatus | null;
 }): BgProgress | null {
   const passes = [
     { name: 'Auto tags', s: o.analysis },
     { name: 'Faces', s: o.people },
+    { name: 'Duplicates', s: o.dupes ?? null },
   ].filter((p): p is { name: string; s: AnalysisStatus } => p.s !== null);
 
   const failed = passes.find((p) => p.s.models === 'error' || p.s.error);
@@ -45,7 +46,8 @@ export function backgroundProgress(o: {
 
   const left = passes.filter((p) => p.s.models === 'ready' && p.s.total > 0 && p.s.done < p.s.total);
   if (left.length === 0) return null;
-  const detail = left.map((p) => `${p.name}: ${n(p.s.done)} of ${n(p.s.total)}`).join(' · ');
+  // The overall percentage is the whole story here; the counts for each step are in Settings, Picture analysis.
+  const detail = `Still working on: ${left.map((p) => p.name).join(', ')}`;
   if (left.every((p) => p.s.paused)) {
     return { state: 'paused', text: 'Analysis paused', fraction: null, detail: `${detail}. Click to resume.` };
   }

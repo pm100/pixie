@@ -9,6 +9,7 @@ pixie-image = { path = "../pixie-image" }
 rusqlite = { workspace = true }
 walkdir = { workspace = true }
 serde = { workspace = true }
+sha2 = "0.10"
 
 [dev-dependencies]
 pixie-testutil = { path = "../pixie-testutil" }

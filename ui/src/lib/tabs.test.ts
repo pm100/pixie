@@ -3,14 +3,14 @@ import { pickAction, visibleTabs } from './tabs';
 
 describe('visibleTabs', () => {
   it('shows only tabs that have something in them', () => {
-    expect(visibleTabs({ create: false, share: false }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'settings']);
+    expect(visibleTabs({ create: false, share: false }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'dupes', 'settings']);
   });
-  it('adds Create and Share between Faces and Settings when they exist', () => {
-    expect(visibleTabs({ create: true, share: true }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'create', 'share', 'settings']);
-    expect(visibleTabs({ create: false, share: true }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'share', 'settings']);
+  it('adds Create and Share between Duplicates and Settings when they exist', () => {
+    expect(visibleTabs({ create: true, share: true }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'dupes', 'create', 'share', 'settings']);
+    expect(visibleTabs({ create: false, share: true }).map((t) => t.id)).toEqual(['browse', 'map', 'faces', 'dupes', 'share', 'settings']);
   });
   it('labels are the words a person would use', () => {
-    expect(visibleTabs({ create: true, share: true }).map((t) => t.label)).toEqual(['Browse', 'Map', 'People', 'Create', 'Share', 'Settings']);
+    expect(visibleTabs({ create: true, share: true }).map((t) => t.label)).toEqual(['Browse', 'Map', 'People', 'Duplicates', 'Create', 'Share', 'Settings']);
   });
 });
 

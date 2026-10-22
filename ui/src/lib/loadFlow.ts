@@ -16,7 +16,7 @@ export function phaseAfterScan(o: { stopped: boolean; found: number; photos: num
 
 /** One row of the "now analysing" step. */
 export type Line = {
-  key: 'previews' | 'search' | 'faces';
+  key: 'previews' | 'search' | 'faces' | 'dupes';
   title: string;
   /** One plain sentence on what it is for. */
   why: string;
@@ -29,7 +29,7 @@ export type Line = {
 };
 
 /** A line for one analysis pass (search or faces); `label` is "search" or "face" in the model messages. */
-function passLine(key: 'search' | 'faces', title: string, why: string, label: 'picture-analysis' | 'face', s: AnalysisStatus | null, extra: string, expect: number): Line {
+function passLine(key: 'search' | 'faces' | 'dupes', title: string, why: string, label: 'picture-analysis' | 'face', s: AnalysisStatus | null, extra: string, expect: number): Line {
   const line: Line = { key, title, why, text: 'Starting…', fraction: null, error: null, paused: false, done: false };
   if (!s) return line;
   if (s.models === 'error') {
@@ -40,7 +40,7 @@ function passLine(key: 'search' | 'faces', title: string, why: string, label: 'p
     const fraction = s.model_total > 0 ? Math.min(1, s.model_done / s.model_total) : 0;
     return { ...line, text: `Getting the ${label} model… ${Math.floor(fraction * 100)}%`, fraction };
   }
-  if (s.error) return { ...line, text: `${n(s.done)} of ${n(s.total)}`, error: `${key === 'search' ? 'Picture analysis' : 'Face finding'} is having trouble: ${s.error}` };
+  if (s.error) return { ...line, text: `${n(s.done)} of ${n(s.total)}`, error: `${key === 'search' ? 'Picture analysis' : key === 'faces' ? 'Face finding' : 'Duplicate finding'} is having trouble: ${s.error}` };
   // The status can still describe the library as it was before this scan: until it has counted at least the photos the
   // scan found, an empty or small status says nothing about whether the work is done.
   if (s.total < expect) return { ...line, text: 'Getting ready…' };
@@ -49,9 +49,9 @@ function passLine(key: 'search' | 'faces', title: string, why: string, label: 'p
   return { ...line, text: `${n(s.done)} of ${n(s.total)}${extra}`, fraction: Math.min(1, s.done / s.total), done: s.done >= s.total };
 }
 
-/** The three lines of the analysing step. `previews`: thumbnails left now, and the most that were ever queued.
+/** The lines of the analysing step (previews, understanding, faces, and duplicates once their count is known). `previews`: thumbnails left now, and the most that were ever queued.
  *  `expect`: how many photos the scan found, which each pass must have counted before it can be called done. */
-export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | null, previews: { left: number; max: number }, peopleCount: number, expect = 0): Line[] {
+export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | null, previews: { left: number; max: number }, peopleCount: number, expect = 0, d: AnalysisStatus | null = null): Line[] {
   const previewsDone = previews.left === 0;
   const done = previews.max - previews.left;
   return [
@@ -63,6 +63,7 @@ export function analysingLines(a: AnalysisStatus | null, p: AnalysisStatus | nul
     },
     passLine('search', 'Understanding your photos', 'So you can browse by Auto tags, the labels Pixie adds to say what is in each photo (Beach, Museum, Dog and so on).', 'picture-analysis', a, '', expect),
     passLine('faces', 'Finding faces', 'So you can name the people and browse by person.', 'face', p, ` · ${peopleCount === 1 ? '1 person' : `${n(peopleCount)} people`} so far`, expect),
+    ...(d ? [passLine('dupes', 'Looking for duplicates', 'So you can tidy up files that are in your folders more than once.', 'picture-analysis', d, '', expect)] : []),
   ];
 }
 

@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, peopleStatus, setPersonFilter, activeFilters,
+    listPeople, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
     listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -16,6 +16,8 @@
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import FacesTab from './lib/FacesTab.svelte';
+  import DuplicatesTab from './lib/DuplicatesTab.svelte';
+  import { dupPass, type DupStatus } from './lib/dupes';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
@@ -175,6 +177,21 @@
   // People: faces grouped by who they are, as a filter. It combines with a tag.
   let peopleList = $state<PersonInfo[]>([]), activePerson = $state<number | null>(null);
   let peopleState = $state<PeopleStatus | null>(null);
+  let dupState = $state<DupStatus | null>(null);
+  /** How many duplicates Browse is hiding, as of the list on screen. */
+  let dupHiddenShown: number | null = null;
+  let dupTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Extra copies were hidden or shown: bring Browse up to date, in a batch and without resetting scroll. If the user
+   *  is holding a selection or has the viewer open (which would shift under them), try again a little later. */
+  function dupHiddenChanged() {
+    clearTimeout(dupTimer);
+    const want = dupState?.hidden ?? null;
+    if (want === null || dupHiddenShown === null || want === dupHiddenShown) return;
+    dupTimer = setTimeout(async () => {
+      if (await refreshLive()) dupHiddenShown = want;
+      else dupHiddenChanged();
+    }, 3000);
+  }
   let peopleAt = 0;
   /** Counts people edits made in Browse, so the People tab knows to reload when it is shown again. */
   let peopleEdits = $state(0);
@@ -283,8 +300,8 @@
    * are viewing for another one.
    */
   let liveBusy = false;
-  async function refreshLive() {
-    if (liveBusy || interacting()) return;
+  async function refreshLive(): Promise<boolean> {
+    if (liveBusy || interacting()) return false;
     liveBusy = true;
     try {
       const v = { ...view };
@@ -294,7 +311,7 @@
         listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search),
       ]);
       const ng = await navGroupsFor(v, g);
-      if (!same(v, view) || !same(v, shown) || interacting()) return;
+      if (!same(v, view) || !same(v, shown) || interacting()) return false;
       if (!sameGroups(groups, g)) {
         total = n;
         groups = g;
@@ -302,7 +319,8 @@
         shown = v; // the new snapshot, together with the new groups
         version++;
       }
-    } catch { /* the next progress tick retries */ } finally {
+      return true;
+    } catch { /* the next progress tick retries */ return false; } finally {
       setTimeout(() => (liveBusy = false), 1500); // at most one reload every ~1.5 s
     }
   }
@@ -599,7 +617,7 @@
       img.onerror = () => resolve(false);
       img.src = thumbUrl('grid', item.id, item.mtime, item.size);
     });
-  const flowLines = $derived(analysingLines(analysis, peopleState, previews, facePeople, flowPhotos));
+  const flowLines = $derived(analysingLines(analysis, peopleState, previews, facePeople, flowPhotos, dupPass(dupState)));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -708,7 +726,7 @@
   };
 
   /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
-  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState }));
+  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState, dupes: dupPass(dupState) }));
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While analysing: poll the preview queue and the people count once a second.
@@ -766,6 +784,7 @@
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
+    duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {});
     loadTags();
     loadPeople();
     // Re-scan all known folders on launch to pick up changes.
@@ -777,6 +796,7 @@
     });
     const subs = [
       listen<AnalysisStatus>('analysis-status', (e) => { analysis = e.payload; loadTagsSoon(); }),
+      listen<DupStatus>('duplicate-status', (e) => { dupState = e.payload; dupHiddenChanged(); }),
       listen<PeopleStatus>('people-status', (e) => { peopleState = e.payload; loadPeopleSoon(); }),
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number; latest: Sample | null }>('scan-progress', (e) => {
@@ -826,7 +846,7 @@
       <span>{total.toLocaleString()} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces'}>
+    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes'}>
       <div class="tools">
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
@@ -912,12 +932,17 @@
         <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={peopleTabChanged} />
       </div>
     {/if}
+    {#if tab === 'dupes'}
+      <div class="page-over">
+        <DuplicatesTab active={tab === 'dupes'} onchange={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
+      </div>
+    {/if}
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id, full) => runScan(id, full)}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
-                  {analysis} people={peopleState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
+                  {analysis} people={peopleState} dupes={dupState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>

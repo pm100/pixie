@@ -349,6 +349,46 @@ fn list_people(state: tauri::State<AppState>) -> Result<Vec<pixie_core::PersonIn
     state.db.list_people()
 }
 
+/// Groups of identical files (same contents), most wasted space first; the copy to keep is first in each.
+#[tauri::command]
+fn duplicate_groups(state: tauri::State<AppState>) -> Result<Vec<pixie_core::DupGroup>, PixieError> {
+    state.db.duplicate_groups()
+}
+
+/// How far the background hashing has got and what the copies found add up to.
+#[tauri::command]
+fn duplicate_status(state: tauri::State<AppState>) -> Result<pixie_core::DupStatus, PixieError> {
+    state.db.dup_status()
+}
+
+/// Move extra copies to the Recycle Bin (never a permanent delete). Only copies that still have another live copy
+/// outside the request are touched, and only if the file on disk is still the size that was hashed. Returns the ids
+/// that were removed.
+#[tauri::command]
+fn remove_duplicates(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<Vec<i64>, PixieError> {
+    let mut removed = Vec::new();
+    for p in state.db.removable_copies(&ids)? {
+        let path = std::path::Path::new(&p.path);
+        let unchanged = std::fs::metadata(path).map(|m| m.len() as i64 == p.size).unwrap_or(false);
+        if !unchanged {
+            continue; // gone or edited since it was hashed: leave it for the next look
+        }
+        if trash::delete(path).is_err() {
+            continue;
+        }
+        state.db.mark_removed(p.id)?;
+        removed.push(p.id);
+    }
+    state.db.refresh_dup_flags()?; // a survivor that was hidden is shown again
+    Ok(removed)
+}
+
+/// Show this copy in Browse for its set of identical files, and keep it if the others are removed.
+#[tauri::command]
+fn set_duplicate_keeper(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.set_keep_pick(id)
+}
+
 /// The faces in one photo.
 #[tauri::command]
 fn faces_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<pixie_core::FaceInfo>, PixieError> {
@@ -1080,6 +1120,15 @@ pub fn run() {
                 }),
                 poll: Duration::from_millis(500),
             }));
+            let dupes_app = app.handle().clone();
+            let dupes_gate = gate.clone();
+            let dupes = Arc::new(pixie_index::DupeService::start(
+                db.clone(),
+                Arc::new(move || dupes_gate.is_busy()),
+                Arc::new(move |s| {
+                    let _ = dupes_app.emit("duplicate-status", s);
+                }),
+            ));
             app.manage(AppState {
                 db,
                 thumbs,
@@ -1094,13 +1143,14 @@ pub fn run() {
                 queue: ScanQueue::default(),
                 analysis,
                 people,
+                dupes,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, previews_pending, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
-            save_contact, delete_contact, photos_at, send_test_email, send_email
+            save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pixie");
