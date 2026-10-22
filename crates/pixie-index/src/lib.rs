@@ -2,6 +2,7 @@ pub mod db;
 pub mod queue;
 pub mod scanner;
 pub mod suggest;
+pub mod trips;
 
 pub use db::{Db, PhotoStat};
 pub use queue::ScanQueue;

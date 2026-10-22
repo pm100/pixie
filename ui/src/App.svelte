@@ -4,19 +4,20 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, setTagFilter, startScan,
+    listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, peopleStatus, setPersonFilter, activeFilters,
     listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
-    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type View,
+    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
+  import { cleanCollapsed, toggleSection, type SectionId } from './lib/sections';
+  import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import FacesTab from './lib/FacesTab.svelte';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
-  import MailSettings from './lib/MailSettings.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
   import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
   import { parseKindFilter } from './lib/kind';
@@ -48,7 +49,7 @@
   import Viewer from './lib/Viewer.svelte';
 
   const initial: View = {
-    order: loadPref<SortOrder>('order', 'newest'),
+    order: 'newest', // newest first, except while a trip is chosen: a trip reads best from its first day to its last
     folderId: null,
     kind: parseKindFilter(loadPref<unknown>('kind', null)),
     bounds: null,
@@ -69,6 +70,9 @@
   // stay whole so another period can still be picked, so it is built without that period.
   let navGroups = $state<DayGroup[]>([]);
   let periodKey = $state<string | null>(null); // y:2025, m:2025-06 or d:2025-06-14, only on the map
+  // A chosen trip (its `since`). Like Recent and a chosen period it is a date range, so choosing one replaces the others.
+  let tripKey = $state<number | null>(null);
+  const recentOn = $derived(view.since !== null && periodKey === null && tripKey === null);
   let folders = $state<Folder[]>([]);
   let selection = $state(emptySelection);
   let selectedPhoto = $state<Photo | null>(null);
@@ -110,7 +114,6 @@
     popoutSnap = { index: i, total, view: { ...shown } };
     sendShow(true);
   });
-  let settingsOpen = $state(false); // the email account dialog
   let tab = $state<TabId>('browse');
   let viewerMode = $state<ViewerMode>(parseViewerMode(loadPref<unknown>('viewerMode', null)));
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
@@ -121,7 +124,7 @@
     if (days === recentDays) return;
     recentDays = days;
     savePref('recentDays', days);
-    if (view.since !== null && periodKey === null) {
+    if (recentOn) {
       view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
       selection = emptySelection;
       refresh(true).catch((e) => (message = String(e)));
@@ -311,25 +314,18 @@
     }
   }
 
-  function setOrder(order: SortOrder) {
-    if (order === view.order) return;
-    view = { ...view, order };
-    savePref('order', order);
-    selection = emptySelection;
-    refresh(true).catch((e) => (message = String(e)));
-  }
-
   function setRecent(on: boolean) {
-    if (on === (view.since !== null && periodKey === null)) return; // already in that state
-    periodKey = null; // Recent and a chosen period are both a date range: one replaces the other
-    view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
+    if (on === recentOn) return; // already in that state
+    periodKey = null; // Recent, a chosen period and a chosen trip are all a date range: one replaces the others
+    tripKey = null;
+    view = { ...view, order: 'newest', since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
-  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || view.since !== null);
+  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || tripKey !== null || view.folderId !== null || view.since !== null);
 
   /** "Show all": drop the tag, person and date range in one go. */
   async function showAll() {
@@ -339,7 +335,8 @@
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
-    view = { ...view, search: hitsActive(activeTag, activePerson), since: null, until: null };
+    tripKey = null;
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -351,7 +348,8 @@
     const r = next === null ? null : periodRange(next);
     if (next !== null && !r) return;
     periodKey = next;
-    view = { ...view, since: r?.since ?? null, until: r?.until ?? null };
+    tripKey = null;
+    view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     loadPoints();
@@ -364,6 +362,117 @@
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
+  }
+
+  /** Show only one photo folder (the same folder again clears it). */
+  function setFolder(id: number | null) {
+    if (id === view.folderId) return;
+    view = { ...view, folderId: id };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  /** Show only one trip (the same trip again clears it): its days become the date range. */
+  function setTrip(t: Trip | null) {
+    if (t === null || t.since === tripKey) {
+      if (tripKey === null) return;
+      tripKey = null;
+      view = { ...view, order: 'newest', since: null, until: null };
+      void loadRoute(null);
+    } else {
+      periodKey = null;
+      tripKey = t.since;
+      view = { ...view, order: 'oldest', since: t.since, until: t.until };
+      void loadRoute(t);
+    }
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
+  // Trips: runs of days away from home. Home is the user's to confirm (in Settings), so none are shown before that.
+  let tripPrefs = $state<TripPrefs>(cleanTripPrefs(loadPref<unknown>('trips', null)));
+  let trips = $state<Trip[]>([]);
+  let tripsAsked = 0;
+  async function loadTrips() {
+    const mine = ++tripsAsked;
+    const p = tripPrefs;
+    if (!p.confirmed || !p.home) { trips = []; return; }
+    try {
+      const got = await listTrips(p.home.lat, p.home.lon, p.radiusKm, p.minNights);
+      if (mine === tripsAsked) { trips = got; forgetDestinations(); }
+    } catch (e) { message = String(e); }
+  }
+  // Where each trip went: found for the trips on show, a few at a time, since each place is looked up once and then kept.
+  let destinations = $state<Record<number, string>>({});
+  let destDone = new Map<number, string>(); // by trip start; '' when it could not be worked out
+  let destRun = 0;
+  function forgetDestinations() { destDone = new Map(); destinations = {}; }
+  /** The place line of each of the stops with the most days (the rest are left unnamed), looked up one after another. */
+  async function placesOf(r: Route, run: () => boolean): Promise<{ names: (string | null)[]; complete: boolean }> {
+    const names: (string | null)[] = r.stops.map(() => null);
+    const order = r.stops.map((s, i) => i).sort((a, b) => r.stops[b].days - r.stops[a].days).slice(0, 8);
+    let complete = true;
+    for (const i of order) {
+      if (!run()) { complete = false; break; }
+      try { names[i] = (await placeFor(r.stops[i].lat, r.stops[i].lon, true))?.locality ?? null; } catch { complete = false; /* offline or busy: say so */ }
+    }
+    return { names, complete };
+  }
+  async function resolveDestinations(list: Trip[]) {
+    const mine = ++destRun, p = tripPrefs;
+    if (!p.home) return;
+    for (const t of list) {
+      if (mine !== destRun) return;
+      if (destDone.has(t.since)) continue;
+      try {
+        const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
+        const found = await placesOf(r, () => mine === destRun);
+        if (mine !== destRun) return;
+        // A lookup that failed (offline) leaves the trip to be tried again later; a partial answer would name the wrong places.
+        if (!found.complete) continue;
+        const dest = destinationOf(r, found.names);
+        destDone.set(t.since, dest ?? '');
+        if (dest) destinations = { ...destinations, [t.since]: dest };
+      } catch { destDone.set(t.since, ''); }
+    }
+  }
+
+  // The route of the chosen trip, for the map.
+  let routeData = $state<Route | null>(null), routeNames = $state<(string | null)[]>([]);
+  let routeRun = 0;
+  async function loadRoute(t: Trip | null) {
+    const mine = ++routeRun, p = tripPrefs;
+    routeData = null; routeNames = [];
+    if (!t || !p.home) return;
+    try {
+      const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
+      if (mine !== routeRun) return;
+      routeData = r;
+      const found = await placesOf(r, () => mine === routeRun);
+      if (mine === routeRun) routeNames = found.names;
+    } catch (e) { message = String(e); }
+  }
+
+  function setTripPrefs(next: TripPrefs) {
+    tripPrefs = next;
+    savePref('trips', next);
+    forgetDestinations();
+    if (tripKey !== null) setTrip(null); // the chosen trip may no longer exist
+    void loadTrips();
+  }
+  async function renameTripTo(t: Trip, name: string) {
+    try { await renameTrip(t.since, t.until, name); } catch (e) { message = String(e); }
+    void loadTrips();
+  }
+  const openTripSettings = () => { settingsPage = 'trips'; pickTab('settings'); };
+
+  // Sections of the Browse list the user has folded away.
+  let collapsed = $state<SectionId[]>(cleanCollapsed(loadPref<unknown>('collapsedSections', null)));
+  function toggleNav(id: SectionId) {
+    collapsed = toggleSection(collapsed, id);
+    savePref('collapsedSections', collapsed);
   }
 
   const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
@@ -661,6 +770,7 @@
   onMount(() => {
     refresh().catch((e) => (message = String(e)));
     loadFolderInfos();
+    void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
     loadTags();
@@ -689,6 +799,7 @@
         scanning = false;
         scanFolder = null;
         loadFolderInfos();
+        void loadTrips();
         if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
         else refresh().catch((e) => (message = String(e)));
         if (mode === 'map') loadPoints();
@@ -724,9 +835,6 @@
     {/snippet}
     <div class="browse" inert={tab === 'settings' || tab === 'faces'}>
       <div class="tools">
-        <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
-          {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
-        </button>
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
@@ -734,6 +842,14 @@
         {#if activeInfo !== null}
           <span class="filter">Person “{personLabel(activeInfo)}”
             <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
+        {/if}
+        {#if view.folderId !== null}
+          <span class="filter">Folder “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'}”
+            <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
+        {/if}
+        {#if tripKey !== null}
+          <span class="filter">Trip “{trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'}”
+            <button onclick={() => setTrip(null)} aria-label="Clear trip" title="Clear trip">✕</button></span>
         {/if}
         {#if periodKey !== null}
           <span class="filter">Showing only {periodLabel(periodKey)}
@@ -750,10 +866,13 @@
         {:else}
       <Shell>
         {#snippet left()}
-          <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={view.since !== null && periodKey === null}
+          <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={recentOn}
                filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
                {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
+               folders={folderInfos} folderId={view.folderId} onfolder={setFolder}
+               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings}
+               {collapsed} ontoggle={toggleNav}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
@@ -761,7 +880,7 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey}
+                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={focusPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}
@@ -779,7 +898,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -803,15 +922,12 @@
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
-                  onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
+                  onrescan={(id, full) => runScan(id, full)}
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   {analysis} people={peopleState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>
-  {#if settingsOpen}
-    <MailSettings onclose={() => (settingsOpen = false)} />
-  {/if}
   {#if openIndex !== null || soloPhoto !== null}
     <Viewer index={openIndex ?? 0} {total} view={shown} solo={soloPhoto} onclose={closeViewer} onnav={(i) => (openIndex = i)}
             onpopout={() => popOut(openIndex ?? 0)} />

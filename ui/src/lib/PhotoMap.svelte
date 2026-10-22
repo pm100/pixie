@@ -2,14 +2,19 @@
   import L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
   import { onMount } from 'svelte';
-  import { getPhoto, type Photo } from './api';
+  import { getPhoto, type Photo, type Route } from './api';
   import { debounce } from './debounce';
   import { basename, formatDateTime } from './format';
-  import { boundsOfView, clusterPoints, clusterTarget, nearestWorldLon, progressZoom, type Bounds, type GeoPoint, type MapView } from './geo';
+  import { boundsOfView, clusterPoints, clusterTarget, greatCircle, nearestWorldLon, progressZoom, type Bounds, type GeoPoint, type MapView } from './geo';
+  import { tripDates } from './trips';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, initial, resetKey, onbounds, onmove, onpin, onopenphoto }: {
+  let { points, initial, resetKey, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
     points: GeoPoint[];
+    /** A chosen trip: its stops are numbered and arrows show the way from one to the next. */
+    route?: Route | null;
+    /** The name of each stop of `route`, where known. */
+    stopNames?: (string | null)[];
     initial: MapView | null;
     /** Changes when the user asks for the whole map again. */
     resetKey: number;
@@ -25,6 +30,7 @@
   let unavailable = $state(false);
   let map: L.Map | undefined;
   let markers: L.LayerGroup | undefined;
+  let routeLayer: L.LayerGroup | undefined;
   let loaded = 0; // tiles shown since the last view change
   let errors = 0; // tiles that failed since the last view change
   // After a click on a pin the grid shows just that photo. While this is true the map reports no area
@@ -122,6 +128,46 @@
     onpin(p);
   }
 
+  /** The chosen trip: a line from stop to stop in the order visited, an arrowhead on each leg, and the stops numbered. */
+  function drawRoute(): L.LatLngBounds | null {
+    if (!map || !routeLayer) return null;
+    routeLayer.clearLayers();
+    if (!route || route.stops.length === 0) return null;
+    const stops = route.stops;
+    const all: L.LatLng[] = [];
+    const lonAt = new Map<number, number>(); // where each stop is drawn, on the copy of the world the route is on
+    let cur = stops[route.path[0] ?? 0].lon;
+    lonAt.set(route.path[0] ?? 0, cur);
+    all.push(L.latLng(stops[route.path[0] ?? 0].lat, cur));
+    for (let k = 1; k < route.path.length; k++) {
+      const a = stops[route.path[k - 1]], b = stops[route.path[k]];
+      const pts = greatCircle([a.lat, cur], [b.lat, b.lon]);
+      cur = pts[pts.length - 1][1];
+      if (!lonAt.has(route.path[k])) lonAt.set(route.path[k], cur);
+      for (const pt of pts) all.push(L.latLng(pt[0], pt[1]));
+      L.polyline(pts, { color: '#2a5bd7', weight: 3, opacity: 0.85, interactive: false }).addTo(routeLayer);
+      const mid = Math.floor((pts.length - 1) / 2);
+      const p1 = map.latLngToLayerPoint(pts[mid]), p2 = map.latLngToLayerPoint(pts[mid + 1]);
+      const deg = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+      const at: [number, number] = [(pts[mid][0] + pts[mid + 1][0]) / 2, (pts[mid][1] + pts[mid + 1][1]) / 2];
+      L.marker(at, {
+        icon: L.divIcon({ html: `<div style="transform:rotate(${deg.toFixed(1)}deg)">▶</div>`, className: 'rt-arrow', iconSize: [20, 20] }),
+        interactive: false, keyboard: false,
+      }).addTo(routeLayer);
+    }
+    stops.forEach((st, i) => {
+      const lon = lonAt.get(i) ?? st.lon;
+      const when = tripDates({ start: st.first, end: st.last });
+      const label = `${i + 1}. ${stopNames[i] ? `${stopNames[i]} · ` : ''}${when}`;
+      L.marker([st.lat, lon], {
+        icon: L.divIcon({ html: `<div>${i + 1}</div>`, className: 'rt-stop', iconSize: [24, 24] }),
+        keyboard: false, zIndexOffset: 1000,
+      }).bindTooltip(label, { direction: 'top', offset: [0, -10] }).addTo(routeLayer!);
+      if (!all.some((q) => q.lat === st.lat && q.lng === lon)) all.push(L.latLng(st.lat, lon));
+    });
+    return L.latLngBounds(all);
+  }
+
   function fitAll() {
     if (!map || points.length === 0) return;
     let s = 90, n = -90, w = 180, e = -180;
@@ -138,6 +184,8 @@
   onMount(() => {
     map = L.map(el, { attributionControl: false, minZoom: 2, worldCopyJump: false });
     markers = L.layerGroup().addTo(map);
+    routeLayer = L.layerGroup().addTo(map);
+    map.on('zoomend', () => { drawRoute(); });
     const layer = L.tileLayer(tileTemplate(), { maxZoom: 19 }).addTo(map);
     layer.on('tileload', () => { loaded++; unavailable = false; });
     layer.on('tileerror', (e) => {
@@ -187,6 +235,7 @@
       emitMove.cancel();
       map?.remove();
       map = undefined;
+      routeLayer = undefined;
     };
   });
 
@@ -199,6 +248,21 @@
     lastReset = k;
     map?.closePopup();
     fitAll();
+  });
+
+  // A trip was chosen (or cleared, or its stops named): draw it, and show all of it when it first appears.
+  let routeShown: Route | null = null;
+  $effect(() => {
+    const r = route;
+    stopNames;
+    if (!map) return;
+    const bounds = drawRoute();
+    if (bounds && r !== routeShown) {
+      map.closePopup();
+      focusActive = false;
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+    }
+    routeShown = r;
   });
 
   // New points (the map opened, a filter changed, a scan finished): fit the first time, then redraw.
@@ -232,6 +296,10 @@
   :global(.pm .cl) { width: 100%; height: 100%; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; background: rgba(47, 111, 237, .85); color: #fff; font: 600 13px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); }
   :global(.pm .pin) { width: 100%; height: 100%; box-sizing: border-box; border-radius: 50%; background: #d33; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5); cursor: pointer; }
   :global(.pm .cl) { cursor: pointer; }
+  :global(.rt-stop) { background: none; border: 0; }
+  :global(.rt-stop div) { width: 24px; height: 24px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; background: #2a5bd7; color: #fff; font: 700 13px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); }
+  :global(.rt-arrow) { background: none; border: 0; }
+  :global(.rt-arrow div) { width: 20px; height: 20px; display: grid; place-items: center; font-size: 15px; line-height: 1; color: #2a5bd7; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
   :global(.pop) { cursor: pointer; width: 180px; }
   :global(.pop img) { display: block; width: 180px; height: 135px; object-fit: cover; border-radius: 4px; background: #2a2a30; }
   :global(.pop .noimg) { width: 180px; height: 135px; border-radius: 4px; background: #2a2a30; color: #bbb; display: grid; place-items: center; font-size: 28px; }

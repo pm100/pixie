@@ -1,3 +1,4 @@
+use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
 use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -110,6 +111,12 @@ const MIGRATIONS: &[&str] = &[
         face_id   INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
         person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
         PRIMARY KEY (face_id, person_id)
+     );",
+    // V9: names the user gave to trips. A trip is found again on every look, so a name is kept against the day the trip
+    // started and applies to whichever trip contains that day.
+    "CREATE TABLE trip_names (
+        start_day INTEGER PRIMARY KEY,
+        name      TEXT NOT NULL
      );",
 ];
 
@@ -1265,6 +1272,85 @@ impl Db {
         Ok(rows)
     }
 
+    /// Every item with a real date (not a placeholder such as 1980, and not from the future), for finding trips.
+    pub fn trip_items(&self, now: i64) -> Result<Vec<DayItem>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare("SELECT taken_at, gps_lat, gps_lon, kind FROM photos WHERE missing = 0 AND taken_at >= ?1 AND taken_at < ?2")
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![EARLIEST_REAL, now + 86_400], |r| {
+                let (lat, lon): (Option<f64>, Option<f64>) = (r.get(1)?, r.get(2)?);
+                Ok(DayItem { day: day_of(r.get(0)?), pos: lat.zip(lon), video: r.get::<_, i64>(3)? == 1 })
+            })
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The trips for these settings, newest first, with the names the user gave them.
+    pub fn trips(&self, settings: &TripSettings, now: i64) -> Result<Vec<Trip>> {
+        let mut trips = compute_trips(&self.trip_items(now)?, settings);
+        let names: Vec<(i64, String)> = {
+            let c = self.conn();
+            let mut s = c.prepare("SELECT start_day, name FROM trip_names ORDER BY start_day").map_err(db_err)?;
+            let rows = s
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(db_err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        for t in &mut trips {
+            let (first, last) = (day_of(t.since), day_of(t.until) - 1);
+            t.name = names.iter().find(|(d, _)| *d >= first && *d <= last).map(|(_, n)| n.clone());
+        }
+        Ok(trips)
+    }
+
+    /// Where a trip went: the places its located items were taken, leaving out anything within the home radius (a day
+    /// away can also hold a few photos taken at home). `since` is inclusive and `until` exclusive, as `trips` reports.
+    pub fn trip_route(&self, since: i64, until: i64, settings: &TripSettings, stop_km: f64) -> Result<Route> {
+        let rows: Vec<(i64, f64, f64)> = {
+            let c = self.conn();
+            let mut s = c
+                .prepare(
+                    "SELECT taken_at, gps_lat, gps_lon FROM photos
+                      WHERE missing = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+                      ORDER BY taken_at, id",
+                )
+                .map_err(db_err)?;
+            let rows = s
+                .query_map(params![since.max(EARLIEST_REAL), until], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(db_err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        let away: Vec<(i64, f64, f64)> =
+            rows.into_iter().filter(|&(_, la, lo)| distance_km((settings.home_lat, settings.home_lon), (la, lo)) > settings.radius_km).collect();
+        Ok(compute_route(&away, stop_km))
+    }
+
+    /// Where home probably is, from where the photos were taken. None when no item has a position.
+    pub fn suggest_home(&self, now: i64) -> Result<Option<(f64, f64)>> {
+        Ok(infer_home(&self.trip_items(now)?))
+    }
+
+    /// Names the trip covering `since` (inclusive) to `until` (exclusive), replacing any name it had; an empty name
+    /// removes the name.
+    pub fn rename_trip(&self, since: i64, until: i64, name: &str) -> Result<()> {
+        let (first, last) = (day_of(since), day_of(until) - 1);
+        let name = name.trim();
+        let c = self.conn();
+        c.execute("DELETE FROM trip_names WHERE start_day BETWEEN ?1 AND ?2", params![first, last]).map_err(db_err)?;
+        if !name.is_empty() {
+            c.execute("INSERT INTO trip_names (start_day, name) VALUES (?1, ?2)", params![first, name]).map_err(db_err)?;
+        }
+        Ok(())
+    }
+
     /// One entry per calendar day (UTC, as stored), in listing order, Undated last.
     pub fn day_groups(&self, q: &PhotoQuery) -> Result<Vec<DayGroup>> {
         let dir = match q.order {
@@ -1404,6 +1490,86 @@ mod tests {
         db.upsert_photo(f, "/p/nogps.jpg", 1, 1, &meta(Some(600))).unwrap();
         db.upsert_photo(f, "/p/clip.mp4", 1, 1, &PhotoMeta { kind: MediaKind::Video, ..geo_meta(700, 48.85, 2.34) }).unwrap();
         (db, f)
+    }
+
+    /// A library for trip tests: items at (day number, position) with the day number turned into a time of day 12:00.
+    fn trip_library(items: &[(i64, Option<(f64, f64)>)]) -> Db {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        for (i, (day, pos)) in items.iter().enumerate() {
+            let taken = day * 86_400 + 43_200;
+            let m = match pos {
+                Some((la, lo)) => geo_meta(taken, *la, *lo),
+                None => meta(Some(taken)),
+            };
+            db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &m).unwrap();
+        }
+        db
+    }
+
+    const T_PARIS: (f64, f64) = (48.86, 2.35);
+    const T_ROME: (f64, f64) = (41.90, 12.50);
+    const T_NOW: i64 = 20_000 * 86_400;
+    fn t_settings() -> TripSettings {
+        TripSettings { home_lat: T_PARIS.0, home_lon: T_PARIS.1, radius_km: 50.0, min_nights: 0 }
+    }
+
+    #[test]
+    fn trips_come_from_dated_located_items_and_ignore_placeholder_dates() {
+        let db = trip_library(&[(18_000, Some(T_PARIS)), (18_001, Some(T_ROME)), (18_002, Some(T_ROME)), (18_003, Some(T_PARIS))]);
+        // A 1980 placeholder date in Rome, a far-future date in Rome, and a missing date must not make trips.
+        let f = db.list_folders().unwrap()[0].id;
+        db.upsert_photo(f, "/p/y1980.jpg", 1, 1, &geo_meta(315_532_800, T_ROME.0, T_ROME.1)).unwrap();
+        db.upsert_photo(f, "/p/future.jpg", 1, 1, &geo_meta(T_NOW + 90 * 86_400, T_ROME.0, T_ROME.1)).unwrap();
+        db.upsert_photo(f, "/p/undated.jpg", 1, 1, &PhotoMeta { gps_lat: Some(T_ROME.0), gps_lon: Some(T_ROME.1), ..Default::default() }).unwrap();
+        let t = db.trips(&t_settings(), T_NOW).unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!((t[0].since, t[0].until, t[0].days, t[0].photos), (18_001 * 86_400, 18_003 * 86_400, 2, 2));
+    }
+
+    #[test]
+    fn a_trips_route_leaves_out_what_was_taken_at_home_and_what_is_not_located() {
+        let db = trip_library(&[(18_000, Some(T_PARIS)), (18_001, Some(T_ROME)), (18_001, Some(T_PARIS)), (18_001, None), (18_002, Some(T_ROME)), (18_003, Some(T_PARIS))]);
+        let t = &db.trips(&t_settings(), T_NOW).unwrap()[0];
+        let r = db.trip_route(t.since, t.until, &t_settings(), 25.0).unwrap();
+        assert_eq!(r.stops.len(), 1);
+        assert_eq!((r.stops[0].items, r.stops[0].days), (2, 2));
+        assert_eq!(r.path, vec![0]);
+    }
+
+    #[test]
+    fn missing_files_are_not_in_trips() {
+        let db = trip_library(&[(18_000, Some(T_ROME))]);
+        let f = db.list_folders().unwrap()[0].id;
+        db.mark_missing_except(f, &HashSet::new()).unwrap();
+        assert!(db.trips(&t_settings(), T_NOW).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_trips_name_is_kept_across_looks_and_can_be_changed_or_removed() {
+        let db = trip_library(&[(18_000, Some(T_PARIS)), (18_001, Some(T_ROME)), (18_002, Some(T_ROME)), (18_003, Some(T_PARIS)), (18_010, Some(T_ROME))]);
+        let t = db.trips(&t_settings(), T_NOW).unwrap();
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|x| x.name.is_none()));
+        db.rename_trip(t[1].since, t[1].until, "  Rome  ").unwrap();
+        let t = db.trips(&t_settings(), T_NOW).unwrap();
+        assert_eq!((t[0].name.as_deref(), t[1].name.as_deref()), (None, Some("Rome")));
+        db.rename_trip(t[1].since, t[1].until, "Rome 2019").unwrap();
+        assert_eq!(db.trips(&t_settings(), T_NOW).unwrap()[1].name.as_deref(), Some("Rome 2019"));
+        // A name sticks to the trip when it grows (a later away day joins it) because the start day is still inside it.
+        let f = db.list_folders().unwrap()[0].id;
+        db.upsert_photo(f, "/p/more.jpg", 1, 1, &geo_meta(18_002 * 86_400 + 100, T_ROME.0, T_ROME.1)).unwrap();
+        assert_eq!(db.trips(&t_settings(), T_NOW).unwrap()[1].name.as_deref(), Some("Rome 2019"));
+        db.rename_trip(t[1].since, t[1].until, "").unwrap();
+        assert!(db.trips(&t_settings(), T_NOW).unwrap()[1].name.is_none());
+    }
+
+    #[test]
+    fn home_is_suggested_from_the_photos() {
+        let db = trip_library(&[(1_000_000_000 / 86_400, Some(T_PARIS)), (1_000_000_000 / 86_400 + 1, Some(T_PARIS)), (1_000_000_000 / 86_400 + 2, Some(T_ROME))]);
+        let h = db.suggest_home(T_NOW).unwrap().unwrap();
+        assert!(crate::trips::distance_km(h, T_PARIS) < 15.0);
+        assert!(trip_library(&[(18_000, None)]).suggest_home(T_NOW).unwrap().is_none());
     }
 
     #[test]

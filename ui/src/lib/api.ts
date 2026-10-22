@@ -62,7 +62,8 @@ export const printPage = () => invoke<void>('print_page');
 export interface Place { landmark: string | null; locality: string | null }
 /** The user's language(s), e.g. "en-GB,en", so place names come back in their language. */
 const userLang = () => (navigator.languages?.length ? navigator.languages.join(',') : navigator.language) || 'en';
-export const placeFor = (lat: number, lon: number) => invoke<Place | null>('place_for', { lat, lon, lang: userLang() });
+/** `background`: work nobody is watching (naming trips), which waits its turn without cancelling the lookup for the photo on screen. */
+export const placeFor = (lat: number, lon: number, background = false) => invoke<Place | null>('place_for', { lat, lon, lang: userLang(), background });
 
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
@@ -150,6 +151,20 @@ export const previewsPending = () => invoke<number>('previews_pending');
 export const isDebugBuild = () => invoke<boolean>('is_debug_build');
 /** Debug builds only: show the data folder in the file manager. */
 export const openDataFolder = () => invoke<void>('open_data_folder');
+
+/** A run of days spent away from home. `since` is inclusive and `until` exclusive, in unix seconds. */
+export interface Trip { start: string; end: string; since: number; until: number; nights: number; days: number; photos: number; videos: number; name: string | null }
+export const listTrips = (homeLat: number, homeLon: number, radiusKm: number, minNights: number) =>
+  invoke<Trip[]>('list_trips', { homeLat, homeLon, radiusKm, minNights });
+/** A place a trip stopped at; `first` and `last` are "YYYY-MM-DD". */
+export interface Stop { lat: number; lon: number; first: string; last: string; days: number; items: number }
+/** The stops of a trip in the order first visited, and the order of the visits (indexes into `stops`; a stop repeats if the trip came back). */
+export interface Route { stops: Stop[]; path: number[] }
+export const tripRoute = (since: number, until: number, homeLat: number, homeLon: number, radiusKm: number, stopKm: number) =>
+  invoke<Route>('trip_route', { since, until, homeLat, homeLon, radiusKm, stopKm });
+/** Where home probably is, as [latitude, longitude]; null when no photo has a position. */
+export const suggestHome = () => invoke<[number, number] | null>('suggest_home');
+export const renameTrip = (since: number, until: number, name: string) => invoke<void>('rename_trip', { since, until, name });
 /** The tag and person the listings are really restricted to. */
 export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });

@@ -20,13 +20,26 @@ impl PlaceService {
         PlaceService { cache: Mutex::new(cache), fetcher, last_request: Mutex::new(None), gap, started: AtomicU64::new(0) }
     }
 
+    /// The place for something the user is looking at. Only the newest such request matters: one still waiting its
+    /// turn when a newer one arrives gives up with `Superseded`, so paging quickly through photos does not queue up
+    /// lookups for ones that are gone.
     pub fn place_for(&self, lat: f64, lon: f64, lang: &str) -> Result<Option<Place>, GeoError> {
+        self.lookup(lat, lon, lang, true)
+    }
+
+    /// The place for work nobody is watching (naming trips). It waits its turn like any other lookup, but it never
+    /// supersedes a request for what the user is looking at, and such a request never supersedes it.
+    pub fn place_for_background(&self, lat: f64, lon: f64, lang: &str) -> Result<Option<Place>, GeoError> {
+        self.lookup(lat, lon, lang, false)
+    }
+
+    fn lookup(&self, lat: f64, lon: f64, lang: &str, newest_wins: bool) -> Result<Option<Place>, GeoError> {
         if !(lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0) {
             return Ok(None);
         }
         let lang = Lang::parse(lang);
         let key = format!("{}|{}", place_key(lat, lon), lang.accept);
-        let ticket = self.started.fetch_add(1, Ordering::SeqCst) + 1;
+        let ticket = if newest_wins { self.started.fetch_add(1, Ordering::SeqCst) + 1 } else { 0 };
         if let Some(hit) = self.cache.lock().unwrap().get(&key)? {
             return Ok(hit);
         }
@@ -37,7 +50,7 @@ impl PlaceService {
         if let Some(hit) = self.cache.lock().unwrap().get(&key)? {
             return Ok(hit);
         }
-        if self.started.load(Ordering::SeqCst) != ticket {
+        if newest_wins && self.started.load(Ordering::SeqCst) != ticket {
             return Err(GeoError::Superseded);
         }
         if let Some(t) = *last {
@@ -254,6 +267,54 @@ mod tests {
         assert_eq!(b.join().unwrap(), Err(GeoError::Superseded));
         assert!(c.join().unwrap().unwrap().is_some());
         assert_eq!(g.nominatim.load(SeqCst), 2); // A and C only
+    }
+
+    #[test]
+    fn background_lookups_neither_supersede_nor_are_superseded() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let g = Arc::new(Gated { first: true.into(), release: Mutex::new(rx), nominatim: 0.into() });
+        let s = Arc::new(PlaceService::new(PlaceCache::open_in_memory().unwrap(), g.clone(), Duration::ZERO));
+        let spawn = |lat: f64, fg: bool| {
+            let s = s.clone();
+            std::thread::spawn(move || if fg { s.place_for(lat, lat, "en") } else { s.place_for_background(lat, lat, "en") })
+        };
+        let a = spawn(1.0, false); // blocks inside the first request
+        std::thread::sleep(Duration::from_millis(150));
+        let b = spawn(2.0, true); // the user is looking at this one, queued behind A
+        std::thread::sleep(Duration::from_millis(150));
+        let c = spawn(3.0, false); // more background work arrives after B
+        std::thread::sleep(Duration::from_millis(150));
+        let d = spawn(4.0, false);
+        std::thread::sleep(Duration::from_millis(150));
+        tx.send(()).unwrap();
+        assert!(a.join().unwrap().unwrap().is_some());
+        assert!(b.join().unwrap().unwrap().is_some(), "background work must not cancel what the user is looking at");
+        assert!(c.join().unwrap().unwrap().is_some());
+        assert!(d.join().unwrap().unwrap().is_some());
+        assert_eq!(g.nominatim.load(SeqCst), 4);
+    }
+
+    #[test]
+    fn a_background_lookup_waiting_is_not_cancelled_by_a_newer_foreground_one() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let g = Arc::new(Gated { first: true.into(), release: Mutex::new(rx), nominatim: 0.into() });
+        let s = Arc::new(PlaceService::new(PlaceCache::open_in_memory().unwrap(), g.clone(), Duration::ZERO));
+        let s1 = s.clone();
+        let a = std::thread::spawn(move || s1.place_for(1.0, 1.0, "en")); // blocks inside the first request
+        std::thread::sleep(Duration::from_millis(150));
+        let s2 = s.clone();
+        let b = std::thread::spawn(move || s2.place_for_background(2.0, 2.0, "en")); // queued behind A
+        std::thread::sleep(Duration::from_millis(150));
+        let s3 = s.clone();
+        let c = std::thread::spawn(move || s3.place_for(3.0, 3.0, "en")); // the user moves on
+        std::thread::sleep(Duration::from_millis(150));
+        tx.send(()).unwrap();
+        assert!(a.join().unwrap().unwrap().is_some());
+        assert!(b.join().unwrap().unwrap().is_some());
+        assert!(c.join().unwrap().unwrap().is_some());
+        assert_eq!(g.nominatim.load(SeqCst), 3);
     }
 
     /// Hits the real services. Run by hand: `cargo test -p pixie-geo live -- --ignored --nocapture`

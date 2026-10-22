@@ -123,7 +123,6 @@
   {:else}
     <p class="hint">Select a photo to see its details.</p>
   {/if}
-  <button disabled={count === 0} title="Coming soon">Email…</button>
 </div>
 
 <style>
