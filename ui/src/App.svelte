@@ -18,7 +18,6 @@
   import FacesTab from './lib/FacesTab.svelte';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
-  import MailSettings from './lib/MailSettings.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
   import { parseMapView, sameBounds, type Bounds, type GeoPoint, type MapView } from './lib/geo';
   import { parseKindFilter } from './lib/kind';
@@ -115,7 +114,6 @@
     popoutSnap = { index: i, total, view: { ...shown } };
     sendShow(true);
   });
-  let settingsOpen = $state(false); // the email account dialog
   let tab = $state<TabId>('browse');
   let viewerMode = $state<ViewerMode>(parseViewerMode(loadPref<unknown>('viewerMode', null)));
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
@@ -924,15 +922,12 @@
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
-                  onrescan={(id, full) => runScan(id, full)} onemail={() => (settingsOpen = true)}
+                  onrescan={(id, full) => runScan(id, full)}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   {analysis} people={peopleState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>
-  {#if settingsOpen}
-    <MailSettings onclose={() => (settingsOpen = false)} />
-  {/if}
   {#if openIndex !== null || soloPhoto !== null}
     <Viewer index={openIndex ?? 0} {total} view={shown} solo={soloPhoto} onclose={closeViewer} onnav={(i) => (openIndex = i)}
             onpopout={() => popOut(openIndex ?? 0)} />

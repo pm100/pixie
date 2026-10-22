@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'about' | 'developer';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
@@ -15,9 +15,9 @@
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, onemail, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, onanalysispause, onanalysisretry }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, onanalysispause, onanalysisretry }: {
     folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
-    onrescan: (id: number, full: boolean) => void; onemail: () => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
+    onrescan: (id: number, full: boolean) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
@@ -26,7 +26,7 @@
 
   const pages: { id: SettingsPage; label: string }[] = [
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
-    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
+    { id: 'analysis', label: 'Picture analysis' }, { id: 'about', label: 'About' },
   ];
   let version = $state('');
   // Debug builds only: a Developer page.
@@ -66,10 +66,6 @@
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
       <AnalysisSettings status={analysis} {people} onpause={onanalysispause} onretry={onanalysisretry} />
-    {:else if page === 'email'}
-      <h2>Email</h2>
-      <p>Set up the account Pixie uses to send photos.</p>
-      <button onclick={onemail}>Email account…</button>
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
