@@ -18,6 +18,8 @@ const QUICK_BATCH: i64 = 64;
 const HASH_BATCH: i64 = 8;
 const IDLE: Duration = Duration::from_secs(5);
 const BUSY: Duration = Duration::from_secs(1);
+/// How soon a paused hasher notices it has been resumed.
+const PAUSED_POLL: Duration = Duration::from_millis(200);
 /// What a file that cannot be read gets as its quick key: it matches nothing and is not tried again until it changes.
 /// While hashing goes on, how often the hidden copies are brought up to date.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
@@ -104,26 +106,43 @@ pub fn work_once(db: &Db, stop: &AtomicBool) -> usize {
 
 pub type StatusFn = Arc<dyn Fn(DupStatus) + Send + Sync>;
 
-/// The background hasher. It waits while a scan is running, and stops when dropped.
+/// The background hasher. It waits while a scan is running or while paused, and stops when dropped.
 pub struct DupeService {
-    stop: Arc<AtomicBool>,
+    db: Db,
+    on_status: StatusFn,
+    /// Ends the thread for good.
+    stopped: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    /// Stops the round of work in progress: set when stopped or paused (the work checks it between files).
+    halt: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl DupeService {
     pub fn start(db: Db, scanning: Arc<dyn Fn() -> bool + Send + Sync>, on_status: StatusFn) -> DupeService {
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
+        Self::start_with(db, scanning, on_status, false)
+    }
+
+    pub fn start_with(db: Db, scanning: Arc<dyn Fn() -> bool + Send + Sync>, on_status: StatusFn, paused: bool) -> DupeService {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(paused));
+        let halt = Arc::new(AtomicBool::new(paused.load(Ordering::SeqCst)));
+        let (t_db, t_status, t_stopped, t_paused, t_halt) = (db.clone(), on_status.clone(), stopped.clone(), paused.clone(), halt.clone());
         let handle = std::thread::spawn(move || {
+            let (db, on_status) = (t_db, t_status);
             let mut last: Option<DupStatus> = None;
             let mut last_refresh: Option<Instant> = None;
             let mut last_status: Option<Instant> = None;
-            while !flag.load(Ordering::Relaxed) {
+            while !t_stopped.load(Ordering::SeqCst) {
+                if t_paused.load(Ordering::SeqCst) {
+                    std::thread::sleep(PAUSED_POLL);
+                    continue;
+                }
                 if scanning() {
                     std::thread::sleep(BUSY);
                     continue;
                 }
-                let did = work_once(&db, &flag);
+                let did = work_once(&db, &t_halt);
                 // Hide the extra copies from Browse: when a round of work ends, and every couple of seconds while it
                 // goes on, so Browse can refresh in batches instead of on every file.
                 if did == 0 || last_refresh.map_or(true, |t| t.elapsed() > REFRESH_EVERY) {
@@ -134,7 +153,8 @@ impl DupeService {
                 // reads the whole library, and the window waits whenever the database is busy.
                 if did == 0 || last_status.map_or(true, |t| t.elapsed() > STATUS_EVERY) {
                     last_status = Some(Instant::now());
-                    if let Ok(s) = db.dup_status() {
+                    if let Ok(mut s) = db.dup_status() {
+                        s.paused = t_paused.load(Ordering::SeqCst);
                         if last.as_ref() != Some(&s) {
                             on_status(s.clone());
                             last = Some(s);
@@ -144,13 +164,28 @@ impl DupeService {
                 std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { IDLE });
             }
         });
-        DupeService { stop, handle: Some(handle) }
+        DupeService { db, on_status, stopped, paused, halt, handle: Some(handle) }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// Pause or resume. A round of work already running stops between files, and the new state is reported at once.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+        self.halt.store(paused || self.stopped.load(Ordering::SeqCst), Ordering::SeqCst);
+        if let Ok(mut s) = self.db.dup_status() {
+            s.paused = paused;
+            (self.on_status)(s);
+        }
     }
 }
 
 impl Drop for DupeService {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stopped.store(true, Ordering::SeqCst);
+        self.halt.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -345,6 +380,32 @@ mod tests {
         assert_eq!(db.face_counts("v").unwrap(), (0, 2));
         db.replace_faces(oldest, "v", &[]).unwrap();
         assert_eq!(db.face_counts("v").unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn pause_holds_the_work_and_resume_continues() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let folder = db.add_folder(&d.path().to_string_lossy()).unwrap();
+        for name in ["a", "b", "c"] {
+            let path = file(d.path(), name, b"same bytes");
+            db.upsert_photo(folder, &path, 10, 1, &PhotoMeta::default()).unwrap();
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<DupStatus>::new()));
+        let s2 = seen.clone();
+        let svc = DupeService::start_with(db.clone(), Arc::new(|| false), Arc::new(move |s| s2.lock().unwrap().push(s)), true);
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(db.dup_status().unwrap().done, 0, "nothing is looked at while paused");
+        assert!(svc.is_paused());
+        svc.set_paused(false);
+        let t = Instant::now();
+        while db.dup_status().unwrap().groups == 0 && t.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(db.dup_status().unwrap().groups, 1);
+        svc.set_paused(true);
+        assert!(seen.lock().unwrap().last().unwrap().paused, "pausing is reported at once");
+        drop(svc);
     }
 
     #[test]

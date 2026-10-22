@@ -37,6 +37,9 @@
     getVersion().then((v) => (version = v)).catch(() => {});
     isDebugBuild().then((d) => (debug = d)).catch(() => {});
   });
+  // The one Pause covers Auto tags, faces and the duplicate check; the menu says so when it is on.
+  const analysisPaused = $derived((analysis?.paused ?? false) || (people?.paused ?? false) || (dupes?.paused ?? false));
+  const labelled = (p: { id: SettingsPage; label: string }) => (p.id === 'analysis' && analysisPaused ? `${p.label} (paused)` : p.label);
   const shownPages = $derived(debug ? [...pages, { id: 'developer' as SettingsPage, label: 'Developer' }] : pages);
   async function openData() {
     devError = '';
@@ -47,7 +50,7 @@
 <div class="settings">
   <nav aria-label="Settings">
     {#each shownPages as p (p.id)}
-      <button class:on={page === p.id} onclick={() => onpage(p.id)}>{p.label}</button>
+      <button class:on={page === p.id} onclick={() => onpage(p.id)}>{labelled(p)}</button>
     {/each}
   </nav>
   <div class="page">

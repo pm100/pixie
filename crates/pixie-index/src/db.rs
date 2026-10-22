@@ -678,7 +678,7 @@ impl Db {
             )
             .map_err(db_err)?;
         let hidden: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0 AND dup = 1", [], |r| r.get(0)).map_err(db_err)?;
-        Ok(DupStatus { done: total - todo, total, groups, extra_files, extra_bytes, hidden })
+        Ok(DupStatus { done: total - todo, total, groups, extra_files, extra_bytes, hidden, paused: false })
     }
 
     /// Of `ids`, those that may be removed: live, hashed, and with another live copy that is not itself in `ids`.

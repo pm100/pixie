@@ -336,6 +336,7 @@ fn analysis_status(state: tauri::State<AppState>) -> pixie_analysis::service::An
 fn analysis_set_paused(state: tauri::State<AppState>, paused: bool) {
     state.analysis.set_paused(paused);
     state.people.set_paused(paused);
+    state.dupes.set_paused(paused); // the one Pause covers the duplicate check too
 }
 
 #[tauri::command]
@@ -358,7 +359,9 @@ fn duplicate_groups(state: tauri::State<AppState>) -> Result<Vec<pixie_core::Dup
 /// How far the background hashing has got and what the copies found add up to.
 #[tauri::command]
 fn duplicate_status(state: tauri::State<AppState>) -> Result<pixie_core::DupStatus, PixieError> {
-    state.db.dup_status()
+    let mut s = state.db.dup_status()?;
+    s.paused = state.dupes.is_paused();
+    Ok(s)
 }
 
 /// Move extra copies to the Recycle Bin (never a permanent delete). Only copies that still have another live copy

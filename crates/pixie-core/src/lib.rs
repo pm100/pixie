@@ -388,6 +388,8 @@ pub struct DupStatus {
     pub extra_bytes: i64,
     /// Live items Browse hides because another copy is shown instead.
     pub hidden: i64,
+    /// The user paused the background work (the same Pause as for Auto tags and faces).
+    pub paused: bool,
 }
 
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,

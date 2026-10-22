@@ -8,8 +8,9 @@
   const peopleFraction = $derived(people ? analysisFraction(people) : null);
   const unfinished = (s: AnalysisStatus | null) => s !== null && s.models === 'ready' && s.total > 0 && s.done < s.total;
   const dupFraction = $derived(dupes && dupes.total > 0 ? Math.min(1, dupes.done / dupes.total) : null);
-  const working = $derived(unfinished(status) || unfinished(people));
-  const paused = $derived((status?.paused ?? false) || (people?.paused ?? false));
+  const dupUnfinished = $derived(dupes !== null && dupes.total > 0 && dupes.done < dupes.total);
+  const working = $derived(unfinished(status) || unfinished(people) || dupUnfinished);
+  const paused = $derived((status?.paused ?? false) || (people?.paused ?? false) || (dupes?.paused ?? false));
   const failed = $derived(status?.models === 'error' || people?.models === 'error');
 </script>
 
