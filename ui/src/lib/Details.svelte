@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { facesFor, moveFace, newPersonFromFace, placeFor, rejectFace, tagsFor, type Photo, type PhotoTag, type Place } from './api';
-  import { personLabel, resolveFaceName, type FaceInfo, type PersonInfo } from './people';
+  import { facesFor, placeFor, tagsFor, type Photo, type PhotoTag, type Place } from './api';
+  import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
@@ -8,7 +8,7 @@
   import { placeLines } from './placeLines';
   import LocationMap from './LocationMap.svelte';
 
-  let { photo, count, people = [], onfaceschange }: { photo: Photo | null; count: number; people?: PersonInfo[]; onfaceschange?: () => void } = $props();
+  let { photo, count }: { photo: Photo | null; count: number } = $props();
   const gps = $derived(photo ? formatGps(photo.gps_lat, photo.gps_lon) : null);
   const lat = $derived(photo?.gps_lat ?? null);
   const lon = $derived(photo?.gps_lon ?? null);
@@ -31,44 +31,12 @@
   // The people in the photo. Re-read when the selection changes; a slow answer for an old selection is dropped.
   let faces = $state<FaceInfo[]>([]);
   const facesLatest = createLatest();
-  function loadFaces() {
-    const token = facesLatest.next();
-    if (photoId === null) { faces = []; return; }
-    facesFor(photoId).then((f) => { if (facesLatest.isCurrent(token)) faces = f; }).catch(() => {});
-  }
   $effect(() => {
-    photoId; // re-run when the selection changes
     faces = [];
-    loadFaces();
+    const token = facesLatest.next();
+    if (photoId === null) return;
+    facesFor(photoId).then((f) => { if (facesLatest.isCurrent(token)) faces = f; }).catch(() => {});
   });
-  /** The face being edited and what has been typed for it. */
-  let editing = $state<number | null>(null);
-  let typed = $state('');
-  let problem = $state<string | null>(null);
-  function edit(f: FaceInfo) {
-    editing = editing === f.id ? null : f.id;
-    typed = f.person_name ?? '';
-    problem = null;
-  }
-  async function changed() {
-    editing = null;
-    loadFaces();
-    onfaceschange?.();
-  }
-  async function assign(f: FaceInfo) {
-    const what = resolveFaceName(people, typed, f.person_id);
-    if (what.kind === 'none') { editing = null; return; }
-    try {
-      if (what.kind === 'move') await moveFace(f.id, what.personId);
-      else await newPersonFromFace(f.id, what.name);
-    } catch (e) { problem = String(e); return; }
-    await changed();
-  }
-  async function notThisPerson(f: FaceInfo) {
-    try { await rejectFace(f.id); } catch (e) { problem = String(e); return; }
-    await changed();
-  }
-
   // Look the place up when the selected photo's location changes. A slow answer for a
   // photo that is no longer selected is dropped. Offline or failed: show nothing.
   $effect(() => {
@@ -96,24 +64,7 @@
       <dt>Folder</dt><dd class="path" title={dirname(photo.path)}>{dirname(photo.path)}</dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
-      {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<button class="chip face" class:on={editing === f.id} title="Who is this? Click to change" onclick={() => edit(f)}><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</button>{/each}</dd>{/if}
-      {#each faces.filter((f) => f.id === editing) as f (f.id)}
-        <dt></dt>
-        <dd class="editor">
-          <form onsubmit={(e) => { e.preventDefault(); assign(f); }}>
-            <label>Who is this?
-              <input list="people-names" bind:value={typed} placeholder="Type a name" />
-            </label>
-            <datalist id="people-names">{#each people as p (p.id)}{#if p.name}<option value={p.name}></option>{/if}{/each}</datalist>
-            <div class="row">
-              <button type="submit">Save</button>
-              {#if f.person_id !== null}<button type="button" onclick={() => notThisPerson(f)} title="This face is not {personLabel({ name: f.person_name })}">Not {personLabel({ name: f.person_name })}</button>{/if}
-              <button type="button" onclick={() => (editing = null)}>Cancel</button>
-            </div>
-            {#if problem}<div class="err">{problem}</div>{/if}
-          </form>
-        </dd>
-      {/each}
+      {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
     {#if lat != null && lon != null}
@@ -134,12 +85,6 @@
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { padding: 1px 8px; border-radius: 10px; background: #eef2fb; color: #2a3f7a; font-size: 12px; }
-  .editor form { display: flex; flex-direction: column; gap: 6px; }
-  .editor input { width: 100%; box-sizing: border-box; font: inherit; padding: 3px 6px; }
-  .editor .row { display: flex; flex-wrap: wrap; gap: 6px; }
-  .err { color: #b3261e; font-size: 12px; }
-  button.face { border: 0; cursor: pointer; font: inherit; font-size: 12px; }
-  button.face.on { outline: 2px solid #2f6fed; }
   .face { display: inline-flex; align-items: center; gap: 4px; padding-left: 2px; }
   .face img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
   .hint { color: #777; }

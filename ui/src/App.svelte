@@ -218,13 +218,6 @@
     if (activePerson !== null) await setPerson(activePerson);
   }
 
-  /** A face was marked "not this person": the lists and, if a person is chosen, the filter must follow. */
-  async function facesChanged() {
-    peopleEdits++;
-    await loadPeople();
-    if (activePerson !== null) await setPerson(activePerson);
-  }
-
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
   const tabs = visibleTabs({ create: false, share: false });
@@ -907,7 +900,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} count={selection.picked.size} people={peopleList} onfaceschange={facesChanged} />
+          <Details photo={selectedPhoto} count={selection.picked.size} />
         {/snippet}
       </Shell>
         {/if}
