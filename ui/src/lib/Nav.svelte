@@ -2,6 +2,7 @@
   import type { DayGroup, FolderInfo, MediaKind, Trip } from './api';
   import { untrack } from 'svelte';
   import Check from './Check.svelte';
+  import Chevron from './Chevron.svelte';
   import WhenNav from './WhenNav.svelte';
   import { folderName } from './format';
   import { periodLabel } from './periods';
@@ -103,28 +104,17 @@
 
 {#snippet head(id: SectionId, title: string)}
   <button class="head" aria-expanded={!folded(id)} onclick={() => ontoggle(id)}>
-    <span class="chev" class:open={!folded(id)} aria-hidden="true">▸</span>{title}
+    <Chevron open={!folded(id)} />{title}
     {#if folded(id) && chosen[id]}<span class="chosen" title="Chosen in this section">· {chosen[id]}</span>{/if}
   </button>
 {/snippet}
 
 <nav>
-  {@render head('library', 'Library')}
+  {@render head('library', 'Media types')}
   {#if !folded('library')}
     <button class="item" class:active={kind === null} onclick={() => onkind(null)}><span class="mark">{#if kind === null}<Check />{/if}</span>All items</button>
     <button class="item" class:active={kind === 'photo'} onclick={() => onkind('photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span>Photos only</button>
     <button class="item" class:active={kind === 'video'} onclick={() => onkind('video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span>Videos only</button>
-  {/if}
-
-  {#if folders.length > 0}
-    {@render head('folders', 'Folders')}
-    {#if !folded('folders')}
-      {#each folders as f (f.id)}
-        <button class="item" class:active={folderId === f.id} aria-pressed={folderId === f.id} title={f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
-          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span><span class="n">{f.count.toLocaleString()}</span>
-        </button>
-      {/each}
-    {/if}
   {/if}
 
   {#if people.length === 0 && facesFound}
@@ -156,7 +146,7 @@
     {:else}
       {#each years as g (g.year)}
         <button class="item cat" aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
-          <span class="chev" class:open={openYears.has(g.year)} aria-hidden="true">▸</span><span class="grow">{g.year}</span><span class="n">{g.trips.length.toLocaleString()}</span>
+          <Chevron open={openYears.has(g.year)} /><span class="grow">{g.year}</span><span class="n">{g.trips.length.toLocaleString()}</span>
         </button>
         {#if openYears.has(g.year)}
           {#each g.trips as t (t.since)}
@@ -187,7 +177,7 @@
     {#if !folded('tags')}
       {#each tree as g (g.category)}
         <button class="item cat" aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
-          <span class="chev" class:open={isOpen(g.category)} aria-hidden="true">▸</span><span class="grow">{g.category}</span><span class="n">{g.photos.toLocaleString()}</span>
+          <Chevron open={isOpen(g.category)} /><span class="grow">{g.category}</span><span class="n">{g.photos.toLocaleString()}</span>
         </button>
         {#if isOpen(g.category)}
           {#each g.tags as t (t.tag)}
@@ -206,24 +196,32 @@
     <WhenNav {groups} {activeGroup} {ongroup} filter={filterDates} {period} {onperiod} {recent} />
   {/if}
 
+  {#if folders.length > 0}
+    {@render head('folders', 'Folders')}
+    {#if !folded('folders')}
+      {#each folders as f (f.id)}
+        <button class="item" class:active={folderId === f.id} aria-pressed={folderId === f.id} title={f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
+          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span><span class="n">{f.count.toLocaleString()}</span>
+        </button>
+      {/each}
+    {/if}
+  {/if}
+
   {#if scanLine}<p class="scan">{scanLine}</p>{/if}
 </nav>
 
 <style>
   nav { padding: 6px 4px 16px; font-size: 14px; }
-  .head { display: flex; align-items: baseline; gap: 4px; width: 100%; text-align: left; margin: 14px 0 4px; padding: 0 8px; border: 0; background: none; cursor: pointer; font: inherit;
+  .head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; margin: 14px 0 4px; padding: 0 8px; border: 0; background: none; cursor: pointer; font: inherit;
           font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #777; }
   .head:hover { color: #333; }
   .head:first-child { margin-top: 6px; }
-  .head .chev { width: 12px; font-size: 10px; }
   .chosen { text-transform: none; letter-spacing: 0; font-size: 12px; color: #2a5bd7; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 12px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; }
   .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
   .more { color: #555; }
   .cat { font-weight: 600; color: #333; }
-  .chev { width: 14px; flex: none; text-align: center; font-size: 11px; color: #777; transition: transform .1s; }
-  .chev.open { transform: rotate(90deg); }
   .sub { padding-left: 28px; }
   .avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: #dde2ee; flex: none; margin-right: 6px; }
   .mark { width: 14px; flex: none; display: inline-flex; }

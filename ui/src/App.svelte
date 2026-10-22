@@ -50,7 +50,7 @@
   import Viewer from './lib/Viewer.svelte';
 
   const initial: View = {
-    order: loadPref<SortOrder>('order', 'newest'),
+    order: 'newest', // newest first, except while a trip is chosen: a trip reads best from its first day to its last
     folderId: null,
     kind: parseKindFilter(loadPref<unknown>('kind', null)),
     bounds: null,
@@ -316,19 +316,11 @@
     }
   }
 
-  function setOrder(order: SortOrder) {
-    if (order === view.order) return;
-    view = { ...view, order };
-    savePref('order', order);
-    selection = emptySelection;
-    refresh(true).catch((e) => (message = String(e)));
-  }
-
   function setRecent(on: boolean) {
     if (on === recentOn) return; // already in that state
     periodKey = null; // Recent, a chosen period and a chosen trip are all a date range: one replaces the others
     tripKey = null;
-    view = { ...view, since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
+    view = { ...view, order: 'newest', since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -346,7 +338,7 @@
     await syncFilters();
     periodKey = null;
     tripKey = null;
-    view = { ...view, search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
@@ -359,7 +351,7 @@
     if (next !== null && !r) return;
     periodKey = next;
     tripKey = null;
-    view = { ...view, since: r?.since ?? null, until: r?.until ?? null };
+    view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     loadPoints();
@@ -388,12 +380,12 @@
     if (t === null || t.since === tripKey) {
       if (tripKey === null) return;
       tripKey = null;
-      view = { ...view, since: null, until: null };
+      view = { ...view, order: 'newest', since: null, until: null };
       void loadRoute(null);
     } else {
       periodKey = null;
       tripKey = t.since;
-      view = { ...view, since: t.since, until: t.until };
+      view = { ...view, order: 'oldest', since: t.since, until: t.until };
       void loadRoute(t);
     }
     selection = emptySelection;
@@ -841,9 +833,6 @@
     {/snippet}
     <div class="browse" inert={tab === 'settings' || tab === 'faces'}>
       <div class="tools">
-        <button onclick={() => setOrder(view.order === 'newest' ? 'oldest' : 'newest')}>
-          {view.order === 'newest' ? 'Newest first ↓' : 'Oldest first ↑'}
-        </button>
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
