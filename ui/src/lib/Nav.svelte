@@ -212,11 +212,11 @@
 
 <style>
   nav { padding: 6px 4px 16px; font-size: 14px; }
-  .head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; margin: 14px 0 4px; padding: 0 8px; border: 0; background: none; cursor: pointer; font: inherit;
-          font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #777; }
-  .head:hover { color: #333; }
+  .head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; margin: 12px 0 2px; padding: 3px 8px; border: 0; border-radius: 4px; background: none; cursor: pointer; font: inherit;
+          font-weight: 700; color: #222; }
+  .head:hover { background: #eef2fb; }
   .head:first-child { margin-top: 6px; }
-  .chosen { text-transform: none; letter-spacing: 0; font-size: 12px; color: #2a5bd7; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chosen { font-size: 12px; color: #2a5bd7; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 12px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; }
   .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
