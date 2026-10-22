@@ -9,7 +9,8 @@ jobs:
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     env:
-      VCPKGRS_TRIPLET: x64-windows-static-md
+      VCPKGRS_TRIPLET: x64-windows
+      VCPKGRS_DYNAMIC: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,7 +24,9 @@ jobs:
         run: |
           # The runner's vcpkg lives at VCPKG_INSTALLATION_ROOT; libheif-sys looks at VCPKG_ROOT.
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          vcpkg install libheif:x64-windows-static-md
+          vcpkg install "libheif[core]:x64-windows"
+          # libheif and libde265 are DLLs; the tests need to find them.
+          "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - run: npm install
       - run: npm --prefix ui install

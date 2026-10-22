@@ -4,3 +4,4 @@ node_modules
 /src-tauri/gen
 *.tmp
 .superpowers/
+/src-tauri/dlls

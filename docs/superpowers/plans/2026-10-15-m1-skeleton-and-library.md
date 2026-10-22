@@ -1975,9 +1975,10 @@ Windows (vcpkg):
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
 C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg install libheif:x64-windows-static-md
+C:\vcpkg\vcpkg install "libheif[core]:x64-windows"
 setx VCPKG_ROOT C:\vcpkg
-setx VCPKGRS_TRIPLET x64-windows-static-md
+setx VCPKGRS_TRIPLET x64-windows
+setx VCPKGRS_DYNAMIC 1
 ```
 (Open a new shell afterwards.) macOS: `brew install libheif pkg-config`.
 
@@ -2802,7 +2803,8 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
-      VCPKGRS_TRIPLET: x64-windows-static-md
+      VCPKGRS_TRIPLET: x64-windows
+      VCPKGRS_DYNAMIC: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -2812,7 +2814,7 @@ jobs:
 
       - name: libheif (Windows)
         if: runner.os == 'Windows'
-        run: vcpkg install libheif:x64-windows-static-md
+        run: vcpkg install "libheif[core]:x64-windows"
       - name: libheif (macOS)
         if: runner.os == 'macOS'
         run: brew install libheif pkg-config

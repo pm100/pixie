@@ -1,8 +1,11 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-# HEIC support links libheif from this vcpkg clone (see docs/superpowers/plans).
+# HEIC support links libheif and libde265 (LGPL, so as DLLs) from this vcpkg clone; see README.
 export VCPKG_ROOT := "C:/work/vcpkg-pixie"
-export VCPKGRS_TRIPLET := "x64-windows-static-md"
+export VCPKGRS_TRIPLET := "x64-windows"
+export VCPKGRS_DYNAMIC := "1"
+# So tests and cargo run find the DLLs.
+export PATH := VCPKG_ROOT / "installed/x64-windows/bin;" + env_var("PATH")
 
 # Launch the app on Windows in dev mode (hot reload for the UI).
 winlaunch:
