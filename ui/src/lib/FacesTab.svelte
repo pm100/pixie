@@ -1,11 +1,13 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import {
-    facesOfPerson, hidePerson, listFacePeople, mergePeople, moveFace, newPersonFromFace, rejectedFaces, rejectFace, renamePerson, unhidePerson,
+    facesOfPerson, getPhoto, hidePerson, listFacePeople, mergePeople, moveFace, newPersonFromFace, rejectedFaces, rejectFace, renamePerson, unhidePerson,
   } from './api';
   import { faceCardLine, peopleLine, personLabel, sameNamePerson, shouldRefreshOnShow, type FacePerson, type FaceTile, type PeopleStatus } from './people';
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
+  import PhotoCaption from './PhotoCaption.svelte';
+  import type { Photo } from './api';
   import { faceUrl, thumbUrl } from './url';
 
   let { active, status, edits, onchange }: {
@@ -46,6 +48,16 @@
   let doubtful = $state(true);
   const viewed = $derived(viewing === null ? null : tiles[viewing] ?? null);
   const latest = createLatest();
+  /** The photo behind the face on screen, for the same date and place caption the photo viewer shows. */
+  let viewedPhoto = $state<Photo | null>(null);
+  const photoToken = createLatest();
+  $effect(() => {
+    const id = viewed?.photo_id ?? null;
+    viewedPhoto = null;
+    const t = photoToken.next();
+    if (id === null) return;
+    getPhoto(id).then((p) => { if (photoToken.isCurrent(t)) viewedPhoto = p; }).catch(() => {});
+  });
   const scanning = $derived(status !== null && (status.models !== 'ready' || status.done < status.total));
   /** More photos have been scanned since this list was loaded. The list is not changed under the user: they ask. */
   const more = $derived(status !== null && loadedDone !== null && status.done !== loadedDone);
@@ -315,6 +327,7 @@
       <div class="lb-actions">{@render actions(viewed)}</div>
       <button class="lb-close" onclick={close} aria-label="Close">✕</button>
     </div>
+    <PhotoCaption photo={viewedPhoto} top={52} />
     {#if (viewing ?? 0) > 0}<button class="step prev" onclick={() => step(-1)} aria-label="Previous (left arrow)" title="Previous (←)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
     {#if (viewing ?? 0) < tiles.length - 1}<button class="step next" onclick={() => step(1)} aria-label="Next (right arrow)" title="Next (→)"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M9 4l8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>{/if}
     <div class="count"><b>{((viewing ?? 0) + 1).toLocaleString()} / {tiles.length.toLocaleString()}</b><span><button class="kbd" onclick={() => step(-1)} disabled={(viewing ?? 0) <= 0} aria-label="Previous" title="Previous"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13 8H3M7.5 3.5 3 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="kbd" onclick={() => step(1)} disabled={(viewing ?? 0) >= tiles.length - 1} aria-label="Next" title="Next"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button> browse</span><span><button class="kbd" onclick={close} title="Close">Esc</button> close</span></div>

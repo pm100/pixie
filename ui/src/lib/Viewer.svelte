@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { listPhotos, openInDefaultPlayer, placeFor, type Photo, type Place, type View } from './api';
-  import { formatDateTime, formatGps } from './format';
-  import { createLatest } from './latest';
+  import { listPhotos, openInDefaultPlayer, type Photo, type View } from './api';
   import { filmRange } from './filmstrip';
   import { neighbors } from './neighbors';
-  import { placeLines } from './placeLines';
+  import PhotoCaption from './PhotoCaption.svelte';
   import { posterUrl, thumbUrl, videoUrl } from './url';
 
   let { index, total, view, solo = null, onclose, onnav, onpopout, filmstrip = true }: {
@@ -39,24 +37,6 @@
     return out;
   });
   let token = 0; // latest navigation wins; older loads are ignored
-
-  // Date and place of the photo on screen. The coordinates show at once; the place name replaces them
-  // when the lookup answers (it needs the network and may never). A slow answer for a photo that is no
-  // longer shown is dropped.
-  const curLat = $derived(current?.gps_lat ?? null);
-  const curLon = $derived(current?.gps_lon ?? null);
-  const coords = $derived(formatGps(curLat, curLon));
-  let place = $state<Place | null>(null);
-  const placeToken = createLatest();
-  const lines = $derived(placeLines(place));
-  $effect(() => {
-    place = null;
-    const t = placeToken.next();
-    if (curLat === null || curLon === null) return;
-    placeFor(curLat, curLon)
-      .then((p) => { if (placeToken.isCurrent(t)) place = p; })
-      .catch(() => {});
-  });
 
   const urlFor = (p: Photo) => thumbUrl('view', p.id, p.mtime, p.size);
 
@@ -176,16 +156,7 @@
       <p class="msg">This photo couldn't be opened. It may be damaged.</p>
     {/if}
   {/if}
-  {#if current}
-    <div class="cap">
-      <div class="when">{formatDateTime(current.taken_at)}</div>
-      {#if lines.primary}
-        <div class="where"><strong>{lines.primary}</strong>{#if lines.secondary}<span> · {lines.secondary}</span>{/if}</div>
-      {:else if coords}
-        <div class="where">{coords}</div>
-      {/if}
-    </div>
-  {/if}
+  <PhotoCaption photo={current} />
   {#if filmstrip && !solo && strip.length}
     <div class="film" role="listbox" aria-label="Nearby items">
       {#each strip as s (s.i)}
@@ -217,9 +188,6 @@
   .msg p { margin: 0; max-width: 40ch; }
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
   .popout { position: absolute; z-index: 1; top: 12px; right: 60px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 7px 10px; color: #fff; font-size: 14px; cursor: pointer; }
-  .cap { position: absolute; z-index: 1; top: 12px; left: 16px; max-width: calc(100% - 90px); padding: 8px 12px; border-radius: 6px; background: rgba(0, 0, 0, .45); text-shadow: 0 0 4px #000; pointer-events: none; line-height: 1.35; }
-  .cap .when { font-size: 15px; font-weight: 600; }
-  .cap .where { font-size: 13px; opacity: .9; }
   .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 56px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
   .cell { width: 54px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #222; cursor: pointer; flex: none; overflow: hidden; }
   .cell.on { border-color: #ffc83d; }
