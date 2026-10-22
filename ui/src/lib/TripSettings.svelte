@@ -3,7 +3,7 @@
   import { suggestHome } from './api';
   import { formatGps } from './format';
   import HomePicker from './HomePicker.svelte';
-  import { cleanTripPrefs, MAX_MIN_DAYS, MAX_RADIUS_KM, type TripPrefs } from './trips';
+  import { cleanTripPrefs, fromKm, MAX_NIGHTS, MAX_RADIUS_KM, MAX_STOP_KM, toKm, unitFor, type TripPrefs } from './trips';
 
   let { prefs, onprefs }: { prefs: TripPrefs; onprefs: (p: TripPrefs) => void } = $props();
 
@@ -23,8 +23,12 @@
 
   const pick = (lat: number, lon: number) => { draft = { lat, lon }; guessed = false; };
   const confirm = () => { if (draft) onprefs(cleanTripPrefs({ ...prefs, home: draft, confirmed: true })); };
-  const setRadius = (v: string) => onprefs(cleanTripPrefs({ ...prefs, radiusKm: Number(v) }));
-  const setMinDays = (v: string) => onprefs(cleanTripPrefs({ ...prefs, minDays: Number(v) }));
+  // Distances are kept in kilometres and shown in miles where people use them (the UK, the US, ...).
+  const unit = unitFor(typeof navigator === 'undefined' ? undefined : navigator.language);
+  const unitName = unit === 'mi' ? 'miles' : 'km';
+  const setRadius = (v: string) => onprefs(cleanTripPrefs({ ...prefs, radiusKm: toKm(Number(v), unit) }));
+  const setStop = (v: string) => onprefs(cleanTripPrefs({ ...prefs, stopKm: toKm(Number(v), unit) }));
+  const setNights = (v: string) => onprefs(cleanTripPrefs({ ...prefs, minNights: Number(v) }));
 </script>
 
 <h2>Trips</h2>
@@ -42,11 +46,16 @@
 
 <h3>What counts as a trip</h3>
 <p>Away means further than
-  <input class="num" type="number" min="1" max={MAX_RADIUS_KM} step="5" value={prefs.radiusKm} aria-label="Kilometres from home that count as away"
-         onchange={(e) => { setRadius(e.currentTarget.value); }} /> km from home.</p>
+  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_RADIUS_KM, unit))} step="any" value={fromKm(prefs.radiusKm, unit)} aria-label="Distance from home that counts as away, in {unitName}"
+         onchange={(e) => setRadius(e.currentTarget.value)} /> {unitName} from home.</p>
 <p>A trip needs at least
-  <input class="num" type="number" min="0" max={MAX_MIN_DAYS} step="1" value={prefs.minDays} aria-label="Fewest days away that make a trip"
-         onchange={(e) => { setMinDays(e.currentTarget.value); }} /> days away (0 or 1 means any day away).</p>
+  <input class="num" type="number" min="0" max={MAX_NIGHTS} step="1" value={prefs.minNights} aria-label="Fewest nights away that make a trip"
+         onchange={(e) => setNights(e.currentTarget.value)} /> {prefs.minNights === 1 ? 'night' : 'nights'} away (0 counts a day out as a trip).</p>
+
+<h3>Where a trip went</h3>
+<p>Photos taken within
+  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_STOP_KM, unit))} step="any" value={fromKm(prefs.stopKm, unit)} aria-label="Distance within which photos are one stop, in {unitName}"
+         onchange={(e) => setStop(e.currentTarget.value)} /> {unitName} of each other count as one stop. Stops name the trip's destination and are the numbered points on the map.</p>
 
 <style>
   h3 { margin: 16px 0 6px; font-size: 14px; }

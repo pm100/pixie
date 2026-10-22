@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundsOfView, clusterPoints, clusterTarget, inBounds, nearestWorldLon, parseMapView, progressZoom, project, sameBounds, type GeoPoint } from './geo';
+import { boundsOfView, clusterPoints, clusterTarget, greatCircle, inBounds, nearestWorldLon, parseMapView, progressZoom, project, sameBounds, type GeoPoint } from './geo';
 
 const pt = (id: number, lat: number, lon: number): GeoPoint => ({ id, lat, lon });
 const world = { south: -90, west: -180, north: 90, east: 180 };
@@ -190,5 +190,31 @@ describe('stacked clusters', () => {
     const [c] = clusterPoints([pt(1, 48.86, 2.35), pt(2, 48.8645, 2.35)], 4, world);
     expect(c.count).toBe(2);
     expect(c.stacked).toBe(false);
+  });
+});
+
+describe('greatCircle', () => {
+  it('is a straight two-point line for a short leg', () => {
+    expect(greatCircle([48.86, 2.35], [49.0, 2.5])).toEqual([[48.86, 2.35], [49.0, 2.5]]);
+  });
+  it('starts and ends at the given points', () => {
+    const p = greatCircle([48.86, 2.35], [41.9, 12.5]);
+    expect(p[0]).toEqual([48.86, 2.35]);
+    expect(p[p.length - 1][0]).toBeCloseTo(41.9);
+    expect(p[p.length - 1][1]).toBeCloseTo(12.5);
+    expect(p.length).toBeGreaterThan(2);
+  });
+  it('bends towards the pole on a long east-west leg', () => {
+    const p = greatCircle([40, -74], [51.5, -0.1]); // New York to London
+    const northmost = Math.max(...p.map((x) => x[0]));
+    expect(northmost).toBeGreaterThan(51.5);
+  });
+  it('carries longitude on past 180 instead of wrapping', () => {
+    const p = greatCircle([-18.1, 178.4], [-16.9, -179.9]); // Fiji either side of the date line
+    for (let i = 1; i < p.length; i++) expect(Math.abs(p[i][1] - p[i - 1][1])).toBeLessThan(180);
+    expect(p[p.length - 1][1]).toBeCloseTo(180.1);
+  });
+  it('is one point twice for the same place', () => {
+    expect(greatCircle([10, 10], [10, 10])).toEqual([[10, 10], [10, 10]]);
   });
 });

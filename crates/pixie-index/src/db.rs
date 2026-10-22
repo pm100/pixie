@@ -1,4 +1,4 @@
-use crate::trips::{compute_trips, day_of, infer_home, DayItem, Trip, TripSettings, EARLIEST_REAL};
+use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
 use pixie_core::{validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -1309,6 +1309,30 @@ impl Db {
         Ok(trips)
     }
 
+    /// Where a trip went: the places its located items were taken, leaving out anything within the home radius (a day
+    /// away can also hold a few photos taken at home). `since` is inclusive and `until` exclusive, as `trips` reports.
+    pub fn trip_route(&self, since: i64, until: i64, settings: &TripSettings, stop_km: f64) -> Result<Route> {
+        let rows: Vec<(i64, f64, f64)> = {
+            let c = self.conn();
+            let mut s = c
+                .prepare(
+                    "SELECT taken_at, gps_lat, gps_lon FROM photos
+                      WHERE missing = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+                      ORDER BY taken_at, id",
+                )
+                .map_err(db_err)?;
+            let rows = s
+                .query_map(params![since.max(EARLIEST_REAL), until], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(db_err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        let away: Vec<(i64, f64, f64)> =
+            rows.into_iter().filter(|&(_, la, lo)| distance_km((settings.home_lat, settings.home_lon), (la, lo)) > settings.radius_km).collect();
+        Ok(compute_route(&away, stop_km))
+    }
+
     /// Where home probably is, from where the photos were taken. None when no item has a position.
     pub fn suggest_home(&self, now: i64) -> Result<Option<(f64, f64)>> {
         Ok(infer_home(&self.trip_items(now)?))
@@ -1487,7 +1511,7 @@ mod tests {
     const T_ROME: (f64, f64) = (41.90, 12.50);
     const T_NOW: i64 = 20_000 * 86_400;
     fn t_settings() -> TripSettings {
-        TripSettings { home_lat: T_PARIS.0, home_lon: T_PARIS.1, radius_km: 50.0, min_days: 1 }
+        TripSettings { home_lat: T_PARIS.0, home_lon: T_PARIS.1, radius_km: 50.0, min_nights: 0 }
     }
 
     #[test]
@@ -1501,6 +1525,16 @@ mod tests {
         let t = db.trips(&t_settings(), T_NOW).unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!((t[0].since, t[0].until, t[0].days, t[0].photos), (18_001 * 86_400, 18_003 * 86_400, 2, 2));
+    }
+
+    #[test]
+    fn a_trips_route_leaves_out_what_was_taken_at_home_and_what_is_not_located() {
+        let db = trip_library(&[(18_000, Some(T_PARIS)), (18_001, Some(T_ROME)), (18_001, Some(T_PARIS)), (18_001, None), (18_002, Some(T_ROME)), (18_003, Some(T_PARIS))]);
+        let t = &db.trips(&t_settings(), T_NOW).unwrap()[0];
+        let r = db.trip_route(t.since, t.until, &t_settings(), 25.0).unwrap();
+        assert_eq!(r.stops.len(), 1);
+        assert_eq!((r.stops[0].items, r.stops[0].days), (2, 2));
+        assert_eq!(r.path, vec![0]);
     }
 
     #[test]

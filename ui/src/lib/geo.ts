@@ -131,3 +131,29 @@ export function parseMapView(v: unknown): MapView | null {
   if (Math.abs(lat) > 90 || Math.abs(lon) > 180 || zoom < 1 || zoom > 19) return null;
   return { lat, lon, zoom };
 }
+
+/**
+ * Points along the shortest path over the globe from `a` to `b` (both [latitude, longitude]), `a` and `b` included, so a
+ * long leg is drawn as the curve it is on a flat map. Short legs come out as a straight two-point line. Longitudes are
+ * carried on continuously from `a` (they may pass 180) so the line does not wrap round the whole map.
+ */
+export function greatCircle(a: [number, number], b: [number, number]): [number, number][] {
+  const rad = Math.PI / 180;
+  const [p1, l1, p2, l2] = [a[0] * rad, a[1] * rad, b[0] * rad, b[1] * rad];
+  const d = 2 * Math.asin(Math.min(1, Math.sqrt(Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin((l2 - l1) / 2) ** 2)));
+  const km = d * 6371;
+  const n = km < 150 ? 1 : Math.min(64, Math.ceil(km / 150));
+  const out: [number, number][] = [[a[0], a[1]]];
+  if (d > 0 && n > 1) {
+    for (let i = 1; i < n; i++) {
+      const f = i / n, A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+      const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+      const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+      const z = A * Math.sin(p1) + B * Math.sin(p2);
+      out.push([Math.atan2(z, Math.hypot(x, y)) / rad, Math.atan2(y, x) / rad]);
+    }
+  }
+  out.push([b[0], b[1]]);
+  for (let i = 1; i < out.length; i++) out[i][1] = nearestWorldLon(out[i][1], out[i - 1][1]);
+  return out;
+}

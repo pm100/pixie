@@ -4,14 +4,14 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip,
+    listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, peopleStatus, setPersonFilter, activeFilters,
     listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
-    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type SortOrder, type Trip, type View,
+    type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
   import { cleanCollapsed, toggleSection, type SectionId } from './lib/sections';
-  import { cleanTripPrefs, tripLabel, type TripPrefs } from './lib/trips';
+  import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
@@ -389,10 +389,12 @@
       if (tripKey === null) return;
       tripKey = null;
       view = { ...view, since: null, until: null };
+      void loadRoute(null);
     } else {
       periodKey = null;
       tripKey = t.since;
       view = { ...view, since: t.since, until: t.until };
+      void loadRoute(t);
     }
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -408,13 +410,61 @@
     const p = tripPrefs;
     if (!p.confirmed || !p.home) { trips = []; return; }
     try {
-      const got = await listTrips(p.home.lat, p.home.lon, p.radiusKm, p.minDays);
-      if (mine === tripsAsked) trips = got;
+      const got = await listTrips(p.home.lat, p.home.lon, p.radiusKm, p.minNights);
+      if (mine === tripsAsked) { trips = got; forgetDestinations(); }
     } catch (e) { message = String(e); }
   }
+  // Where each trip went: found for the trips on show, a few at a time, since each place is looked up once and then kept.
+  let destinations = $state<Record<number, string>>({});
+  let destDone = new Map<number, string>(); // by trip start; '' when it could not be worked out
+  let destRun = 0;
+  function forgetDestinations() { destDone = new Map(); destinations = {}; }
+  /** The place line of each of the stops with the most days (the rest are left unnamed), looked up one after another. */
+  async function placesOf(r: Route, run: () => boolean): Promise<(string | null)[]> {
+    const names: (string | null)[] = r.stops.map(() => null);
+    const order = r.stops.map((s, i) => i).sort((a, b) => r.stops[b].days - r.stops[a].days).slice(0, 8);
+    for (const i of order) {
+      if (!run()) break;
+      try { names[i] = (await placeFor(r.stops[i].lat, r.stops[i].lon))?.locality ?? null; } catch { /* offline: leave it unnamed */ }
+    }
+    return names;
+  }
+  async function resolveDestinations(list: Trip[]) {
+    const mine = ++destRun, p = tripPrefs;
+    if (!p.home) return;
+    for (const t of list) {
+      if (mine !== destRun) return;
+      if (destDone.has(t.since)) continue;
+      try {
+        const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
+        const dest = destinationOf(r, await placesOf(r, () => mine === destRun));
+        if (mine !== destRun) return;
+        destDone.set(t.since, dest ?? '');
+        if (dest) destinations = { ...destinations, [t.since]: dest };
+      } catch { destDone.set(t.since, ''); }
+    }
+  }
+
+  // The route of the chosen trip, for the map.
+  let routeData = $state<Route | null>(null), routeNames = $state<(string | null)[]>([]);
+  let routeRun = 0;
+  async function loadRoute(t: Trip | null) {
+    const mine = ++routeRun, p = tripPrefs;
+    routeData = null; routeNames = [];
+    if (!t || !p.home) return;
+    try {
+      const r = await tripRoute(t.since, t.until, p.home.lat, p.home.lon, p.radiusKm, p.stopKm);
+      if (mine !== routeRun) return;
+      routeData = r;
+      const names = await placesOf(r, () => mine === routeRun);
+      if (mine === routeRun) routeNames = names;
+    } catch (e) { message = String(e); }
+  }
+
   function setTripPrefs(next: TripPrefs) {
     tripPrefs = next;
     savePref('trips', next);
+    forgetDestinations();
     if (tripKey !== null) setTrip(null); // the chosen trip may no longer exist
     void loadTrips();
   }
@@ -807,7 +857,7 @@
             <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
         {/if}
         {#if tripKey !== null}
-          <span class="filter">Trip “{trips.find((t) => t.since === tripKey) ? tripLabel(trips.find((t) => t.since === tripKey)!) : 'unknown'}”
+          <span class="filter">Trip “{trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'}”
             <button onclick={() => setTrip(null)} aria-label="Clear trip" title="Clear trip">✕</button></span>
         {/if}
         {#if periodKey !== null}
@@ -830,7 +880,7 @@
                {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                folders={folderInfos} folderId={view.folderId} onfolder={setFolder}
-               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} onrenametrip={renameTripTo} onsettrips={openTripSettings}
+               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings}
                {collapsed} ontoggle={toggleNav}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
@@ -839,7 +889,7 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey}
+                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={focusPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}

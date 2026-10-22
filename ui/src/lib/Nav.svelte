@@ -8,10 +8,10 @@
   import { categoryOf, tagLabel, tagTree, type TagCount } from './tagNav';
   import { personLabel, personRows, type PersonInfo } from './people';
   import type { SectionId } from './sections';
-  import { tripLabel, tripRows, tripSummary } from './trips';
+  import { nameFromEdit, tripEditText, tripLines, tripSummary, tripTitle, tripYear, tripYears } from './trips';
   import { faceUrl } from './url';
 
-  let { groups, activeGroup, kind, recent, scanLine, filterDates, period, recentText, tags, tag, people, facesFound, person, folders, folderId, trips, tripsReady, trip, collapsed, ongroup, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, ontoggle }: {
+  let { groups, activeGroup, kind, recent, scanLine, filterDates, period, recentText, tags, tag, people, facesFound, person, folders, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, ongroup, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, ontoggle }: {
     groups: DayGroup[]; activeGroup: number; kind: MediaKind | null; recent: boolean; scanLine: string | null;
     /** On the map, a date filters the pins and photos; elsewhere it scrolls the grid. */
     filterDates: boolean; period: string | null;
@@ -27,6 +27,8 @@
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
     /** Trips away from home. `tripsReady` is false until the user has confirmed where home is. `trip` is the chosen one's `since`. */
     trips: Trip[]; tripsReady: boolean; trip: number | null; ontrip: (t: Trip | null) => void;
+    /** Where each trip went (by its `since`), once known. `onvisibletrips` says which trips are showing, so those are named first. */
+    destinations: Record<number, string>; onvisibletrips: (t: Trip[]) => void;
     onrenametrip: (t: Trip, name: string) => void; onsettrips: () => void;
     /** Sections the user has folded away, and the click on a heading. */
     collapsed: SectionId[]; ontoggle: (id: SectionId) => void;
@@ -34,11 +36,32 @@
     onkind: (k: MediaKind | null) => void; onrecent: (on: boolean) => void;
   } = $props();
 
-  let allPeople = $state(false), allTrips = $state(false);
+  let allPeople = $state(false);
   /** Auto tags categories the user has opened; the one holding the chosen tag is open as well. */
   let openCategories = $state<Set<string>>(new Set());
   const shownPeople = $derived(personRows(people, person, allPeople, 8));
-  const shownTrips = $derived(tripRows(trips, trip, allTrips, 8));
+  // Trips are listed under the year they started in. The newest year starts open, and so does the year of a chosen trip.
+  const years = $derived(tripYears(trips));
+  let openYears = $state<Set<number>>(new Set());
+  let yearsSeeded = false;
+  const toggleYear = (y: number) => {
+    const next = new Set(openYears);
+    if (next.has(y)) next.delete(y); else next.add(y);
+    openYears = next;
+  };
+  $effect(() => {
+    const first = years[0]?.year;
+    if (first !== undefined && !yearsSeeded) { yearsSeeded = true; untrack(() => (openYears = new Set([first]))); }
+  });
+  $effect(() => {
+    const t = trips.find((x) => x.since === trip);
+    if (t) untrack(() => { const y = tripYear(t); if (!openYears.has(y)) openYears = new Set([...openYears, y]); });
+  });
+  // Tell the app which trips are on show (to look up where they went, those first).
+  $effect(() => {
+    const showing = folded('trips') ? [] : years.filter((g) => openYears.has(g.year)).flatMap((g) => g.trips);
+    untrack(() => onvisibletrips(showing));
+  });
   const tree = $derived(tagTree(tags));
   const chosenCategory = $derived(categoryOf(tags, tag));
   const isOpen = (category: string) => openCategories.has(category);
@@ -59,17 +82,21 @@
     library: kind === 'photo' ? 'Photos only' : kind === 'video' ? 'Videos only' : '',
     folders: folders.find((f) => f.id === folderId) ? folderName(folders.find((f) => f.id === folderId)!.path) : '',
     people: people.find((p) => p.id === person) ? personLabel(people.find((p) => p.id === person)!) : '',
-    trips: trips.find((t) => t.since === trip) ? tripLabel(trips.find((t) => t.since === trip)!) : '',
+    trips: trips.find((t) => t.since === trip) ? tripTitle(trips.find((t) => t.since === trip)!) : '',
     tags: tag !== null ? tagLabel(tag) : '',
     when: period !== null ? periodLabel(period) : recent ? recentText : '',
   });
 
   let renaming = $state<number | null>(null), renameText = $state('');
-  function startRename(t: Trip) { renaming = t.since; renameText = t.name ?? ''; }
+  // The box starts with exactly what the node says, on one line with ": " between its two lines; what is typed
+  // replaces all of it. Leaving it as it was keeps the node automatic.
+  function startRename(t: Trip) { renaming = t.since; renameText = tripEditText(t, destinations[t.since]); }
   function endRename(commit: boolean, t: Trip) {
     if (renaming === null) return;
     renaming = null;
-    if (commit && renameText.trim() !== (t.name ?? '')) onrenametrip(t, renameText.trim());
+    if (!commit) return;
+    const name = nameFromEdit(renameText, t, destinations[t.since]);
+    if (name !== (t.name ?? '')) onrenametrip(t, name);
   }
   const focusOnMount = (el: HTMLInputElement) => { el.focus(); el.select(); };
 </script>
@@ -127,24 +154,31 @@
     {:else if trips.length === 0}
       <p class="hint">No trips found. A smaller home radius or a shorter minimum length in Settings may find some.</p>
     {:else}
-      {#each shownTrips.rows as t (t.since)}
-        {#if renaming === t.since}
-          <div class="item rename"><span class="mark"></span>
-            <input use:focusOnMount bind:value={renameText} aria-label="Trip name" placeholder={tripLabel({ ...t, name: null })} maxlength="80"
-                   onkeydown={(e) => { if (e.key === 'Enter') endRename(true, t); else if (e.key === 'Escape') endRename(false, t); }} onblur={() => endRename(true, t)} />
-          </div>
-        {:else}
-          <div class="row">
-            <button class="item" class:active={trip === t.since} aria-pressed={trip === t.since} title={tripSummary(t)} onclick={() => ontrip(trip === t.since ? null : t)}>
-              <span class="mark">{#if trip === t.since}<Check />{/if}</span><span class="grow">{tripLabel(t)}</span><span class="n">{(t.photos + t.videos).toLocaleString()}</span>
-            </button>
-            <button class="edit" aria-label="Rename this trip" title="Rename this trip" onclick={() => startRename(t)}>✎</button>
-          </div>
+      {#each years as g (g.year)}
+        <button class="item cat" aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
+          <span class="chev" class:open={openYears.has(g.year)} aria-hidden="true">▸</span><span class="grow">{g.year}</span><span class="n">{g.trips.length.toLocaleString()}</span>
+        </button>
+        {#if openYears.has(g.year)}
+          {#each g.trips as t (t.since)}
+            {@const lines = tripLines(t, destinations[t.since])}
+            {#if renaming === t.since}
+              <div class="item sub rename"><span class="mark"></span>
+                <input use:focusOnMount bind:value={renameText} aria-label="Trip name" placeholder={tripEditText({ ...t, name: null }, destinations[t.since])} maxlength="120"
+                       onkeydown={(e) => { if (e.key === 'Enter') endRename(true, t); else if (e.key === 'Escape') endRename(false, t); }} onblur={() => endRename(true, t)} />
+              </div>
+            {:else}
+              <div class="row">
+                <button class="item sub trip" class:active={trip === t.since} aria-pressed={trip === t.since} title={tripSummary(t)} onclick={() => ontrip(trip === t.since ? null : t)}>
+                  <span class="mark">{#if trip === t.since}<Check />{/if}</span>
+                  <span class="grow"><span class="when">{lines[0]}</span>{#if lines[1]}<span class="dest">{lines[1]}</span>{/if}</span>
+                  <span class="n">{(t.photos + t.videos).toLocaleString()}</span>
+                </button>
+                <button class="edit" aria-label="Rename this trip" title="Rename this trip" onclick={() => startRename(t)}>✎</button>
+              </div>
+            {/if}
+          {/each}
         {/if}
       {/each}
-      {#if shownTrips.hidden > 0 || allTrips}
-        <button class="item more" onclick={() => (allTrips = !allTrips)}><span class="mark"></span>{allTrips ? 'Show fewer' : `Show all ${trips.length} trips`}</button>
-      {/if}
     {/if}
   {/if}
 
@@ -201,5 +235,8 @@
   .edit { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); border: 0; background: none; cursor: pointer; color: #777; font-size: 12px; padding: 2px 4px; visibility: hidden; }
   .row:hover .edit, .edit:focus-visible { visibility: visible; }
   .rename { padding-right: 8px; }
+  .trip .grow { display: grid; line-height: 1.25; }
+  .trip .when { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trip .dest { font-size: 12px; font-weight: 400; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rename input { flex: 1; min-width: 0; font: inherit; padding: 1px 4px; }
 </style>

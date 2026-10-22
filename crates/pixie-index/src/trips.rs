@@ -24,8 +24,8 @@ pub struct TripSettings {
     pub home_lat: f64,
     pub home_lon: f64,
     pub radius_km: f64,
-    /// A trip needs at least this many distinct away days (0 and 1 mean the same: any away day will do).
-    pub min_days: u32,
+    /// A trip needs at least this many nights away: the days from its first to its last away day. 0 allows a day trip.
+    pub min_nights: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,9 @@ pub struct Trip {
     /// The time range of the trip in unix seconds: `since` is inclusive, `until` exclusive (the start of the day after).
     pub since: i64,
     pub until: i64,
-    /// Distinct away days.
+    /// Nights away: the days from the first to the last away day.
+    pub nights: u32,
+    /// Distinct away days (fewer than nights + 1 when some days have nothing taken on them).
     pub days: u32,
     pub photos: i64,
     pub videos: i64,
@@ -96,19 +98,18 @@ pub fn compute_trips(items: &[DayItem], s: &TripSettings) -> Vec<Trip> {
             }
         }
     }
-    let min_days = s.min_days.max(1);
     let mut out = Vec::new();
     // The open trip: first away day, last away day, away days so far.
     let mut open: Option<(i64, i64, u32)> = None;
     let close = |open: &mut Option<(i64, i64, u32)>, out: &mut Vec<Trip>| {
         if let Some((first, last, n)) = open.take() {
-            if n >= min_days {
+            if (last - first) as u32 >= s.min_nights {
                 let (mut photos, mut videos) = (0, 0);
                 for (_, d) in days.range(first..=last) {
                     photos += d.photos;
                     videos += d.videos;
                 }
-                out.push(Trip { start: day_string(first), end: day_string(last), since: first * DAY, until: (last + 1) * DAY, days: n, photos, videos, name: None });
+                out.push(Trip { start: day_string(first), end: day_string(last), since: first * DAY, until: (last + 1) * DAY, nights: (last - first) as u32, days: n, photos, videos, name: None });
             }
         }
     };
@@ -125,6 +126,75 @@ pub fn compute_trips(items: &[DayItem], s: &TripSettings) -> Vec<Trip> {
     close(&mut open, &mut out);
     out.reverse();
     out
+}
+
+/// A place the trip stopped at: the middle of the located items taken within the stop radius of each other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stop {
+    pub lat: f64,
+    pub lon: f64,
+    /// First and last day something was taken here, "YYYY-MM-DD".
+    pub first: String,
+    pub last: String,
+    /// Distinct days with something taken here.
+    pub days: u32,
+    pub items: i64,
+}
+
+/// Where a trip went: its stops in the order first visited, and the order of visits (indexes into `stops`, a stop
+/// appearing again when the trip came back to it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Route {
+    pub stops: Vec<Stop>,
+    pub path: Vec<usize>,
+}
+
+struct StopAcc {
+    lat: f64,
+    lon: f64,
+    n: i64,
+    days: HashSet<i64>,
+    first: i64,
+    last: i64,
+}
+
+/// The stops of a run of located items, given as (time, latitude, longitude) in time order. An item joins the nearest
+/// stop within `stop_km` of it, else starts a new one.
+pub fn compute_route(items: &[(i64, f64, f64)], stop_km: f64) -> Route {
+    let mut acc: Vec<StopAcc> = Vec::new();
+    let mut path: Vec<usize> = Vec::new();
+    for &(t, lat, lon) in items {
+        let day = day_of(t);
+        let near = acc
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (i, distance_km((a.lat / a.n as f64, a.lon / a.n as f64), (lat, lon))))
+            .filter(|(_, d)| *d <= stop_km)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i);
+        let i = match near {
+            Some(i) => i,
+            None => {
+                acc.push(StopAcc { lat: 0.0, lon: 0.0, n: 0, days: HashSet::new(), first: day, last: day });
+                acc.len() - 1
+            }
+        };
+        let a = &mut acc[i];
+        a.lat += lat;
+        a.lon += lon;
+        a.n += 1;
+        a.days.insert(day);
+        a.last = a.last.max(day);
+        a.first = a.first.min(day);
+        if path.last() != Some(&i) {
+            path.push(i);
+        }
+    }
+    let stops = acc
+        .into_iter()
+        .map(|a| Stop { lat: a.lat / a.n as f64, lon: a.lon / a.n as f64, first: day_string(a.first), last: day_string(a.last), days: a.days.len() as u32, items: a.n })
+        .collect();
+    Route { stops, path }
 }
 
 /// A guess at where home is: the middle of the 0.1° square (about 10 km) that has photos on the most different days.
@@ -160,7 +230,7 @@ mod tests {
     const LYON: (f64, f64) = (45.764, 4.8357); // about 390 km from Paris
 
     fn s() -> TripSettings {
-        TripSettings { home_lat: PARIS.0, home_lon: PARIS.1, radius_km: 50.0, min_days: 1 }
+        TripSettings { home_lat: PARIS.0, home_lon: PARIS.1, radius_km: 50.0, min_nights: 0 }
     }
     fn at(day: i64, pos: (f64, f64)) -> DayItem {
         DayItem { day, pos: Some(pos), video: false }
@@ -221,20 +291,28 @@ mod tests {
     }
 
     #[test]
-    fn the_minimum_counts_distinct_away_days() {
+    fn the_minimum_counts_nights_from_the_first_to_the_last_away_day() {
         let items = [at(1, ROME), at(1, ROME), at(1, ROME), at(2, PARIS), at(3, ROME), at(4, ROME), at(5, ROME), at(6, PARIS)];
-        let two = TripSettings { min_days: 2, ..s() };
-        let t = compute_trips(&items, &two);
-        assert_eq!(t.len(), 1, "day 1 alone is one day however many photos it has");
-        assert_eq!(t[0].days, 3);
-        let four = TripSettings { min_days: 4, ..s() };
-        assert!(compute_trips(&items, &four).is_empty());
+        let one = TripSettings { min_nights: 1, ..s() };
+        let t = compute_trips(&items, &one);
+        assert_eq!(t.len(), 1, "day 1 is a day trip, however many photos it has: no night away");
+        assert_eq!((t[0].nights, t[0].days), (2, 3));
+        let two = TripSettings { min_nights: 2, ..s() };
+        assert_eq!(compute_trips(&items, &two).len(), 1);
+        let three = TripSettings { min_nights: 3, ..s() };
+        assert!(compute_trips(&items, &three).is_empty());
     }
 
     #[test]
-    fn a_minimum_of_zero_means_any_away_day_is_a_trip() {
-        let zero = TripSettings { min_days: 0, ..s() };
-        assert_eq!(compute_trips(&[at(1, ROME)], &zero).len(), 1);
+    fn nights_include_days_with_nothing_taken_on_them() {
+        let t = compute_trips(&[at(10, ROME), at(13, ROME)], &s());
+        assert_eq!((t[0].nights, t[0].days), (3, 2));
+    }
+
+    #[test]
+    fn a_minimum_of_zero_nights_allows_a_day_trip() {
+        assert_eq!(compute_trips(&[at(1, ROME)], &s()).len(), 1);
+        assert!(compute_trips(&[at(1, ROME)], &TripSettings { min_nights: 1, ..s() }).is_empty());
     }
 
     #[test]
@@ -257,6 +335,49 @@ mod tests {
         let t = compute_trips(&[at(1, PARIS), at(2, ROME), at(3, ROME)], &s());
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].days, 2);
+    }
+
+    const FLORENCE: (f64, f64) = (43.7696, 11.2558); // about 230 km from Rome
+    const NEAR_ROME: (f64, f64) = (41.95, 12.5); // about 6 km from Rome
+    fn timed(day: i64, p: (f64, f64)) -> (i64, f64, f64) {
+        (day * DAY + 3600, p.0, p.1)
+    }
+
+    #[test]
+    fn nearby_items_are_one_stop_and_far_ones_start_another() {
+        let r = compute_route(&[timed(1, ROME), timed(1, NEAR_ROME), timed(2, ROME), timed(3, FLORENCE)], 25.0);
+        assert_eq!(r.stops.len(), 2);
+        assert_eq!((r.stops[0].items, r.stops[0].days), (3, 2));
+        assert_eq!((r.stops[0].first.as_str(), r.stops[0].last.as_str()), (day_string(1).as_str(), day_string(2).as_str()));
+        assert_eq!((r.stops[1].items, r.stops[1].days), (1, 1));
+        assert_eq!(r.path, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_stop_is_the_middle_of_its_items() {
+        let r = compute_route(&[timed(1, ROME), timed(1, NEAR_ROME)], 25.0);
+        assert!((r.stops[0].lat - (ROME.0 + NEAR_ROME.0) / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_stop_radius_decides_what_merges() {
+        let items = [timed(1, ROME), timed(2, NEAR_ROME)];
+        assert_eq!(compute_route(&items, 25.0).stops.len(), 1);
+        assert_eq!(compute_route(&items, 2.0).stops.len(), 2);
+    }
+
+    #[test]
+    fn coming_back_to_a_stop_repeats_it_in_the_path_but_not_in_the_stops() {
+        let r = compute_route(&[timed(1, ROME), timed(1, ROME), timed(2, FLORENCE), timed(3, ROME), timed(4, ROME)], 25.0);
+        assert_eq!(r.stops.len(), 2);
+        assert_eq!(r.path, vec![0, 1, 0], "consecutive items at one stop make one visit");
+        assert_eq!(r.stops[0].days, 3);
+    }
+
+    #[test]
+    fn no_items_means_no_route() {
+        let r = compute_route(&[], 25.0);
+        assert!(r.stops.is_empty() && r.path.is_empty());
     }
 
     #[test]
