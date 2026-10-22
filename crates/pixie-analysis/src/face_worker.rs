@@ -7,14 +7,14 @@ use pixie_image::decode::decode_scaled;
 use pixie_index::Db;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// Faces can be small, so the photo is read larger than CLIP needs (the detector then works at 640 px).
 const DECODE_EDGE: u32 = 1024;
-const BATCH: i64 = 16;
+const BATCH: i64 = 32;
 const REPORT_EVERY: usize = 4;
 const POLL: Duration = Duration::from_millis(500);
 /// How long an idle worker sleeps before looking for new photos on its own.
@@ -127,43 +127,70 @@ impl Shared {
                 self.wait(IDLE_WAIT);
                 continue;
             }
-            for (i, p) in batch.iter().enumerate() {
-                if self.stop.load(Ordering::SeqCst) || self.holding() {
-                    break;
-                }
-                let stored = match self.scan_one(Path::new(&p.path)) {
-                    Outcome::Faces(faces) => {
-                        failures = 0;
-                        self.set_error(None);
-                        let r = self.db.replace_faces(p.id, &version, &faces);
-                        if r.is_ok() && !faces.is_empty() {
-                            if let Err(e) = assign_new_faces(&self.db, JOIN_THRESHOLD) {
-                                eprintln!("[people] cannot group faces: {e}");
-                            }
-                        }
-                        r.map(|_| ())
-                    }
-                    Outcome::Undecodable => self.db.replace_faces(p.id, &version, &[]).map(|_| ()),
-                    Outcome::EngineFailed(e) => {
-                        // Not the photo's fault: leave it queued, and back off if the engine keeps failing.
-                        failures += 1;
-                        if failures >= ENGINE_FAILURES {
-                            eprintln!("[people] face engine failing: {e}");
-                            self.set_error(Some(e));
-                            self.report(false);
-                            self.wait(self.poll * 10);
+            // Decoding and detecting are the slow part, so several photos are scanned at once. Results come back to this
+            // thread, which stores and groups them one at a time: grouping people is not safe to run in parallel.
+            let next = AtomicUsize::new(0);
+            let abort = AtomicBool::new(false);
+            let (tx, rx) = mpsc::channel::<(usize, Outcome)>();
+            let mut engine_down = false;
+            let mut handled = 0usize;
+            std::thread::scope(|scope| {
+                for _ in 0..self.engine.parallelism().clamp(1, batch.len()) {
+                    let tx = tx.clone();
+                    let (next, abort, batch) = (&next, &abort, &batch);
+                    scope.spawn(move || loop {
+                        if abort.load(Ordering::SeqCst) || self.stop.load(Ordering::SeqCst) || self.holding() {
                             break;
                         }
-                        continue;
+                        let i = next.fetch_add(1, Ordering::SeqCst);
+                        let Some(p) = batch.get(i) else { break };
+                        let outcome = self.scan_one(Path::new(&p.path));
+                        if tx.send((i, outcome)).is_err() {
+                            break;
+                        }
+                    });
+                }
+                drop(tx);
+                for (i, outcome) in rx {
+                    let p = &batch[i];
+                    let stored = match outcome {
+                        Outcome::Faces(faces) => {
+                            failures = 0;
+                            self.set_error(None);
+                            let r = self.db.replace_faces(p.id, &version, &faces);
+                            if r.is_ok() && !faces.is_empty() {
+                                if let Err(e) = assign_new_faces(&self.db, JOIN_THRESHOLD) {
+                                    eprintln!("[people] cannot group faces: {e}");
+                                }
+                            }
+                            r.map(|_| ())
+                        }
+                        Outcome::Undecodable => self.db.replace_faces(p.id, &version, &[]).map(|_| ()),
+                        Outcome::EngineFailed(e) => {
+                            // Not the photo's fault: leave it queued, and back off if the engine keeps failing.
+                            failures += 1;
+                            if failures >= ENGINE_FAILURES && !engine_down {
+                                eprintln!("[people] face engine failing: {e}");
+                                self.set_error(Some(e));
+                                self.report(false);
+                                engine_down = true;
+                                abort.store(true, Ordering::SeqCst);
+                            }
+                            continue;
+                        }
+                    };
+                    if let Err(e) = stored {
+                        // The photo vanished mid-run (folder removed): nothing to keep.
+                        eprintln!("[people] cannot store result for {}: {e}", p.path);
                     }
-                };
-                if let Err(e) = stored {
-                    // The photo vanished mid-run (folder removed): nothing to keep.
-                    eprintln!("[people] cannot store result for {}: {e}", p.path);
+                    handled += 1;
+                    if handled % REPORT_EVERY == 0 {
+                        self.report(true);
+                    }
                 }
-                if i % REPORT_EVERY == REPORT_EVERY - 1 {
-                    self.report(true);
-                }
+            });
+            if engine_down {
+                self.wait(self.poll * 10);
             }
             self.report(true);
         }
@@ -292,6 +319,62 @@ mod tests {
         // The scan row is written just before the photo's faces are grouped, so give the grouping a moment.
         assert!(wait_until(5000, || db.people_centroids().unwrap().iter().map(|c| c.2).collect::<Vec<_>>() == vec![2])); // both red photos hold the same "person"
         assert!(wait_until(2000, || last.lock().unwrap().as_ref().is_some_and(|p| p.done == 3 && !p.busy)));
+        w.stop();
+    }
+
+    /// The fake engine, called from several threads at once.
+    struct Parallel(usize);
+    impl FaceEngine for Parallel {
+        fn detect(&self, img: &image::DynamicImage) -> Result<Vec<Face>, String> {
+            std::thread::sleep(Duration::from_millis(5));
+            FakeFaceEngine.detect(img)
+        }
+        fn embed(&self, img: &image::DynamicImage, f: &Face) -> Result<Vec<f32>, String> {
+            FakeFaceEngine.embed(img, f)
+        }
+        fn version(&self) -> &str {
+            V
+        }
+        fn parallelism(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[test]
+    fn several_photos_are_scanned_at_once_and_each_is_stored_and_grouped_exactly_once() {
+        let reds = vec![250u8; 40];
+        let (_d, db) = library(&reds, &["broken.png"]);
+        let (scan, last) = idle();
+        let w = start(&db, Arc::new(Parallel(4)), scan, last);
+        assert!(wait_until(10000, || db.face_counts(V).unwrap() == (41, 41)));
+        // 40 photos of the same "person" are one person with 40 faces, however the work was shared out.
+        assert!(wait_until(5000, || db.people_centroids().unwrap().iter().map(|c| c.2).collect::<Vec<_>>() == vec![40]));
+        assert!(db.photos_needing_faces(V, 100).unwrap().is_empty());
+        w.stop();
+    }
+
+    #[test]
+    fn engine_errors_with_several_workers_still_leave_everything_queued() {
+        struct FlakyMany;
+        impl FaceEngine for FlakyMany {
+            fn detect(&self, _: &image::DynamicImage) -> Result<Vec<Face>, String> {
+                Err("out of memory".into())
+            }
+            fn embed(&self, _: &image::DynamicImage, _: &Face) -> Result<Vec<f32>, String> {
+                Err("unused".into())
+            }
+            fn version(&self) -> &str {
+                V
+            }
+            fn parallelism(&self) -> usize {
+                4
+            }
+        }
+        let (_d, db) = library(&[250; 12], &[]);
+        let (scan, last) = idle();
+        let w = start(&db, Arc::new(FlakyMany), scan, last.clone());
+        assert!(wait_until(5000, || last.lock().unwrap().as_ref().is_some_and(|p| p.error.is_some())));
+        assert_eq!(db.face_counts(V).unwrap().0, 0);
         w.stop();
     }
 

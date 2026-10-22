@@ -129,6 +129,21 @@ const MIGRATIONS: &[&str] = &[
     // files. `keep_pick` marks the copy the user chose to show for its set (without one, the oldest is shown).
     "ALTER TABLE photos ADD COLUMN dup INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE photos ADD COLUMN keep_pick INTEGER NOT NULL DEFAULT 0;",
+    // V12: the listing indexes include `dup`, so counting or paging what Browse shows (`missing = 0 AND dup = 0`) is
+    // answered from the index alone. Without it every count read every row of the library (50 to 100 ms each, on the
+    // thread the window runs on).
+    "DROP INDEX idx_photos_newest;
+     DROP INDEX idx_photos_oldest;
+     DROP INDEX idx_photos_folder_newest;
+     DROP INDEX idx_photos_folder_oldest;
+     DROP INDEX idx_photos_kind_newest;
+     DROP INDEX idx_photos_kind_oldest;
+     CREATE INDEX idx_photos_newest ON photos(missing, dup, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_oldest ON photos(missing, dup, (taken_at IS NULL), taken_at ASC, id ASC);
+     CREATE INDEX idx_photos_folder_newest ON photos(folder_id, missing, dup, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_folder_oldest ON photos(folder_id, missing, dup, (taken_at IS NULL), taken_at ASC, id ASC);
+     CREATE INDEX idx_photos_kind_newest ON photos(kind, missing, dup, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_kind_oldest ON photos(kind, missing, dup, (taken_at IS NULL), taken_at ASC, id ASC);",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -535,7 +550,7 @@ impl Db {
             .prepare(
                 "SELECT p.id, p.path FROM photos p
                  WHERE p.missing = 0 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
-                   AND EXISTS (SELECT 1 FROM photos o WHERE o.quick_key = p.quick_key AND o.id != p.id AND o.missing = 0)
+                   AND p.quick_key IN (SELECT quick_key FROM photos WHERE missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)
                  ORDER BY p.id DESC LIMIT ?1",
             )
             .map_err(db_err)?;
@@ -645,9 +660,11 @@ impl Db {
         // Still to do: no quick key yet, or a shared quick key without a full hash.
         let todo: i64 = c
             .query_row(
+                // The shared quick keys are found once, as a group: asking per photo ("does another photo share this
+                // key?") makes SQLite compare every photo with every other, which took seconds.
                 "SELECT count(*) FROM photos p WHERE p.missing = 0 AND (p.quick_key IS NULL OR (
                     p.hash IS NULL AND substr(p.quick_key, 1, 1) != '!'
-                    AND EXISTS (SELECT 1 FROM photos o WHERE o.quick_key = p.quick_key AND o.id != p.id AND o.missing = 0)))",
+                    AND p.quick_key IN (SELECT quick_key FROM photos WHERE missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)))",
                 [],
                 |r| r.get(0),
             )
@@ -1012,7 +1029,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND kind = 0
+                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND dup = 0 AND kind = 0
                    AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?1)
                  ORDER BY id DESC LIMIT ?2"
             ))
@@ -1021,14 +1038,15 @@ impl Db {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
     }
 
-    /// (photos scanned with this version, photos that should be).
+    /// (photos scanned with this version, photos that should be). A hidden extra copy of a duplicate is neither: the
+    /// copy Browse shows is scanned instead.
     pub fn face_counts(&self, version: &str) -> Result<(i64, i64)> {
         let c = self.conn();
-        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
         let done: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM face_scans s JOIN photos p ON p.id = s.photo_id
-                  WHERE s.version = ?1 AND p.missing = 0 AND p.kind = 0",
+                  WHERE s.version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.kind = 0",
                 params![version],
                 |r| r.get(0),
             )

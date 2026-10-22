@@ -5,7 +5,8 @@ use image::DynamicImage;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 
 /// Identifies the detector + recogniser pair; stored with every scan so new models rescan the library.
 pub const FACES_VERSION: &str = "yunet2023mar-sface2021dec-1";
@@ -20,6 +21,15 @@ pub trait FaceEngine: Send + Sync {
     fn detect(&self, img: &DynamicImage) -> Result<Vec<Face>, String>;
     fn embed(&self, img: &DynamicImage, face: &Face) -> Result<Vec<f32>, String>;
     fn version(&self) -> &str;
+    /// How many photos this engine can work on at the same time (it is called from that many threads).
+    fn parallelism(&self) -> usize {
+        1
+    }
+}
+
+/// How many photos are scanned at once: half the cores (the rest are for the app, thumbnails and Auto tags), at most 4.
+pub fn default_workers() -> usize {
+    std::thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(1).clamp(1, 4)
 }
 
 /// A stand-in for tests: an image whose top-left pixel is red-dominant (red above 128) holds one face covering the
@@ -54,20 +64,41 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 
 /// YuNet (detector) and SFace (recogniser) on the CPU through ONNX Runtime.
 pub struct FaceModels {
-    yunet: Mutex<Session>,
-    sface: Mutex<Session>,
+    // One session per worker: a session runs one photo at a time, so a shared one would make the workers queue up.
+    yunet: Vec<Mutex<Session>>,
+    sface: Vec<Mutex<Session>>,
+    next: AtomicUsize,
+}
+
+/// A session nobody is using, or else the next one in turn once it is free.
+fn pick<'a>(pool: &'a [Mutex<Session>], start: usize) -> MutexGuard<'a, Session> {
+    for k in 0..pool.len() {
+        match pool[(start + k) % pool.len()].try_lock() {
+            Ok(g) => return g,
+            Err(TryLockError::Poisoned(p)) => return p.into_inner(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+    }
+    pool[start % pool.len()].lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl FaceModels {
-    /// `dir` holds `yunet.onnx` and `sface.onnx` (see `models::FACE_FILES`).
+    /// `dir` holds `yunet.onnx` and `sface.onnx` (see `models::FACE_FILES`). Loads one set of sessions per worker
+    /// (`default_workers`); each costs about 40 MB.
     pub fn load(dir: &Path) -> Result<FaceModels, String> {
+        Self::load_with(dir, default_workers())
+    }
+
+    pub fn load_with(dir: &Path, workers: usize) -> Result<FaceModels, String> {
         let session = |name: &str| -> Result<Session, String> {
             Session::builder()
                 .and_then(|b| b.with_intra_threads(1))
                 .and_then(|b| b.commit_from_file(dir.join(name)))
                 .map_err(|e| format!("cannot load {name}: {e}"))
         };
-        Ok(FaceModels { yunet: Mutex::new(session("yunet.onnx")?), sface: Mutex::new(session("sface.onnx")?) })
+        let n = workers.max(1);
+        let load_all = |name: &str| (0..n).map(|_| session(name).map(Mutex::new)).collect::<Result<Vec<_>, String>>();
+        Ok(FaceModels { yunet: load_all("yunet.onnx")?, sface: load_all("sface.onnx")?, next: AtomicUsize::new(0) })
     }
 }
 
@@ -75,7 +106,7 @@ impl FaceEngine for FaceModels {
     fn detect(&self, img: &DynamicImage) -> Result<Vec<Face>, String> {
         let (tensor, rw, rh) = letterbox(img);
         let input = Tensor::from_array(([1usize, 3, INPUT, INPUT], tensor)).map_err(err)?;
-        let mut session = self.yunet.lock().unwrap_or_else(|p| p.into_inner());
+        let mut session = pick(&self.yunet, self.next.fetch_add(1, Ordering::Relaxed));
         let out = session.run(ort::inputs!["input" => input]).map_err(err)?;
         let grab = |name: &str| -> Result<Vec<f32>, String> {
             Ok(out[name].try_extract_tensor::<f32>().map_err(err)?.1.to_vec())
@@ -100,7 +131,7 @@ impl FaceEngine for FaceModels {
         let (w, h) = (rgb.width() as f32, rgb.height() as f32);
         let lm = face.landmarks.map(|(x, y)| (x * w, y * h));
         let input = Tensor::from_array(([1usize, 3, 112, 112], sface_tensor(&align(&rgb, &lm)))).map_err(err)?;
-        let mut session = self.sface.lock().unwrap_or_else(|p| p.into_inner());
+        let mut session = pick(&self.sface, self.next.fetch_add(1, Ordering::Relaxed));
         let out = session.run(ort::inputs!["data" => input]).map_err(err)?;
         let mut v: Vec<f32> = out["fc1"].try_extract_tensor::<f32>().map_err(err)?.1.to_vec();
         normalize(&mut v);
@@ -109,6 +140,10 @@ impl FaceEngine for FaceModels {
 
     fn version(&self) -> &str {
         FACES_VERSION
+    }
+
+    fn parallelism(&self) -> usize {
+        self.yunet.len()
     }
 }
 

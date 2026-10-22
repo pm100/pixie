@@ -21,6 +21,8 @@ const BUSY: Duration = Duration::from_secs(1);
 /// What a file that cannot be read gets as its quick key: it matches nothing and is not tried again until it changes.
 /// While hashing goes on, how often the hidden copies are brought up to date.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// While hashing goes on, how often the progress is worked out and reported.
+const STATUS_EVERY: Duration = Duration::from_secs(1);
 const UNREADABLE: &str = "!unreadable";
 
 fn hex(d: &[u8]) -> String {
@@ -115,6 +117,7 @@ impl DupeService {
         let handle = std::thread::spawn(move || {
             let mut last: Option<DupStatus> = None;
             let mut last_refresh: Option<Instant> = None;
+            let mut last_status: Option<Instant> = None;
             while !flag.load(Ordering::Relaxed) {
                 if scanning() {
                     std::thread::sleep(BUSY);
@@ -127,10 +130,15 @@ impl DupeService {
                     let _ = db.refresh_dup_flags();
                     last_refresh = Some(Instant::now());
                 }
-                if let Ok(s) = db.dup_status() {
-                    if last.as_ref() != Some(&s) {
-                        on_status(s.clone());
-                        last = Some(s);
+                // The progress line: when a round of work ends, and about once a second while it goes on. Working it out
+                // reads the whole library, and the window waits whenever the database is busy.
+                if did == 0 || last_status.map_or(true, |t| t.elapsed() > STATUS_EVERY) {
+                    last_status = Some(Instant::now());
+                    if let Ok(s) = db.dup_status() {
+                        if last.as_ref() != Some(&s) {
+                            on_status(s.clone());
+                            last = Some(s);
+                        }
                     }
                 }
                 std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { IDLE });
@@ -324,6 +332,19 @@ mod tests {
         db.set_tags(newest, "m", "t", &[("beach".to_string(), 0.9)]).unwrap();
         assert_eq!(db.tag_counts().unwrap(), vec![("beach".to_string(), 1)], "two copies of one photo are one photo");
         assert_eq!(db.photos_with_any_tag(&["beach"]).unwrap(), 1);
+    }
+
+    #[test]
+    fn hidden_copies_are_not_queued_for_faces_and_do_not_count_toward_their_progress() {
+        let (_d, db, _f, [oldest, ..], other) = browse_library();
+        let mut queued: Vec<i64> = db.photos_needing_faces("v", 100).unwrap().iter().map(|p| p.id).collect();
+        queued.sort();
+        let mut want = vec![oldest, other];
+        want.sort();
+        assert_eq!(queued, want);
+        assert_eq!(db.face_counts("v").unwrap(), (0, 2));
+        db.replace_faces(oldest, "v", &[]).unwrap();
+        assert_eq!(db.face_counts("v").unwrap(), (1, 2));
     }
 
     #[test]
