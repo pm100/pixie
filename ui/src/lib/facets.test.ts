@@ -8,6 +8,7 @@ const counts: FacetCounts = {
   tag_groups: [44, 7], tag_group_names: ['Settings', 'Animals'],
   people: [[5, 12]],
   trips: [30, 0],
+  recent: 21,
 };
 const trips = [{ since: 1000 }, { since: 2000 }];
 
@@ -21,6 +22,7 @@ describe('indexFacets', () => {
     expect(f.people.get(5)).toBe(12);
     expect(f.trips.get(1000)).toBe(30);
     expect(f.trips.get(2000)).toBe(0);
+    expect(f.recent).toBe(21);
   });
 });
 

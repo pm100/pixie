@@ -433,6 +433,8 @@ pub struct FacetCounts {
     pub people: Vec<(i64, i64)>,
     /// Items in each trip window asked for, in the order asked.
     pub trips: Vec<i64>,
+    /// Items taken since the `recent_since` asked for (the Last 30 days row); 0 when none was asked for.
+    pub recent: i64,
 }
 
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,

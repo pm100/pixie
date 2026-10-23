@@ -616,11 +616,11 @@
   $effect(() => {
     // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
     // refresh of the listing (a scan added photos, a duplicate was hidden...).
-    const v = view, tag = activeTag, person = activePerson, list = trips, chosenTrip = tripKey;
+    const v = view, tag = activeTag, person = activePerson, list = trips, chosenTrip = tripKey, days = recentDays;
     version;
     const token = facetsLatest.next();
     const timer = setTimeout(() => {
-      facetCounts(v, tag, person, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]))
+      facetCounts(v, tag, person, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
         .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
         .catch(() => { /* the entries keep the counts they came with */ });
     }, 120);

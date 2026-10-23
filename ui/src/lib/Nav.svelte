@@ -207,7 +207,7 @@
 
   {@render head('when', 'When')}
   {#if !folded('when')}
-    <button class="item" class:active={recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span>{recentText}</button>
+    <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow">{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
     <WhenNav {groups} {period} {onperiod} />
   {/if}
 

@@ -12,6 +12,8 @@ export type FacetCounts = {
   tag_group_names: string[];
   people: [number, number][];
   trips: number[];
+  /** Items taken in the last N days (the Last 30 days row). */
+  recent: number;
 };
 
 /** The same, ready to look up by what the tree shows. An entry that is not in a map matches nothing (0). */
@@ -24,6 +26,7 @@ export type Facets = {
   people: Map<number, number>;
   /** By the trip's `since`. */
   trips: Map<number, number>;
+  recent: number;
 };
 
 /** `trips` are the trips whose windows were asked for, in that order. */
@@ -36,6 +39,7 @@ export function indexFacets(f: FacetCounts, trips: Pick<Trip, 'since'>[]): Facet
     categories: new Map(f.tag_group_names.map((name, i) => [name, f.tag_groups[i] ?? 0])),
     people: new Map(f.people),
     trips: new Map(trips.map((t, i) => [t.since, f.trips[i] ?? 0])),
+    recent: f.recent ?? 0, // an older backend does not send it
   };
 }
 

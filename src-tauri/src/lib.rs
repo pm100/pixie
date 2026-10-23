@@ -298,7 +298,8 @@ async fn load_progress(state: tauri::State<'_, AppState>, folder_ids: Vec<i64>) 
 
 /// The counts beside the entries of the left-hand tree under the filters in force: each section is counted with every
 /// filter except its own. `tag` and `person` are the ones chosen in the tree; `trip_dates` says the date window is a
-/// chosen trip; `trip_windows` are the `[since, until)` windows of the trips listed. Runs off the main thread.
+/// chosen trip; `trip_windows` are the `[since, until)` windows of the trips listed; `recent_since` is the start of the
+/// Last 30 days row. Runs off the main thread.
 #[tauri::command]
 async fn facet_counts(
     state: tauri::State<'_, AppState>,
@@ -312,11 +313,12 @@ async fn facet_counts(
     person: Option<i64>,
     trip_dates: bool,
     trip_windows: Vec<(i64, i64)>,
+    recent_since: Option<i64>,
 ) -> Result<pixie_core::FacetCounts, String> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let groups: Vec<Vec<String>> = pixie_analysis::tags::CATEGORIES.iter().map(|(_, labels)| labels.iter().map(|l| l.to_string()).collect()).collect();
-        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, trip_dates, tag_groups: &groups, trip_windows: &trip_windows };
+        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, trip_dates, tag_groups: &groups, trip_windows: &trip_windows, recent_since };
         let mut counts = db.facet_counts(&query_of(None, folder_id, kind, bounds, max_id, since, until, None), &ask).map_err(|e| e.to_string())?;
         counts.tag_group_names = pixie_analysis::tags::CATEGORIES.iter().map(|(name, _)| name.to_string()).collect();
         Ok(counts)

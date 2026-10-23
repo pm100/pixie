@@ -165,6 +165,8 @@ pub struct FacetAsk<'a> {
     pub tag_groups: &'a [Vec<String>],
     /// Trip windows `[since, until)` (unix seconds) to count items in.
     pub trip_windows: &'a [(i64, i64)],
+    /// The start of "Last 30 days" (unix seconds): count the items taken since then.
+    pub recent_since: Option<i64>,
 }
 
 /// The photos the view shows, minus the filters named: the base every count in the tree is taken from.
@@ -798,6 +800,16 @@ impl Db {
                 .iter()
                 .map(|(since, until)| (times.partition_point(|t| t < until) - times.partition_point(|t| t < since)) as i64)
                 .collect();
+        }
+        // Last 30 days is a date choice like the others: everything but the date window.
+        if let Some(since) = ask.recent_since {
+            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person);
+            let mut params = base.params();
+            params.push((":recent_since", &since));
+            let c = self.conn();
+            out.recent = c
+                .query_row(&format!("SELECT COUNT(*) FROM photos WHERE taken_at >= :recent_since AND id IN ({})", base.sql), params.as_slice(), |r| r.get(0))
+                .map_err(db_err)?;
         }
         Ok(out)
     }
@@ -3110,7 +3122,7 @@ mod tests {
         let person = person_of(&db, &[p2, p3], [1.0, 0.0]);
         let groups = vec![vec!["beach".to_string(), "dog".to_string()]];
         let windows = [(0, 500), (500, 3000)];
-        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, trip_dates, tag_groups: &groups, trip_windows: &windows };
+        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250) };
         let tags = |f: &FacetCounts| {
             let mut t = f.tags.clone();
             t.sort();
@@ -3129,6 +3141,7 @@ mod tests {
         assert_eq!(all.tag_groups, vec![4]); // four different photos carry one of the two tags
         assert_eq!(all.people, vec![(person, 2)]);
         assert_eq!(all.trips, vec![3, 2]);
+        assert_eq!(all.recent, 3, "three items were taken since time 250");
 
         // A folder chosen: every section but Folders narrows to it.
         let in_a = PhotoQuery { folder_id: Some(a), ..Default::default() };
@@ -3138,6 +3151,7 @@ mod tests {
         assert_eq!(tags(&f), vec![("beach".to_string(), 2), ("dog".to_string(), 1)]);
         assert_eq!(f.people, vec![(person, 1)]);
         assert_eq!(f.trips, vec![3, 0]);
+        assert_eq!(f.recent, 1, "only the video in folder a is that recent");
 
         // A tag chosen: Auto tags ignores it, the rest narrow to it.
         let t = db.facet_counts(&PhotoQuery::default(), &ask(Some("dog"), None, false)).unwrap();
@@ -3163,6 +3177,7 @@ mod tests {
         assert_eq!(db.facet_counts(&early, &ask(None, None, false)).unwrap().trips, vec![3, 0]);
         assert_eq!(db.facet_counts(&early, &ask(None, None, true)).unwrap().trips, vec![3, 2]);
         assert_eq!(db.facet_counts(&early, &ask(None, None, true)).unwrap().photos, 2);
+        assert_eq!(db.facet_counts(&early, &ask(None, None, false)).unwrap().recent, 3, "Last 30 days ignores the date window, as its own section");
 
         // Hidden extra copies are never counted.
         db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![p4]).unwrap();
@@ -3186,7 +3201,7 @@ mod tests {
         assert_eq!(db.count_photos_in(&q(Some(UNDATED), None, Some(MediaKind::Video))).unwrap(), 1);
         assert_eq!(db.count_photos_in(&q(Some(0), Some(i64::MAX), None)).unwrap(), 1);
         // The counts beside the tree's entries follow it too.
-        let ask = FacetAsk { tag: None, person: None, trip_dates: false, tag_groups: &[], trip_windows: &[] };
+        let ask = FacetAsk { tag: None, person: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
         let facets = db.facet_counts(&none, &ask).unwrap();
         assert_eq!((facets.photos, facets.videos), (1, 1));
     }

@@ -191,8 +191,8 @@ import type { LoadProgress } from './analysisView';
 import type { FacetCounts } from './facets';
 /** The counts for the left-hand tree under the filters in force (see `facets.ts`). */
 export const facetCounts = (
-  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, tripDates: boolean, tripWindows: [number, number][],
-) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, tripDates, tripWindows });
+  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number,
+) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, tripDates, tripWindows, recentSince });
 /** How far the analysis has got for the photos of these folders (the load screen's counters). */
 export const loadProgress = (folderIds: number[]) => invoke<LoadProgress>('load_progress', { folderIds });
 export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');
