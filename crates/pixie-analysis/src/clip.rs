@@ -1,10 +1,13 @@
 use crate::clip_pre::to_tensor;
 use crate::embedder::Embedder;
+use crate::faces::default_workers;
+use crate::session_pool::pick;
 use crate::vectors::normalize;
 use image::DynamicImage;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
@@ -13,7 +16,9 @@ const TEXT_LEN: usize = 77;
 
 /// OpenAI CLIP ViT-B/32 (int8) running on the CPU through ONNX Runtime.
 pub struct ClipEmbedder {
-    vision: Mutex<Session>,
+    // One vision session per worker (about 90 MB each): photos are embedded by several workers at once.
+    vision: Vec<Mutex<Session>>,
+    next: AtomicUsize,
     text: Mutex<Session>,
     tokenizer: Tokenizer,
 }
@@ -25,6 +30,10 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 impl ClipEmbedder {
     /// `dir` holds `vision.onnx`, `text.onnx` and `tokenizer.json` (see `models::CLIP_FILES`).
     pub fn load(dir: &Path) -> Result<ClipEmbedder, String> {
+        Self::load_with(dir, default_workers())
+    }
+
+    pub fn load_with(dir: &Path, workers: usize) -> Result<ClipEmbedder, String> {
         let session = |name: &str| -> Result<Session, String> {
             Session::builder()
                 .and_then(|b| b.with_intra_threads(1))
@@ -34,7 +43,8 @@ impl ClipEmbedder {
         let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| format!("cannot load tokenizer: {e}"))?;
         // We pad ourselves (with 0, as CLIP does) so the sequence is always exactly TEXT_LEN.
         tokenizer.with_padding(None);
-        Ok(ClipEmbedder { vision: Mutex::new(session("vision.onnx")?), text: Mutex::new(session("text.onnx")?), tokenizer })
+        let vision = (0..workers.max(1)).map(|_| session("vision.onnx").map(Mutex::new)).collect::<Result<Vec<_>, String>>()?;
+        Ok(ClipEmbedder { vision, next: AtomicUsize::new(0), text: Mutex::new(session("text.onnx")?), tokenizer })
     }
 
     fn token_ids(&self, text: &str) -> Result<Vec<i64>, String> {
@@ -53,7 +63,7 @@ impl ClipEmbedder {
 impl Embedder for ClipEmbedder {
     fn embed_image(&self, img: &DynamicImage) -> Result<Vec<f32>, String> {
         let input = Tensor::from_array(([1usize, 3, 224, 224], to_tensor(img))).map_err(err)?;
-        let mut session = self.vision.lock().unwrap_or_else(|p| p.into_inner());
+        let mut session = pick(&self.vision, self.next.fetch_add(1, Ordering::Relaxed));
         let out = session.run(ort::inputs!["pixel_values" => input]).map_err(err)?;
         let mut v: Vec<f32> = out["image_embeds"].try_extract_tensor::<f32>().map_err(err)?.1.to_vec();
         normalize(&mut v);

@@ -51,8 +51,10 @@ export function backgroundProgress(o: {
   if (left.every((p) => p.s.paused)) {
     return { state: 'paused', text: 'Analysis paused', fraction: null, detail: `${detail}. Click to resume.` };
   }
-  const done = left.reduce((a, p) => a + p.s.done, 0);
-  const total = left.reduce((a, p) => a + p.s.total, 0);
+  // The finished passes count as done work, so the percentage never jumps back when one of them finishes.
+  const counted = passes.filter((p) => p.s.models === 'ready' && p.s.total > 0);
+  const done = counted.reduce((a, p) => a + p.s.done, 0);
+  const total = counted.reduce((a, p) => a + p.s.total, 0);
   const fraction = total > 0 ? done / total : null;
   return { state: 'working', text: `Analysing photos ${Math.floor((fraction ?? 0) * 100)}%`, fraction, detail };
 }

@@ -1,50 +1,52 @@
 <script lang="ts">
-  import { analysisFraction, analysisLine, type AnalysisStatus } from './analysis';
-  import { peopleLine } from './people';
-  import { dupLine, type DupStatus } from './dupes';
+  import type { AnalysisView } from './analysisView';
 
-  let { status, people, dupes, onpause, onretry }: { status: AnalysisStatus | null; people: AnalysisStatus | null; dupes: DupStatus | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
-  const fraction = $derived(status ? analysisFraction(status) : null);
-  const peopleFraction = $derived(people ? analysisFraction(people) : null);
-  const unfinished = (s: AnalysisStatus | null) => s !== null && s.models === 'ready' && s.total > 0 && s.done < s.total;
-  const dupFraction = $derived(dupes && dupes.total > 0 ? Math.min(1, dupes.done / dupes.total) : null);
-  const dupUnfinished = $derived(dupes !== null && dupes.total > 0 && dupes.done < dupes.total);
-  const working = $derived(unfinished(status) || unfinished(people) || dupUnfinished);
-  const paused = $derived((status?.paused ?? false) || (people?.paused ?? false) || (dupes?.paused ?? false));
-  const failed = $derived(status?.models === 'error' || people?.models === 'error');
+  let { view, onpause, onretry }: { view: AnalysisView; onpause: (paused: boolean) => void; onretry: () => void } = $props();
 </script>
 
 <h2>Picture analysis</h2>
-<p>Pixie studies your photos on this computer. It adds <b>Auto tags</b>, labels such as Beach, Museum or Dog that you can
-  browse by in the left-hand list. Nothing leaves your computer except the one-time download of the picture-analysis model.</p>
-{#if status === null}
-  <p>Checking…</p>
-{:else}
-  <p class:err={status.models === 'error'}>{analysisLine(status)}</p>
-  {#if fraction !== null}<progress value={fraction} max="1"></progress>{/if}
-  {#if people}
-    <h3>People</h3>
-    <p>Pixie also looks for faces and groups them into people. The face models are a one-time download too.</p>
-    <p class:err={people.models === 'error'}>{peopleLine(people)}</p>
-    {#if peopleFraction !== null}<progress value={peopleFraction} max="1"></progress>{/if}
+<p>Pixie studies your photos on this computer. Nothing leaves your computer except the one-time download of the
+  picture-analysis and face models.</p>
+
+<div class="overall">
+  <div class="head"><b>{view.headline}</b></div>
+  {#if view.fraction !== null}<progress value={view.fraction} max="1"></progress>{/if}
+</div>
+<dl class="counters">
+  {#each view.counters as c (c.key)}
+    <div class="counter" class:done={c.done}><dt>{c.label}</dt><dd>{c.text}</dd></div>
+  {/each}
+</dl>
+{#each view.problems.filter((p) => p.kind === 'error') as p (p.key)}
+  <p class="err" role="alert">{p.text}</p>
+{/each}
+
+<div class="row">
+  {#if view.failed}
+    <button onclick={onretry}>Try again</button>
+  {:else if view.working || view.paused}
+    <button onclick={() => onpause(!view.paused)}>{view.paused ? 'Resume' : 'Pause'}</button>
   {/if}
-  {#if dupes}
-    <h3>Duplicates</h3>
-    <p>Pixie also looks for files that are in your folders more than once, so you can tidy them up on the Duplicates tab.</p>
-    <p>{dupLine(dupes)}</p>
-    {#if dupes.done < dupes.total && dupFraction !== null}<progress value={dupFraction} max="1"></progress>{/if}
-  {/if}
-  <div class="row">
-    {#if failed}
-      <button onclick={onretry}>Try again</button>
-    {:else if working || paused}
-      <button onclick={() => onpause(!paused)}>{paused ? 'Resume' : 'Pause'}</button>
-    {/if}
-  </div>
-{/if}
+</div>
+
+<h3>What each one is for</h3>
+<ul class="about">
+  <li><b>Auto tags</b>: labels such as Beach, Museum or Dog, which you can browse by in the left-hand list.</li>
+  <li><b>People</b>: finds the faces and groups them into people, so you can name them and browse by person.</li>
+  <li><b>Duplicates</b>: finds files that are in your folders more than once, so you can tidy them up on the Duplicates tab. Extra copies are hidden from Browse.</li>
+</ul>
 
 <style>
-  progress { display: block; width: 320px; max-width: 100%; margin: 4px 0 10px; }
-  .row { display: flex; gap: 8px; }
+  .overall { margin: 8px 0 10px; max-width: 420px; }
+  progress { display: block; width: 100%; margin: 4px 0 0; }
+  .counters { margin: 0 0 12px; display: grid; gap: 4px; max-width: 420px; }
+  .counter { display: flex; justify-content: space-between; gap: 12px; }
+  .counter dt { font-weight: 600; }
+  .counter dd { margin: 0; color: #555; }
+  .counter.done dd { color: #1d6b2a; }
+  .counter.done dd::after { content: ' ✓'; }
+  .row { display: flex; gap: 8px; margin-bottom: 14px; }
   .err { color: #b3261e; }
+  .about { color: #555; font-size: 13px; padding-left: 18px; max-width: 560px; }
+  .about li { margin-bottom: 4px; }
 </style>

@@ -1,4 +1,5 @@
-//! Finding copies of the same file. Reading every file is slow (on a network drive, very slow), so it is done in the
+//! Finding copies of the same video. (Photos are hashed by the analysis pipeline, which reads each one anyway to
+//! decode it; videos are never decoded, so they are hashed here.) Reading every file is slow (on a network drive, very slow), so it is done in the
 //! background in two steps: a cheap key for every file (its size plus its first and last 64 KB), then a hash of the
 //! whole file only for files whose cheap key another file shares.
 
@@ -16,13 +17,16 @@ use std::time::{Duration, Instant};
 const EDGE: u64 = 64 * 1024;
 const QUICK_BATCH: i64 = 64;
 const HASH_BATCH: i64 = 8;
-const IDLE: Duration = Duration::from_secs(5);
+/// The kind (`photos.kind`) of what this service hashes.
+const VIDEO: i64 = 1;
 const BUSY: Duration = Duration::from_secs(1);
 /// How soon a paused hasher notices it has been resumed.
 const PAUSED_POLL: Duration = Duration::from_millis(200);
 /// What a file that cannot be read gets as its quick key: it matches nothing and is not tried again until it changes.
 /// While hashing goes on, how often the hidden copies are brought up to date.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// The same when there is nothing to hash.
+const IDLE_REFRESH_EVERY: Duration = Duration::from_secs(30);
 /// While hashing goes on, how often the progress is worked out and reported.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 const UNREADABLE: &str = "!unreadable";
@@ -50,6 +54,23 @@ pub fn quick_key(path: &Path) -> io::Result<String> {
     Ok(format!("{size}:{}", hex(&h.finalize())))
 }
 
+/// `quick_key` for a file whose bytes are already in memory.
+pub fn quick_key_bytes(bytes: &[u8]) -> String {
+    let size = bytes.len() as u64;
+    let mut h = Sha256::new();
+    h.update(&bytes[..EDGE.min(size) as usize]);
+    if size > EDGE {
+        let tail = EDGE.min(size - EDGE) as usize;
+        h.update(&bytes[bytes.len() - tail..]);
+    }
+    format!("{size}:{}", hex(&h.finalize()))
+}
+
+/// `full_hash` for a file whose bytes are already in memory.
+pub fn full_hash_bytes(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
 /// The hash of the whole file.
 pub fn full_hash(path: &Path) -> io::Result<String> {
     let mut f = File::open(path)?;
@@ -67,8 +88,8 @@ pub fn full_hash(path: &Path) -> io::Result<String> {
 
 /// One round of work: give quick keys to a batch of files, or hash a batch of probable copies. Returns how many
 /// files it handled (0 means there is nothing to do).
-pub fn work_once(db: &Db, stop: &AtomicBool) -> usize {
-    let quick = db.photos_needing_quick_key(QUICK_BATCH).unwrap_or_default();
+pub fn work_once(db: &Db, stop: &AtomicBool, kind: i64) -> usize {
+    let quick = db.photos_needing_quick_key(kind, QUICK_BATCH).unwrap_or_default();
     if !quick.is_empty() {
         let mut n = 0;
         for (id, path) in quick {
@@ -83,7 +104,7 @@ pub fn work_once(db: &Db, stop: &AtomicBool) -> usize {
         return n;
     }
     let mut n = 0;
-    for (id, path) in db.photos_needing_hash(HASH_BATCH).unwrap_or_default() {
+    for (id, path) in db.photos_needing_hash(kind, HASH_BATCH).unwrap_or_default() {
         if stop.load(Ordering::Relaxed) {
             break;
         }
@@ -142,16 +163,19 @@ impl DupeService {
                     std::thread::sleep(BUSY);
                     continue;
                 }
-                let did = work_once(&db, &t_halt);
-                // Hide the extra copies from Browse: when a round of work ends, and every couple of seconds while it
-                // goes on, so Browse can refresh in batches instead of on every file.
-                if did == 0 || last_refresh.map_or(true, |t| t.elapsed() > REFRESH_EVERY) {
+                let did = work_once(&db, &t_halt, VIDEO);
+                // Hide the extra copies of videos from Browse: every couple of seconds while hashing goes on, and now
+                // and then when idle (the analysis pipeline keeps the flags of photos up to date itself). Browse then
+                // refreshes in batches instead of on every file.
+                let every = if did > 0 { REFRESH_EVERY } else { IDLE_REFRESH_EVERY };
+                if last_refresh.map_or(true, |t| t.elapsed() > every) {
                     let _ = db.refresh_dup_flags();
                     last_refresh = Some(Instant::now());
                 }
-                // The progress line: when a round of work ends, and about once a second while it goes on. Working it out
-                // reads the whole library, and the window waits whenever the database is busy.
-                if did == 0 || last_status.map_or(true, |t| t.elapsed() > STATUS_EVERY) {
+                // The progress line, about once a second (also while only the photo pipeline is working, so the window
+                // follows its hashing). Working it out reads the whole library, and the window waits whenever the
+                // database is busy.
+                if last_status.map_or(true, |t| t.elapsed() > STATUS_EVERY) {
                     last_status = Some(Instant::now());
                     if let Ok(mut s) = db.dup_status() {
                         s.paused = t_paused.load(Ordering::SeqCst);
@@ -161,7 +185,7 @@ impl DupeService {
                         }
                     }
                 }
-                std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { IDLE });
+                std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { STATUS_EVERY });
             }
         });
         DupeService { db, on_status, stopped, paused, halt, handle: Some(handle) }
@@ -195,8 +219,18 @@ impl Drop for DupeService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixie_core::{PhotoMeta, PhotoQuery};
+    use pixie_core::{MediaKind, PhotoMeta, PhotoQuery};
     use std::io::Write;
+
+    /// What the analysis pipeline does for every photo it reads: the keys, then the photo's duplicate group.
+    fn hash_photos(db: &Db) {
+        for w in db.photos_needing_work(None, None, 10_000).unwrap() {
+            let path = Path::new(&w.photo.path);
+            let (quick, full) = (quick_key(path).unwrap(), full_hash(path).unwrap());
+            db.set_file_keys(w.photo.id, &quick, Some(&full)).unwrap();
+            db.refresh_dup_group(&full).unwrap();
+        }
+    }
 
     fn file(dir: &Path, name: &str, bytes: &[u8]) -> String {
         let p = dir.join(name);
@@ -217,6 +251,17 @@ mod tests {
         assert_eq!(quick_key(Path::new(&a)).unwrap(), quick_key(Path::new(&c)).unwrap());
         assert_eq!(full_hash(Path::new(&a)).unwrap(), full_hash(Path::new(&b)).unwrap());
         assert_ne!(full_hash(Path::new(&a)).unwrap(), full_hash(Path::new(&c)).unwrap());
+    }
+
+    #[test]
+    fn keys_worked_out_from_bytes_equal_the_ones_read_from_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        for len in [0usize, 5, 65_536, 65_537, 100_000, 131_072, 300_000] {
+            let bytes: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(31) % 253) as u8).collect();
+            let path = file(d.path(), &format!("f{len}"), &bytes);
+            assert_eq!(quick_key_bytes(&bytes), quick_key(Path::new(&path)).unwrap(), "quick key of {len} bytes");
+            assert_eq!(full_hash_bytes(&bytes), full_hash(Path::new(&path)).unwrap(), "hash of {len} bytes");
+        }
     }
 
     #[test]
@@ -246,8 +291,7 @@ mod tests {
         let c = add("c.jpg", &look_alike);
         let lone = add("lone.jpg", b"different size");
 
-        let stop = AtomicBool::new(false);
-        while work_once(&db, &stop) > 0 {}
+        hash_photos(&db);
 
         let groups = db.duplicate_groups().unwrap();
         assert_eq!(groups.len(), 1);
@@ -256,7 +300,7 @@ mod tests {
         let s = db.dup_status().unwrap();
         assert_eq!((s.done, s.total, s.groups, s.extra_files, s.extra_bytes), (4, 4, 1, 1, big.len() as i64));
         // The look-alike was hashed (shares a quick key) but is alone; the lone file never needed a full hash.
-        assert!(db.photos_needing_hash(10).unwrap().is_empty());
+        assert!(db.photos_needing_hash(0, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -274,8 +318,7 @@ mod tests {
         let big_a = add("b1", &[7u8; 5000], 300);
         let big_b = add("b2", &[7u8; 5000], 400);
         add("solo", b"unique", 1);
-        let stop = AtomicBool::new(false);
-        while work_once(&db, &stop) > 0 {}
+        hash_photos(&db);
         let groups = db.duplicate_groups().unwrap();
         let ids: Vec<Vec<_>> = groups.iter().map(|g| g.photos.iter().map(|p| p.id).collect()).collect();
         assert_eq!(ids, vec![vec![big_a, big_b], vec![small_old, small_new]]);
@@ -295,8 +338,7 @@ mod tests {
         let middle = add("b.jpg", b"same", 200);
         let newest = add("c.jpg", b"same", 300);
         let other = add("other.jpg", b"different", 150);
-        let stop = AtomicBool::new(false);
-        while work_once(&db, &stop) > 0 {}
+        hash_photos(&db);
         db.refresh_dup_flags().unwrap();
         (d, db, folder, [oldest, middle, newest], other)
     }
@@ -387,22 +429,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let db = Db::open_in_memory().unwrap();
         let folder = db.add_folder(&d.path().to_string_lossy()).unwrap();
+        // Videos: this service hashes them (the analysis pipeline hashes photos as it reads them).
+        let video = PhotoMeta { kind: MediaKind::Video, ..PhotoMeta::default() };
         for name in ["a", "b", "c"] {
             let path = file(d.path(), name, b"same bytes");
-            db.upsert_photo(folder, &path, 10, 1, &PhotoMeta::default()).unwrap();
+            db.upsert_photo(folder, &path, 10, 1, &video).unwrap();
         }
+        let photo = file(d.path(), "p.jpg", b"same bytes");
+        db.upsert_photo(folder, &photo, 10, 1, &PhotoMeta::default()).unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::<DupStatus>::new()));
         let s2 = seen.clone();
         let svc = DupeService::start_with(db.clone(), Arc::new(|| false), Arc::new(move |s| s2.lock().unwrap().push(s)), true);
         std::thread::sleep(Duration::from_millis(400));
-        assert_eq!(db.dup_status().unwrap().done, 0, "nothing is looked at while paused");
+        assert_eq!(db.photos_needing_quick_key(1, 10).unwrap().len(), 3, "nothing is looked at while paused");
         assert!(svc.is_paused());
         svc.set_paused(false);
         let t = Instant::now();
         while db.dup_status().unwrap().groups == 0 && t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert_eq!(db.dup_status().unwrap().groups, 1);
+        assert_eq!(db.dup_status().unwrap().groups, 1, "the three videos are one set; the photo is left to the pipeline");
         svc.set_paused(true);
         assert!(seen.lock().unwrap().last().unwrap().paused, "pausing is reported at once");
         drop(svc);
@@ -418,8 +464,7 @@ mod tests {
             db.upsert_photo(folder, &path, 10, 1, &PhotoMeta::default()).unwrap()
         };
         let (a, b, c) = (add("a"), add("b"), add("c"));
-        let stop = AtomicBool::new(false);
-        while work_once(&db, &stop) > 0 {}
+        hash_photos(&db);
         assert_eq!(db.removable_copies(&[b, c]).unwrap().len(), 2);
         assert_eq!(db.removable_copies(&[a, b, c]).unwrap().len(), 0, "asking for every copy removes none");
         db.mark_removed(b).unwrap();
@@ -436,10 +481,9 @@ mod tests {
         let p2 = file(d.path(), "b", b"one");
         db.upsert_photo(folder, &p1, 3, 1, &PhotoMeta::default()).unwrap();
         db.upsert_photo(folder, &p2, 3, 1, &PhotoMeta::default()).unwrap();
-        let stop = AtomicBool::new(false);
-        while work_once(&db, &stop) > 0 {}
+        hash_photos(&db);
         assert_eq!(db.duplicate_groups().unwrap().len(), 1);
         db.upsert_photo(folder, &p2, 4, 2, &PhotoMeta::default()).unwrap(); // rescanned after an edit
-        assert_eq!(db.photos_needing_quick_key(10).unwrap().len(), 1);
+        assert_eq!(db.photos_needing_quick_key(0, 10).unwrap().len(), 1);
     }
 }

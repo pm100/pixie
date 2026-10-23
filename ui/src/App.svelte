@@ -6,7 +6,7 @@
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
-    listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, previewsPending, scanFolders, suggestFolders,
+    listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
@@ -36,7 +36,8 @@
   import { backgroundProgress } from './lib/backgroundProgress';
   import LoadModal from './lib/LoadModal.svelte';
   import Welcome from './lib/Welcome.svelte';
-  import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, type Phase } from './lib/loadFlow';
+  import { allSetSummary, phaseAfterScan, type Phase } from './lib/loadFlow';
+  import { analysisView, type LoadProgress } from './lib/analysisView';
   import { createStripFeed, type StripItem } from './lib/stripFeed';
   import { thumbUrl } from './lib/url';
   import { addFound, applyCount, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
@@ -598,7 +599,8 @@
   let looking = $state<string | null>(null);
   let strip = $state<Sample[]>([]); // the photos read most recently, oldest first
   let flowFolder = $state<string | null>(null);
-  let previews = $state({ left: 0, max: 0 });
+  /** How far the analysis has got for the photos of this load's folders (null until first counted). */
+  let flowLoad = $state<LoadProgress | null>(null);
   let facePeople = $state(0);
   let allSet = $state<ReturnType<typeof allSetSummary> | null>(null);
   let flowProblems: string[] = []; // folders that could not be read during this flow, for the end screen
@@ -617,7 +619,10 @@
       img.onerror = () => resolve(false);
       img.src = thumbUrl('grid', item.id, item.mtime, item.size);
     });
-  const flowLines = $derived(analysingLines(analysis, peopleState, previews, facePeople, flowPhotos, dupPass(dupState)));
+  /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
+   *  Settings, Picture analysis (which counts the whole library). */
+  const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad }));
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -651,8 +656,9 @@
   async function beginLoad(paths: string[]) {
     stopWelcomeSubs();
     message = '';
+    flowLoad = null;
     flowStopped = false; flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
-    strip = []; flowFolder = null; allSet = null; flowProblems = []; previews = { left: 0, max: 0 };
+    strip = []; flowFolder = null; allSet = null; flowProblems = [];
     feed?.stop();
     feed = createStripFeed({ load: preload, onShow: (item) => (strip = [...strip.slice(-4), item]), minGapMs: 100 });
     scanning = true; seen = 0; indexed = 0; toIndex = 0; scanFolder = null;
@@ -729,15 +735,16 @@
   const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState, dupes: dupPass(dupState) }));
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
-  // While analysing: poll the preview queue and the people count once a second.
+  // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
+  // Picture analysis is showing, count the people found. (The analyses' states arrive as events.)
   $effect(() => {
-    if (phase !== 'analysing') return;
-    let max = 0;
+    const flow = phase === 'analysing';
+    if (!flow && !(tab === 'settings' && settingsPage === 'analysis')) return;
     const tick = async () => {
       try {
-        const left = await previewsPending();
-        max = Math.max(max, left);
-        previews = { left, max };
+        // Counted from the folders' own photos, so duplicates found among them (or hiding older photos elsewhere) cannot
+        // throw the totals off.
+        if (flow && flowIds.length > 0) flowLoad = await loadProgress(flowIds);
         facePeople = (await listFacePeople(false)).length;
       } catch { /* the next tick tries again */ }
     };
@@ -745,15 +752,22 @@
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   });
-  // The step ends when every line is done (each pass has counted the photos the scan found, so a stale status cannot
+  // The step ends when every counter is done (each analysis has counted the photos the scan found, so a stale status cannot
   // end it early). The end screen is prepared first and swapped in only when ready, so it never flashes or blinks.
   $effect(() => {
-    if (phase !== 'analysing' || finishing || !analysingFinished(flowLines)) return;
+    if (phase !== 'analysing' || finishing || !flowView.finished) return;
     finishing = true;
     void buildAllSet().then(() => {
       if (phase === 'analysing') phase = 'allset'; // still here: not sent to the background meanwhile
     });
   });
+
+  /** The end of the load flow: leave it for the Browse tab (in the library view, not the map), at the top of the list. */
+  function startBrowsing() {
+    phase = 'off';
+    pickTab('browse');
+    refresh(true).catch((e) => (message = String(e)));
+  }
 
   async function removeFolderAndRefresh(id: number) {
     await removeFolder(id);
@@ -942,7 +956,7 @@
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   onrescan={(id, full) => runScan(id, full)}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
-                  {analysis} people={peopleState} dupes={dupState} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
+                  analysis={settingsView} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>
@@ -956,15 +970,15 @@
   <Welcome {rows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
            onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
-  <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} lines={flowLines} notice={message}
+  <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowView} notice={message}
              onstop={() => { flowStopped = true; cancelScan(); }} onbackground={carryOnInBackground}
              onretry={() => analysisRetry()} onresume={() => analysisSetPaused(false)} />
 {:else if phase === 'background'}
   <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}
-                  onbrowse={() => { phase = 'off'; refresh(true).catch((e) => (message = String(e))); }} />
+                  onbrowse={startBrowsing} />
 {:else if phase === 'allset' && allSet}
   <AllSet summary={allSet} onpeople={() => { phase = 'off'; pickTab('faces'); }}
-          onbrowse={() => { phase = 'off'; refresh(true).catch((e) => (message = String(e))); }}
+          onbrowse={startBrowsing}
           onadd={() => { phase = 'off'; void chooseFolder(); }} />
 {/if}
 

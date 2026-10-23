@@ -1,12 +1,10 @@
-use crate::face_worker::{FaceProgressFn, FaceWorker};
 use crate::faces::FaceEngine;
 use crate::models::{ensure_models, Downloader, ModelFile};
-use crate::worker::ScanningFn;
+use crate::pipeline::PhotoPipeline;
 use pixie_index::Db;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
 
 pub type FaceLoader = Arc<dyn Fn(&Path) -> Result<Arc<dyn FaceEngine>, String> + Send + Sync>;
 
@@ -31,9 +29,9 @@ pub struct PeopleConfig {
     pub files: &'static [ModelFile],
     pub downloader: Arc<dyn Downloader>,
     pub loader: FaceLoader,
-    pub scanning: ScanningFn,
+    /// The pipeline that does the work: this service gives it the models once they are loaded, and shows its progress.
+    pub pipeline: Arc<PhotoPipeline>,
     pub on_status: Arc<dyn Fn(PeopleStatus) + Send + Sync>,
-    pub poll: Duration,
 }
 
 struct State {
@@ -44,9 +42,6 @@ struct State {
     paused: bool,
     loading: bool,
     loaded: bool,
-    worker: Option<Arc<FaceWorker>>,
-    /// What the worker last said was wrong with the engine, if anything.
-    worker_error: Option<String>,
 }
 
 struct Inner {
@@ -74,7 +69,7 @@ impl Inner {
             done,
             total,
             paused: s.paused,
-            error: s.error.clone().or_else(|| s.worker_error.clone()),
+            error: s.error.clone().or_else(|| self.cfg.pipeline.face_error()),
         }
     }
 
@@ -99,7 +94,6 @@ impl Inner {
 
     fn setup_inner(self: &Arc<Self>) {
         let mut last_pct = u64::MAX;
-        let weak = Arc::downgrade(self);
         let fetched = ensure_models(&self.cfg.dir, self.cfg.files, &*self.cfg.downloader, &mut |d, t| {
             {
                 let mut s = self.lock();
@@ -113,35 +107,20 @@ impl Inner {
             }
             true
         });
-        let result = fetched.and_then(|_| (self.cfg.loader)(&self.cfg.dir)).map(|engine| {
-            let progress: FaceProgressFn = Arc::new(move |p| {
-                if let Some(i) = Weak::upgrade(&weak) {
-                    i.lock().worker_error = p.error;
-                    i.emit();
-                }
-            });
-            Arc::new(FaceWorker::start_with(self.cfg.db.clone(), engine, self.cfg.scanning.clone(), progress, self.cfg.poll))
-        });
-        let started = {
+        let result = fetched.and_then(|_| (self.cfg.loader)(&self.cfg.dir));
+        {
             let mut s = self.lock();
             s.loading = false;
             match result {
-                Ok(worker) => {
+                Ok(engine) => {
                     s.models = "ready";
                     s.loaded = true;
-                    s.worker = Some(worker.clone());
-                    Some((worker, s.paused))
+                    self.cfg.pipeline.set_face_engine(engine); // the pipeline now scans the photos that have not been
                 }
                 Err(e) => {
                     s.models = "error";
                     s.error = Some(e);
-                    None
                 }
-            }
-        };
-        if let Some((worker, paused)) = started {
-            if paused {
-                worker.set_paused(true); // asked to pause before the worker existed
             }
         }
         self.emit();
@@ -161,11 +140,15 @@ impl PeopleService {
                     paused: false,
                     loading: false,
                     loaded: false,
-                    worker: None,
-                    worker_error: None,
                 }),
             }),
         };
+        let weak = Arc::downgrade(&svc.inner);
+        svc.inner.cfg.pipeline.add_reporter(Arc::new(move || {
+            if let Some(i) = Weak::upgrade(&weak) {
+                i.emit();
+            }
+        }));
         svc.begin();
         svc
     }
@@ -196,31 +179,24 @@ impl PeopleService {
         self.begin();
     }
 
+    /// The one Pause: the pipeline stops taking photos (for every step), and the window is told.
     pub fn set_paused(&self, paused: bool) {
-        let worker = {
-            let mut s = self.inner.lock();
-            s.paused = paused;
-            s.worker.clone()
-        };
-        match worker {
-            Some(w) => w.set_paused(paused),
-            None => self.inner.emit(),
-        }
+        self.inner.lock().paused = paused;
+        self.inner.cfg.pipeline.set_paused(paused);
     }
 
     /// New photos may have arrived (a scan finished): wake an idle worker.
     pub fn kick(&self) {
-        let worker = self.inner.lock().worker.clone();
-        if let Some(w) = worker {
-            w.kick();
-        }
+        self.inner.cfg.pipeline.kick();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use crate::faces::FakeFaceEngine;
+    use crate::pipeline::PipelineConfig;
     use image::{Rgb, RgbImage};
     use pixie_core::PhotoMeta;
     use sha2::{Digest, Sha256};
@@ -262,6 +238,15 @@ mod tests {
         f()
     }
 
+
+    /// The pipeline the service hands its model to, working on the photos in `dir`.
+    fn pipeline(db: &Db, dir: &std::path::Path) -> Arc<PhotoPipeline> {
+        let mut cfg = PipelineConfig::new(db.clone(), dir.join("thumbs"), Arc::new(|| false));
+        cfg.poll = Duration::from_millis(10);
+        cfg.workers = 2;
+        Arc::new(PhotoPipeline::start(cfg))
+    }
+
     struct Rig {
         svc: PeopleService,
         db: Db,
@@ -278,7 +263,7 @@ mod tests {
         let f = db.add_folder(pdir.path().to_str().unwrap()).unwrap();
         for i in 0..photos {
             let p = pdir.path().join(format!("{i}.png"));
-            RgbImage::from_pixel(8, 8, Rgb([250, 0, 0])).save(&p).unwrap();
+            RgbImage::from_pixel(8, 8, Rgb([250, i as u8, 0])).save(&p).unwrap(); // each different: identical files are duplicates
             db.upsert_photo(f, p.to_str().unwrap(), 1, 1, &PhotoMeta::default()).unwrap();
         }
         let data = b"model-bytes".to_vec();
@@ -292,9 +277,8 @@ mod tests {
             files: files(&data),
             downloader: dl.clone(),
             loader,
-            scanning: Arc::new(|| false),
+            pipeline: pipeline(&db, pdir.path()),
             on_status: Arc::new(move |s| ev.lock().unwrap().push(s)),
-            poll: Duration::from_millis(10),
         });
         Rig { svc, db, dl, events, _models: models, _photos: pdir }
     }

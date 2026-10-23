@@ -7,8 +7,7 @@
   import { onMount } from 'svelte';
   import { isDebugBuild, openDataFolder, type FolderInfo } from './api';
   import AnalysisSettings from './AnalysisSettings.svelte';
-  import type { DupStatus } from './dupes';
-  import type { AnalysisStatus } from './analysis';
+  import type { AnalysisView } from './analysisView';
   import PhotoFolders from './PhotoFolders.svelte';
   import TripSettings from './TripSettings.svelte';
   import type { TripPrefs } from './trips';
@@ -16,13 +15,13 @@
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, people, dupes, onanalysispause, onanalysisretry }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
     folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     onrescan: (id: number, full: boolean) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
-    analysis: AnalysisStatus | null; people: AnalysisStatus | null; dupes: DupStatus | null; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
+    analysis: AnalysisView; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
@@ -38,7 +37,7 @@
     isDebugBuild().then((d) => (debug = d)).catch(() => {});
   });
   // The one Pause covers Auto tags, faces and the duplicate check; the menu says so when it is on.
-  const analysisPaused = $derived((analysis?.paused ?? false) || (people?.paused ?? false) || (dupes?.paused ?? false));
+  const analysisPaused = $derived(analysis.paused);
   const labelled = (p: { id: SettingsPage; label: string }) => (p.id === 'analysis' && analysisPaused ? `${p.label} (paused)` : p.label);
   const shownPages = $derived(debug ? [...pages, { id: 'developer' as SettingsPage, label: 'Developer' }] : pages);
   async function openData() {
@@ -69,7 +68,7 @@
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
-      <AnalysisSettings status={analysis} {people} {dupes} onpause={onanalysispause} onretry={onanalysisretry} />
+      <AnalysisSettings view={analysis} onpause={onanalysispause} onretry={onanalysisretry} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>

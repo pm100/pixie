@@ -39,13 +39,13 @@ describe('backgroundProgress', () => {
   it('counts the duplicate check in the one overall percentage, without a count of its own', () => {
     const p = backgroundProgress({ ...idle, analysis: status({ done: 10000, total: 10000 }), people: status({ done: 10000, total: 10000 }), dupes: status({ done: 2500, total: 10000 }) })!;
     expect(p.state).toBe('working');
-    expect(p.text).toBe('Analysing photos 25%');
+    expect(p.text).toBe('Analysing photos 75%'); // two analyses are done, the third a quarter of the way
     expect(p.detail).toBe('Still working on: Duplicates');
   });
 
-  it('counts only the passes that have work left, once one of them is finished', () => {
+  it('counts a finished pass as done work, so the percentage never jumps back when one finishes', () => {
     const p = backgroundProgress({ ...idle, analysis: status({ done: 10000, total: 10000 }), people: status({ done: 2500, total: 10000 }) })!;
-    expect(p.fraction).toBeCloseTo(0.25);
+    expect(p.fraction).toBeCloseTo(0.625);
     expect(p.detail).toBe('Still working on: Faces');
   });
 

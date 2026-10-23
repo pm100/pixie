@@ -14,7 +14,15 @@ fn open(path: &Path) -> Result<HeifContext<'static>> {
 
 /// Decode the primary image. libheif applies rotation/mirroring transforms itself.
 pub fn decode(path: &Path) -> Result<DynamicImage> {
-    let ctx = open(path)?;
+    decode_context(&open(path)?)
+}
+
+/// The same, for a file whose bytes are already in memory.
+pub fn decode_bytes(bytes: &[u8]) -> Result<DynamicImage> {
+    decode_context(&HeifContext::read_from_bytes(bytes).map_err(err)?)
+}
+
+fn decode_context(ctx: &HeifContext) -> Result<DynamicImage> {
     let handle = ctx.primary_image_handle().map_err(err)?;
     let img = LibHeif::new()
         .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)

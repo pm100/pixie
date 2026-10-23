@@ -1,4 +1,5 @@
 use crate::align::{align, sface_tensor};
+use crate::session_pool::pick;
 use crate::vectors::normalize;
 use crate::yunet::{decode, letterbox, nms, to_faces, Face, Raw, INPUT};
 use image::DynamicImage;
@@ -6,7 +7,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::Mutex;
 
 /// Identifies the detector + recogniser pair; stored with every scan so new models rescan the library.
 pub const FACES_VERSION: &str = "yunet2023mar-sface2021dec-1";
@@ -68,18 +69,6 @@ pub struct FaceModels {
     yunet: Vec<Mutex<Session>>,
     sface: Vec<Mutex<Session>>,
     next: AtomicUsize,
-}
-
-/// A session nobody is using, or else the next one in turn once it is free.
-fn pick<'a>(pool: &'a [Mutex<Session>], start: usize) -> MutexGuard<'a, Session> {
-    for k in 0..pool.len() {
-        match pool[(start + k) % pool.len()].try_lock() {
-            Ok(g) => return g,
-            Err(TryLockError::Poisoned(p)) => return p.into_inner(),
-            Err(TryLockError::WouldBlock) => {}
-        }
-    }
-    pool[start % pool.len()].lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl FaceModels {

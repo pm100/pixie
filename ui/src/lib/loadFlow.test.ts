@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allSetSummary, analysingFinished, analysingLines, phaseAfterScan, startLabel } from './loadFlow';
-import type { AnalysisStatus } from './analysis';
-
-const status = (o: Partial<AnalysisStatus> = {}): AnalysisStatus => ({
-  models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, error: null, ...o,
-});
-const idle = { left: 0, max: 0 };
-const line = (lines: ReturnType<typeof analysingLines>, key: string) => lines.find((l) => l.key === key)!;
+import { allSetSummary, phaseAfterScan, startLabel } from './loadFlow';
 
 describe('phaseAfterScan', () => {
   it('a stopped scan ends the flow and Browse opens with what was found', () => {
@@ -20,102 +13,6 @@ describe('phaseAfterScan', () => {
   });
   it('finding only videos has nothing to analyse, so it goes straight to the end screen', () => {
     expect(phaseAfterScan({ stopped: false, found: 12, photos: 0 })).toBe('allset');
-  });
-});
-
-describe('analysingLines with duplicates', () => {
-  it('has a Duplicates line only once its count is known, and it is done when everything is looked at', () => {
-    expect(analysingLines(status(), status(), idle, 0).map((l) => l.key)).toEqual(['previews', 'search', 'faces']);
-    const half = analysingLines(status(), status(), idle, 0, 0, status({ done: 5, total: 10 }));
-    expect(half.map((l) => l.key)).toEqual(['previews', 'search', 'faces', 'dupes']);
-    expect(half[3].text).toBe('5 of 10');
-    expect(half[3].done).toBe(false);
-    expect(analysingLines(status(), status(), idle, 0, 0, status({ done: 10, total: 10 }))[3].done).toBe(true);
-  });
-});
-
-describe('analysingLines', () => {
-  it('has the three lines in order, each saying why it matters', () => {
-    const lines = analysingLines(status(), status(), idle, 0);
-    expect(lines.map((l) => l.key)).toEqual(['previews', 'search', 'faces']);
-    expect(lines.map((l) => l.title)).toEqual(['Preparing previews', 'Understanding your photos', 'Finding faces']);
-    expect(lines.every((l) => l.why.length > 10)).toBe(true);
-    expect(lines[1].why).toContain('Auto tags'); // the term the Browse list uses, so the user knows what it means
-    expect(lines[1].why.toLowerCase()).not.toContain('search'); // there is no text search for now
-  });
-  it('shows a model download in the same line, with its fraction, until counting starts', () => {
-    const lines = analysingLines(status({ models: 'downloading', model_done: 62, model_total: 100 }), status({ models: 'downloading', model_done: 1, model_total: 4 }), idle, 0);
-    expect(line(lines, 'search').text).toBe('Getting the picture-analysis model… 62%');
-    expect(line(lines, 'search').fraction).toBeCloseTo(0.62);
-    expect(line(lines, 'faces').text).toBe('Getting the face model… 25%');
-    expect(line(lines, 'search').done).toBe(false);
-  });
-  it('counts photos once the model is ready, and the faces line says how many people so far', () => {
-    const lines = analysingLines(status({ done: 3214, total: 14230 }), status({ done: 1108, total: 14230 }), idle, 14);
-    expect(line(lines, 'search').text).toBe('3,214 of 14,230');
-    expect(line(lines, 'search').fraction).toBeCloseTo(3214 / 14230);
-    expect(line(lines, 'faces').text).toBe('1,108 of 14,230 · 14 people so far');
-    expect(analysingLines(status(), status({ done: 1, total: 2 }), idle, 1).find((l) => l.key === 'faces')!.text).toBe('1 of 2 · 1 person so far');
-  });
-  it('a failed model is an error line with the reason, not done', () => {
-    const l = line(analysingLines(status({ models: 'error', error: 'offline' }), status(), idle, 0), 'search');
-    expect(l.error).toBe('Could not get the picture-analysis model: offline');
-    expect(l.done).toBe(false);
-  });
-  it('a model that is ready but failing on photos is an error line too', () => {
-    const l = line(analysingLines(status({ done: 1, total: 5, error: 'decoder' }), status(), idle, 0), 'search');
-    expect(l.error).toBe('Picture analysis is having trouble: decoder');
-  });
-  it('paused shows paused and is not done', () => {
-    const l = line(analysingLines(status({ done: 10, total: 100, paused: true }), status(), idle, 0), 'search');
-    expect(l.paused).toBe(true);
-    expect(l.done).toBe(false);
-    expect(l.text).toBe('Paused at 10 of 100');
-  });
-  it('previews count down from the largest queue seen', () => {
-    const l = line(analysingLines(status(), status(), { left: 250, max: 1000 }, 0), 'previews');
-    expect(l.text).toBe('750 of 1,000');
-    expect(l.fraction).toBeCloseTo(0.75);
-    expect(l.done).toBe(false);
-    expect(line(analysingLines(status(), status(), { left: 0, max: 1000 }, 0), 'previews').done).toBe(true);
-  });
-  it('a line is done when everything is analysed, or when there is nothing to analyse', () => {
-    expect(line(analysingLines(status({ done: 5, total: 5 }), status({ total: 0 }), idle, 0), 'search').done).toBe(true);
-    expect(line(analysingLines(status({ done: 5, total: 5 }), status({ total: 0 }), idle, 0), 'faces').done).toBe(true);
-  });
-  it('a missing status (not heard yet) is not done', () => {
-    const lines = analysingLines(null, null, idle, 0);
-    expect(line(lines, 'search').done).toBe(false);
-    expect(analysingFinished(lines)).toBe(false);
-  });
-});
-
-describe('analysingLines when the scan found photos', () => {
-  const stale = status({ done: 0, total: 0 }); // the status still describes the library from before the scan
-  it('a pass that has not yet seen the new photos is not done, however empty its status looks', () => {
-    const lines = analysingLines(stale, stale, idle, 0, 5000);
-    expect(line(lines, 'search').done).toBe(false);
-    expect(line(lines, 'faces').done).toBe(false);
-    expect(line(lines, 'search').text).toBe('Getting ready…');
-    expect(analysingFinished(lines)).toBe(false);
-  });
-  it('a pass that has seen the new photos and finished them is done', () => {
-    const lines = analysingLines(status({ done: 5000, total: 5000 }), status({ done: 5200, total: 5200 }), idle, 3, 5000);
-    expect(line(lines, 'search').done && line(lines, 'faces').done).toBe(true);
-  });
-  it('a pass that has seen them but is still working is not done', () => {
-    expect(line(analysingLines(status({ done: 10, total: 5000 }), status(), idle, 0, 5000), 'search').done).toBe(false);
-  });
-  it('with nothing expected, an empty status really is nothing to do', () => {
-    expect(line(analysingLines(status(), status(), idle, 0, 0), 'search').done).toBe(true);
-  });
-});
-
-describe('analysingFinished', () => {
-  it('needs every line done', () => {
-    const ok = analysingLines(status({ done: 2, total: 2 }), status({ done: 2, total: 2 }), idle, 0);
-    expect(analysingFinished(ok)).toBe(true);
-    expect(analysingFinished(analysingLines(status({ done: 1, total: 2 }), status({ done: 2, total: 2 }), idle, 0))).toBe(false);
   });
 });
 

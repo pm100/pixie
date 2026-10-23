@@ -25,16 +25,24 @@ fn ascii(e: &exif::Exif, tag: exif::Tag) -> Option<String> {
     }
 }
 
+fn orientation_of(exif: Option<exif::Exif>) -> u16 {
+    exif.and_then(|e| {
+        e.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+            .and_then(|f| f.value.get_uint(0))
+    })
+    .map(|v| v as u16)
+    .filter(|v| (1..=8).contains(v))
+    .unwrap_or(1)
+}
+
 /// EXIF orientation 1..=8; 1 when absent or unreadable.
 pub fn read_orientation(path: &Path) -> u16 {
-    read_exif(path)
-        .and_then(|e| {
-            e.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-                .and_then(|f| f.value.get_uint(0))
-        })
-        .map(|v| v as u16)
-        .filter(|v| (1..=8).contains(v))
-        .unwrap_or(1)
+    orientation_of(read_exif(path))
+}
+
+/// The same, for a file whose bytes are already in memory.
+pub fn read_orientation_bytes(bytes: &[u8]) -> u16 {
+    orientation_of(exif::Reader::new().read_from_container(&mut std::io::Cursor::new(bytes)).ok())
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {

@@ -20,6 +20,9 @@ pub struct AppState {
     pub queue: pixie_index::ScanQueue,
     pub analysis: Arc<pixie_analysis::service::AnalysisService>,
     pub people: Arc<pixie_analysis::people_service::PeopleService>,
+    /// Reads, hashes, decodes and analyses every photo once. Only kept alive here: the services drive it.
+    #[allow(dead_code)]
+    pub pipeline: Arc<pixie_analysis::pipeline::PhotoPipeline>,
     /// Hashes files in the background so copies can be found; stops when the app state is dropped.
     pub dupes: Arc<pixie_index::DupeService>,
 }

@@ -1,6 +1,7 @@
-use crate::meta::read_orientation;
+use crate::meta::{read_orientation, read_orientation_bytes};
 use image::DynamicImage;
 use pixie_core::{PixieError, Result};
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 fn is_heif(path: &Path) -> bool {
@@ -50,7 +51,11 @@ fn is_jpeg(path: &Path) -> bool {
 /// None for anything it cannot handle (CMYK, 16-bit, corrupt...); callers fall back.
 fn decode_jpeg_scaled(path: &Path, edge: u32) -> Option<DynamicImage> {
     let file = std::fs::File::open(path).ok()?;
-    let mut dec = jpeg_decoder::Decoder::new(std::io::BufReader::new(file));
+    decode_jpeg_scaled_from(std::io::BufReader::new(file), edge)
+}
+
+fn decode_jpeg_scaled_from<R: Read>(reader: R, edge: u32) -> Option<DynamicImage> {
+    let mut dec = jpeg_decoder::Decoder::new(reader);
     dec.read_info().ok()?;
     let e = edge.min(u16::MAX as u32) as u16;
     dec.scale(e, e).ok()?;
@@ -75,6 +80,27 @@ pub fn decode_scaled(path: &Path, edge: u32) -> Result<DynamicImage> {
     decode_oriented(path)
 }
 
+/// `decode_scaled` for a file the caller has already read: the same picture, with no second read of the file. `path`
+/// is only used for its extension (HEIC, JPEG).
+pub fn decode_scaled_bytes(path: &Path, bytes: &[u8], edge: u32) -> Result<DynamicImage> {
+    if is_heif(path) {
+        #[cfg(feature = "heic")]
+        return crate::heic::decode_bytes(bytes);
+        #[cfg(not(feature = "heic"))]
+        return Err(PixieError::Unsupported("HEIC support not compiled in".into()));
+    }
+    if is_jpeg(path) {
+        if let Some(img) = decode_jpeg_scaled_from(Cursor::new(bytes), edge) {
+            return Ok(apply_orientation(img, read_orientation_bytes(bytes)));
+        }
+    }
+    let img = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()?
+        .decode()
+        .map_err(|e| PixieError::Image(e.to_string()))?;
+    Ok(apply_orientation(img, read_orientation_bytes(bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +116,35 @@ mod tests {
             }
         }
         DynamicImage::ImageRgb8(i)
+    }
+
+    #[test]
+    fn decoding_from_bytes_gives_the_same_picture_as_decoding_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("plain.jpg", jpeg(800, 400)),
+            ("rotated.jpg", jpeg_with_exif(400, 200, 6, None)),
+            ("big.jpg", jpeg(3000, 2000)),
+        ];
+        for (name, bytes) in cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            for edge in [256, 1024] {
+                let a = decode_scaled(&path, edge).unwrap();
+                let b = decode_scaled_bytes(&path, &bytes, edge).unwrap();
+                assert_eq!(a.dimensions(), b.dimensions(), "{name} at {edge}");
+                assert_eq!(a.to_rgb8().into_raw(), b.to_rgb8().into_raw(), "{name} at {edge}");
+            }
+        }
+    }
+
+    #[test]
+    fn decoding_a_png_from_bytes_and_rejecting_html_named_jpg() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut png = Vec::new();
+        two_tone().write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        assert_eq!(decode_scaled_bytes(&dir.path().join("a.png"), &png, 256).unwrap().dimensions(), (4, 2));
+        assert!(decode_scaled_bytes(&dir.path().join("page.jpg"), b"<!DOCTYPE HTML><html></html>", 256).is_err());
     }
 
     #[test]

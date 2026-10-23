@@ -392,6 +392,26 @@ pub struct DupStatus {
     pub paused: bool,
 }
 
+/// How far the analysis has got for some folders, counted directly from their photos (so it does not depend on what
+/// else is in the library, or on hidden duplicates shrinking the library's totals). Photos only: videos are not here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadProgress {
+    /// Every live photo in the folders, hidden duplicates included.
+    pub photos: i64,
+    /// Those Browse shows (not hidden extra copies): what Auto tags and faces work on.
+    pub shown: i64,
+    /// Photos whose file has been read and hashed (or found unreadable).
+    pub hashed: i64,
+    /// Shown photos with their Auto tags vector.
+    pub tagged: i64,
+    /// Shown photos scanned for faces.
+    pub scanned: i64,
+    /// Different people in the shown photos.
+    pub people: i64,
+    /// Extra copies in the sets of identical files that include one of these photos.
+    pub duplicates: i64,
+}
+
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,
 /// as fractions (0..1) of the upright photo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

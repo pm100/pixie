@@ -1,20 +1,21 @@
 <script lang="ts">
   import FlowStage from './FlowStage.svelte';
-  import type { Line } from './loadFlow';
+  import type { AnalysisView } from './analysisView';
   import { readFraction, scanText, type ScanState } from './scanProgress';
   import type { StripItem } from './stripFeed';
   import { thumbUrl } from './url';
 
   type Sample = StripItem;
 
-  let { phase, scan, folder, strip, lines, notice = '', onstop, onbackground, onretry, onresume }: {
+  let { phase, scan, folder, strip, view, notice = '', onstop, onbackground, onretry, onresume }: {
     phase: 'scanning' | 'analysing';
     scan: ScanState;
     /** The folder being read, if known. */
     folder: string | null;
     /** The photos read most recently, oldest first. */
     strip: Sample[];
-    lines: Line[];
+    /** The one bar and the counters of the analysing step. */
+    view: AnalysisView;
     /** A problem to show, such as a folder that could not be read; the scan carries on with the others. */
     notice?: string;
     onstop: () => void; onbackground: () => void; onretry: () => void; onresume: () => void;
@@ -54,19 +55,23 @@
     <h1>Pictures loaded — now analysing</h1>
     <p class="sub">Pixie is now looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
     {#if notice}<p class="err" role="alert">{notice}</p>{/if}
-    {#each lines as l (l.key)}
-      <div class="line">
-        <div class="head"><b>{l.title}</b><span class="t">{l.text}</span></div>
-        {#if l.fraction !== null}
-          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(l.fraction * 100)}><div style="width: {Math.round(l.fraction * 100)}%"></div></div>
-        {/if}
-        <div class="why">{l.why}</div>
-        {#if l.error}
-          <div class="err" role="alert">{l.error} <button onclick={onretry}>Retry</button></div>
-        {:else if l.paused}
-          <div class="err" role="status">Paused. <button onclick={onresume}>Resume</button></div>
-        {/if}
-      </div>
+    <div class="overall">
+      <div class="head"><b>{view.headline}</b></div>
+      {#if view.fraction !== null}
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(view.fraction * 100)}><div style="width: {Math.round(view.fraction * 100)}%"></div></div>
+      {/if}
+    </div>
+    <dl class="counters">
+      {#each view.counters as c (c.key)}
+        <div class="counter" class:done={c.done}><dt>{c.label}</dt><dd>{c.text}</dd></div>
+      {/each}
+    </dl>
+    {#each view.problems as p (p.key + p.kind)}
+      {#if p.kind === 'error'}
+        <div class="err" role="alert">{p.text} <button onclick={onretry}>Retry</button></div>
+      {:else}
+        <div class="err" role="status">{p.text} <button onclick={onresume}>Resume</button></div>
+      {/if}
     {/each}
     <p class="note">This can take a while for a big library. You don't have to wait here.</p>
   {/if}
@@ -89,10 +94,14 @@
   .r2 { width: 60px; height: 80px; opacity: .7; order: 4; }
   .r4 { width: 40px; height: 56px; opacity: .45; order: 5; }
   .name { text-align: center; color: #777; font-size: 12px; margin: 0; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .line { margin-bottom: 16px; }
+  .overall { margin: 4px 0 14px; }
   .head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
-  .t { color: #555; white-space: nowrap; }
-  .why { color: #777; font-size: 12px; margin-top: 4px; }
+  .counters { margin: 0 0 14px; display: grid; gap: 4px; }
+  .counter { display: flex; justify-content: space-between; gap: 12px; }
+  .counter dt { font-weight: 600; }
+  .counter dd { margin: 0; color: #555; white-space: nowrap; }
+  .counter.done dd { color: #1d6b2a; }
+  .counter.done dd::after { content: ' ✓'; }
   .err { margin-top: 6px; color: #b00020; font-size: 13px; }
   .err button { margin-left: 8px; padding: 2px 10px; }
   .note { color: #666; font-size: 13px; }

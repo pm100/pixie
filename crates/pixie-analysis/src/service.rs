@@ -1,13 +1,12 @@
 use crate::embedder::Embedder;
 use crate::models::{ensure_models, Downloader, ModelFile};
 use crate::search::{self, SEARCH_FLOOR, SEARCH_LIMIT};
-use crate::worker::{ProgressFn, ScanningFn, Worker};
+use crate::pipeline::PhotoPipeline;
 use pixie_index::Db;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Arc<dyn Embedder>, String> + Send + Sync>;
 
@@ -31,9 +30,9 @@ pub struct Config {
     pub files: &'static [ModelFile],
     pub downloader: Arc<dyn Downloader>,
     pub loader: Loader,
-    pub scanning: ScanningFn,
+    /// The pipeline that does the work: this service gives it the model once it is loaded, and shows its progress.
+    pub pipeline: Arc<PhotoPipeline>,
     pub on_status: Arc<dyn Fn(AnalysisStatus) + Send + Sync>,
-    pub poll: Duration,
 }
 
 struct State {
@@ -44,9 +43,6 @@ struct State {
     paused: bool,
     loading: bool,
     embedder: Option<Arc<dyn Embedder>>,
-    worker: Option<Arc<Worker>>,
-    /// What the worker last said was wrong with the embedder, if anything.
-    worker_error: Option<String>,
 }
 
 /// Every stored vector, with the (analysed, total) counts they were loaded at.
@@ -82,7 +78,7 @@ impl Inner {
             done,
             total,
             paused: s.paused,
-            error: s.error.clone().or_else(|| s.worker_error.clone()),
+            error: s.error.clone().or_else(|| self.cfg.pipeline.embed_error()),
         }
     }
 
@@ -108,7 +104,6 @@ impl Inner {
 
     fn setup_inner(self: &Arc<Self>) {
         let mut last_pct = u64::MAX;
-        let weak = Arc::downgrade(self);
         let fetched = ensure_models(&self.cfg.dir, self.cfg.files, &*self.cfg.downloader, &mut |d, t| {
             {
                 let mut s = self.lock();
@@ -122,42 +117,20 @@ impl Inner {
             }
             true
         });
-        let result = fetched.and_then(|_| (self.cfg.loader)(&self.cfg.dir)).map(|embedder| {
-            let progress: ProgressFn = Arc::new(move |p| {
-                if let Some(i) = Weak::upgrade(&weak) {
-                    i.lock().worker_error = p.error;
-                    i.emit();
-                }
-            });
-            let worker = Arc::new(Worker::start_with(
-                self.cfg.db.clone(),
-                embedder.clone(),
-                self.cfg.scanning.clone(),
-                progress,
-                self.cfg.poll,
-            ));
-            (embedder, worker)
-        });
-        let started = {
+        let result = fetched.and_then(|_| (self.cfg.loader)(&self.cfg.dir));
+        {
             let mut s = self.lock();
             s.loading = false;
             match result {
-                Ok((embedder, worker)) => {
+                Ok(embedder) => {
                     s.models = "ready";
-                    s.embedder = Some(embedder);
-                    s.worker = Some(worker.clone());
-                    Some((worker, s.paused))
+                    s.embedder = Some(embedder.clone());
+                    self.cfg.pipeline.set_embedder(embedder); // the pipeline now picks up the photos that lack a vector
                 }
                 Err(e) => {
                     s.models = "error";
                     s.error = Some(e);
-                    None
                 }
-            }
-        };
-        if let Some((worker, paused)) = started {
-            if paused {
-                worker.set_paused(true); // asked to pause before the worker existed
             }
         }
         self.emit();
@@ -177,13 +150,17 @@ impl AnalysisService {
                     paused: false,
                     loading: false,
                     embedder: None,
-                    worker: None,
-                    worker_error: None,
                 }),
                 cache: Mutex::new(None),
                 loads: std::sync::atomic::AtomicUsize::new(0),
             }),
         };
+        let weak = Arc::downgrade(&svc.inner);
+        svc.inner.cfg.pipeline.add_reporter(Arc::new(move || {
+            if let Some(i) = Weak::upgrade(&weak) {
+                i.emit();
+            }
+        }));
         svc.begin();
         svc
     }
@@ -214,16 +191,10 @@ impl AnalysisService {
         self.begin();
     }
 
+    /// The one Pause: the pipeline stops taking photos (for every step), and the window is told.
     pub fn set_paused(&self, paused: bool) {
-        let worker = {
-            let mut s = self.inner.lock();
-            s.paused = paused;
-            s.worker.clone()
-        };
-        match worker {
-            Some(w) => w.set_paused(paused),
-            None => self.inner.emit(),
-        }
+        self.inner.lock().paused = paused;
+        self.inner.cfg.pipeline.set_paused(paused);
     }
 
     /// How many times the stored vectors were read from the database (they are cached between searches).
@@ -247,10 +218,7 @@ impl AnalysisService {
 
     /// New photos may have arrived (a scan finished): wake an idle worker.
     pub fn kick(&self) {
-        let worker = self.inner.lock().worker.clone();
-        if let Some(w) = worker {
-            w.kick();
-        }
+        self.inner.cfg.pipeline.kick();
     }
 
     /// Make `text` the current search; returns how many photos match. Blank text clears the search.
@@ -273,8 +241,10 @@ impl AnalysisService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use crate::embedder::FakeEmbedder;
     use crate::models::ModelFile;
+    use crate::pipeline::PipelineConfig;
     use image::{Rgb, RgbImage};
     use pixie_core::PhotoMeta;
     use sha2::{Digest, Sha256};
@@ -316,6 +286,15 @@ mod tests {
         f()
     }
 
+
+    /// The pipeline the service hands its model to, working on the photos in `dir`.
+    fn pipeline(db: &Db, dir: &std::path::Path) -> Arc<PhotoPipeline> {
+        let mut cfg = PipelineConfig::new(db.clone(), dir.join("thumbs"), Arc::new(|| false));
+        cfg.poll = Duration::from_millis(10);
+        cfg.workers = 2;
+        Arc::new(PhotoPipeline::start(cfg))
+    }
+
     struct Rig {
         svc: AnalysisService,
         db: Db,
@@ -333,7 +312,7 @@ mod tests {
         let f = db.add_folder(pdir.path().to_str().unwrap()).unwrap();
         for i in 0..photos {
             let p = pdir.path().join(format!("{i}.png"));
-            RgbImage::from_pixel(8, 8, Rgb([250, 0, 0])).save(&p).unwrap();
+            RgbImage::from_pixel(8, 8, Rgb([250, i as u8, 0])).save(&p).unwrap(); // each different: identical files are duplicates
             db.upsert_photo(f, p.to_str().unwrap(), 1, 1, &PhotoMeta::default()).unwrap();
         }
         let data = b"model-bytes".to_vec();
@@ -351,9 +330,8 @@ mod tests {
                 ld.fetch_add(1, Ordering::SeqCst);
                 Ok(Arc::new(FakeEmbedder) as Arc<dyn Embedder>)
             }),
-            scanning: Arc::new(|| false),
+            pipeline: pipeline(&db, pdir.path()),
             on_status: Arc::new(move |s| ev.lock().unwrap().push(s)),
-            poll: Duration::from_millis(10),
         });
         Rig { svc, db, dl, events, loads, _models: models, _photos: pdir }
     }
@@ -388,7 +366,7 @@ mod tests {
         assert!(r.svc.status().paused);
         assert!(wait_until(5000, || r.svc.status().models == "ready"));
         std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(r.db.embedding_counts("fake-1").unwrap().0, 0); // paused before the worker existed, so it never ran
+        assert_eq!(r.db.embedding_counts("fake-1").unwrap().0, 0); // paused before the models were ready, so nothing ran
         r.svc.set_paused(false);
         assert!(wait_until(5000, || r.db.embedding_counts("fake-1").unwrap() == (2, 2)));
     }
@@ -413,7 +391,7 @@ mod tests {
         let f = db.add_folder(pdir.path().to_str().unwrap()).unwrap();
         for i in 0..photos {
             let p = pdir.path().join(format!("{i}.png"));
-            RgbImage::from_pixel(8, 8, Rgb([250, 0, 0])).save(&p).unwrap();
+            RgbImage::from_pixel(8, 8, Rgb([250, i as u8, 0])).save(&p).unwrap(); // each different: identical files are duplicates
             db.upsert_photo(f, p.to_str().unwrap(), 1, 1, &PhotoMeta::default()).unwrap();
         }
         let data = b"model-bytes".to_vec();
@@ -424,9 +402,8 @@ mod tests {
             files: files(&data),
             downloader: Arc::new(FakeDl { data, fail: AtomicBool::new(false) }),
             loader,
-            scanning: Arc::new(|| false),
+            pipeline: pipeline(&db, pdir.path()),
             on_status: Arc::new(|_| {}),
-            poll: Duration::from_millis(10),
         });
         (svc, db, models, pdir)
     }

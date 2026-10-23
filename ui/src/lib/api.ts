@@ -145,7 +145,7 @@ export type ScanStart = { folder_ids: number[]; queued: boolean };
 export const scanFolders = (paths: string[]) => invoke<ScanStart>('scan_folders', { paths });
 
 /** How many thumbnails are still being prepared. */
-export const previewsPending = () => invoke<number>('previews_pending');
+
 
 /** Debug builds only: whether the Developer page is offered. */
 export const isDebugBuild = () => invoke<boolean>('is_debug_build');
@@ -187,6 +187,9 @@ export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id }
 import type { DupGroup, DupStatus } from './dupes';
 /** Sets of identical files, most wasted space first; the copy to keep is first in each. */
 export const duplicateGroups = () => invoke<DupGroup[]>('duplicate_groups');
+import type { LoadProgress } from './analysisView';
+/** How far the analysis has got for the photos of these folders (the load screen's counters). */
+export const loadProgress = (folderIds: number[]) => invoke<LoadProgress>('load_progress', { folderIds });
 export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');
 /** Move extra copies to the Recycle Bin; returns the ids that were moved. A whole set is never removed. */
 /** Show this copy in Browse for its set of identical files (and keep it when the others are removed). */

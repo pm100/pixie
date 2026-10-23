@@ -49,9 +49,31 @@ pub fn ensure_thumbnail(
         return Ok(dst);
     }
     let img = decode_scaled(src, class.edge())?;
+    write_thumbnail(&img, class, &dst)?;
+    Ok(dst)
+}
+
+/// The thumbnail of an image that is already decoded (so a pipeline that decodes a photo once can make it as a
+/// by-product). Does nothing if the file is already cached.
+pub fn thumbnail_from_image(
+    cache_dir: &Path,
+    class: ThumbClass,
+    photo_id: i64,
+    mtime: i64,
+    size: i64,
+    img: &image::DynamicImage,
+) -> Result<PathBuf> {
+    let dst = thumb_path(cache_dir, class, photo_id, mtime, size);
+    if !dst.exists() {
+        write_thumbnail(img, class, &dst)?;
+    }
+    Ok(dst)
+}
+
+fn write_thumbnail(img: &image::DynamicImage, class: ThumbClass, dst: &Path) -> Result<()> {
     let edge = class.edge();
     let (w, h) = img.dimensions();
-    let thumb = if w <= edge && h <= edge { img } else { img.thumbnail(edge, edge) };
+    let thumb = if w <= edge && h <= edge { img.clone() } else { img.thumbnail(edge, edge) };
 
     std::fs::create_dir_all(dst.parent().expect("thumb path has parent"))?;
     // Unique temp name so concurrent callers never clobber each other.
@@ -60,8 +82,8 @@ pub fn ensure_thumbnail(
         .to_rgb8()
         .save_with_format(&tmp, ImageFormat::Jpeg)
         .map_err(|e| PixieError::Image(e.to_string()))?;
-    std::fs::rename(&tmp, &dst)?;
-    Ok(dst)
+    std::fs::rename(&tmp, dst)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -87,6 +109,20 @@ mod tests {
 
         // New mtime -> different path (replaced file gets a fresh thumbnail).
         assert_ne!(thumb_path(&cache, ThumbClass::Grid, 7, 222, 0), t1);
+    }
+
+    #[test]
+    fn a_thumbnail_from_a_decoded_image_is_the_same_file_a_decode_from_disk_would_make() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.jpg");
+        std::fs::write(&src, jpeg(1000, 500)).unwrap();
+        let img = decode_scaled(&src, 1024).unwrap();
+        let cache = dir.path().join("cache");
+        let t = thumbnail_from_image(&cache, ThumbClass::Grid, 9, 1, 1, &img).unwrap();
+        assert_eq!(t, thumb_path(&cache, ThumbClass::Grid, 9, 1, 1));
+        assert_eq!(image::open(&t).unwrap().dimensions(), (256, 128));
+        // Already cached: left alone, and ensure_thumbnail agrees.
+        assert_eq!(ensure_thumbnail(&cache, ThumbClass::Grid, 9, 1, 1, &src).unwrap(), t);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{DupGroup, DupStatus, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{DupGroup, DupStatus, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -152,6 +152,15 @@ pub struct PhotoStat {
     pub size: i64,
     pub mtime: i64,
     pub missing: bool,
+}
+
+/// A photo and what the analysis pipeline still has to do for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkItem {
+    pub photo: Photo,
+    pub hash: bool,
+    pub embed: bool,
+    pub faces: bool,
 }
 
 #[derive(Clone)]
@@ -530,11 +539,142 @@ impl Db {
 
     // ---- copies of the same file ----
 
-    /// Live items not yet given a quick key, newest first: (id, path).
-    pub fn photos_needing_quick_key(&self, limit: i64) -> Result<Vec<(PhotoId, String)>> {
+    /// Photos (not videos, not hidden duplicates) that still need something from the analysis pipeline, newest
+    /// first: a hash, an Auto tags vector (when `embed_version` is given) or a face scan (when `face_version` is).
+    pub fn photos_needing_work(&self, embed_version: Option<&str>, face_version: Option<&str>, limit: i64) -> Result<Vec<WorkItem>> {
         let c = self.conn();
-        let mut s = c.prepare("SELECT id, path FROM photos WHERE missing = 0 AND quick_key IS NULL ORDER BY id DESC LIMIT ?1").map_err(db_err)?;
-        let rows = s.query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS}, need_hash, need_embed, need_faces FROM (
+                    SELECT p.*,
+                           (p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!') AS need_hash,
+                           (?1 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)) AS need_embed,
+                           (?2 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?2)) AS need_faces
+                      FROM photos p WHERE p.missing = 0 AND p.dup = 0 AND p.kind = 0)
+                  WHERE need_hash OR need_embed OR need_faces
+                  ORDER BY id DESC LIMIT ?3"
+            ))
+            .map_err(db_err)?;
+        let rows = s
+            .query_map(params![embed_version, face_version, limit], |r| {
+                Ok(WorkItem { photo: row_to_photo(r)?, hash: r.get::<_, i64>(14)? != 0, embed: r.get::<_, i64>(15)? != 0, faces: r.get::<_, i64>(16)? != 0 })
+            })
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// Record the keys of a photo whose bytes were just read. `hash` is None for a file that could not be read.
+    pub fn set_file_keys(&self, id: PhotoId, quick_key: &str, hash: Option<&str>) -> Result<()> {
+        self.conn().execute("UPDATE photos SET quick_key = ?2, hash = ?3 WHERE id = ?1", params![id, quick_key, hash]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Bring the `dup` flags of one set of identical files up to date (the copy the user chose, else the oldest, is
+    /// shown; the rest are hidden). Cheap enough to run for every photo as it is hashed.
+    pub fn refresh_dup_group(&self, hash: &str) -> Result<()> {
+        let c = self.conn();
+        let members: Vec<(PhotoId, bool, bool)> = {
+            let mut s = c
+                .prepare(
+                    "SELECT id, keep_pick, dup FROM photos WHERE hash = ?1 AND hash IS NOT NULL AND missing = 0
+                      ORDER BY (taken_at IS NULL), taken_at, length(path), path",
+                )
+                .map_err(db_err)?;
+            let rows = s
+                .query_map(params![hash], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0)))
+                .map_err(db_err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        let keeper = members.iter().find(|m| m.1).or(members.first()).map(|m| m.0);
+        for (id, _, dup) in members {
+            let want = Some(id) != keeper;
+            if want != dup {
+                c.execute("UPDATE photos SET dup = ?2 WHERE id = ?1", params![id, want as i64]).map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How far the analysis has got for the photos in these folders (see `LoadProgress`). `embed_version` and
+    /// `face_version` say which model versions count as done. The window asks for this every second while a load is
+    /// on screen, so it is a few short statements (the database is free in between), not one long one.
+    pub fn load_progress(&self, folders: &[FolderId], embed_version: &str, face_version: &str) -> Result<LoadProgress> {
+        let mut out = LoadProgress { photos: 0, shown: 0, hashed: 0, tagged: 0, scanned: 0, people: 0, duplicates: 0 };
+        if folders.is_empty() {
+            return Ok(out);
+        }
+        let marks = vec!["?"; folders.len()].join(",");
+        let folder_args = || folders.iter().map(|f| rusqlite::types::Value::from(*f));
+        // One pass over the photos, added up here.
+        let mut hashes: HashSet<String> = HashSet::new();
+        {
+            let c = self.conn();
+            let mut s = c
+                .prepare(&format!(
+                    "SELECT p.dup,
+                            COALESCE(p.hash IS NOT NULL OR substr(p.quick_key, 1, 1) = '!', 0), -- not NULL when nothing is known yet
+                            EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?),
+                            EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?),
+                            p.hash
+                       FROM photos p WHERE p.folder_id IN ({marks}) AND p.missing = 0 AND p.kind = 0"
+                ))
+                .map_err(db_err)?;
+            let args: Vec<rusqlite::types::Value> = [embed_version, face_version].iter().map(|v| rusqlite::types::Value::from(v.to_string())).chain(folder_args()).collect();
+            let rows = s
+                .query_map(rusqlite::params_from_iter(args), |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0, r.get::<_, i64>(3)? != 0, r.get::<_, Option<String>>(4)?)))
+                .map_err(db_err)?;
+            for row in rows {
+                let (dup, hashed, tagged, scanned, hash) = row.map_err(db_err)?;
+                out.photos += 1;
+                out.hashed += hashed as i64;
+                if !dup {
+                    out.shown += 1;
+                    out.tagged += tagged as i64;
+                    out.scanned += scanned as i64;
+                }
+                hashes.extend(hash);
+            }
+        }
+        out.people = {
+            let c = self.conn();
+            c.query_row(
+                &format!(
+                    "SELECT COUNT(DISTINCT f.person_id) FROM faces f JOIN photos p ON p.id = f.photo_id
+                      WHERE p.folder_id IN ({marks}) AND p.missing = 0 AND p.kind = 0 AND p.dup = 0 AND f.person_id IS NOT NULL"
+                ),
+                rusqlite::params_from_iter(folder_args()),
+                |r| r.get(0),
+            )
+            .map_err(db_err)?
+        };
+        // The extra copies in every set of identical files that includes one of these photos.
+        let sets: Vec<(String, i64)> = {
+            let c = self.conn();
+            let mut s = c
+                .prepare("SELECT hash, COUNT(*) FROM photos WHERE hash IS NOT NULL AND missing = 0 GROUP BY hash HAVING COUNT(*) > 1")
+                .map_err(db_err)?;
+            let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+            rows
+        };
+        out.duplicates = sets.iter().filter(|(h, _)| hashes.contains(h)).map(|(_, n)| n - 1).sum();
+        Ok(out)
+    }
+
+    /// Is this item currently a hidden extra copy of another?
+    pub fn is_dup(&self, id: PhotoId) -> Result<bool> {
+        let d: Option<i64> = self.conn().query_row("SELECT dup FROM photos WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(db_err)?;
+        Ok(d.unwrap_or(0) != 0)
+    }
+
+    /// Live items of this kind (0 photo, 1 video) not yet given a quick key, newest first: (id, path).
+    pub fn photos_needing_quick_key(&self, kind: i64, limit: i64) -> Result<Vec<(PhotoId, String)>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, path FROM photos WHERE missing = 0 AND kind = ?1 AND quick_key IS NULL ORDER BY id DESC LIMIT ?2").map_err(db_err)?;
+        let rows = s.query_map(params![kind, limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
     }
 
@@ -544,17 +684,17 @@ impl Db {
     }
 
     /// Live items with no full hash whose quick key another live item shares: the only ones that can be copies.
-    pub fn photos_needing_hash(&self, limit: i64) -> Result<Vec<(PhotoId, String)>> {
+    pub fn photos_needing_hash(&self, kind: i64, limit: i64) -> Result<Vec<(PhotoId, String)>> {
         let c = self.conn();
         let mut s = c
             .prepare(
                 "SELECT p.id, p.path FROM photos p
-                 WHERE p.missing = 0 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
-                   AND p.quick_key IN (SELECT quick_key FROM photos WHERE missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)
-                 ORDER BY p.id DESC LIMIT ?1",
+                 WHERE p.missing = 0 AND p.kind = ?1 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
+                   AND p.quick_key IN (SELECT quick_key FROM photos WHERE kind = ?1 AND missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)
+                 ORDER BY p.id DESC LIMIT ?2",
             )
             .map_err(db_err)?;
-        let rows = s.query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        let rows = s.query_map(params![kind, limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
     }
 
@@ -662,9 +802,11 @@ impl Db {
             .query_row(
                 // The shared quick keys are found once, as a group: asking per photo ("does another photo share this
                 // key?") makes SQLite compare every photo with every other, which took seconds.
-                "SELECT count(*) FROM photos p WHERE p.missing = 0 AND (p.quick_key IS NULL OR (
-                    p.hash IS NULL AND substr(p.quick_key, 1, 1) != '!'
-                    AND p.quick_key IN (SELECT quick_key FROM photos WHERE missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)))",
+                "SELECT count(*) FROM photos p WHERE p.missing = 0 AND (
+                    (p.kind = 0 AND p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!')
+                    OR (p.kind = 1 AND (p.quick_key IS NULL OR (
+                        p.hash IS NULL AND substr(p.quick_key, 1, 1) != '!'
+                        AND p.quick_key IN (SELECT quick_key FROM photos WHERE kind = 1 AND missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)))))",
                 [],
                 |r| r.get(0),
             )
@@ -934,11 +1076,11 @@ impl Db {
     /// (photos with a row for this model version, photos that should have one).
     pub fn embedding_counts(&self, model_version: &str) -> Result<(i64, i64)> {
         let c = self.conn();
-        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
         let done: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM embeddings e JOIN photos p ON p.id = e.photo_id
-                  WHERE e.model_version = ?1 AND p.missing = 0 AND p.kind = 0",
+                  WHERE e.model_version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.kind = 0",
                 params![model_version],
                 |r| r.get(0),
             )

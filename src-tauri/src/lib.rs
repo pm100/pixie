@@ -262,7 +262,7 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
         let _ = app.emit("scan-done", ScanDone { folders: scanned });
         analysis.kick(); // new photos to analyse; the worker waits while this scan job runs
         people.kick();
-        prefetch_all(&db, &thumbs); // queue thumbnails for anything new, in the background
+        prefetch_newest(&db, &thumbs); // queue thumbnails for the newest photos, in the background
     });
 }
 
@@ -283,10 +283,17 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
     Ok(())
 }
 
-/// How many thumbnails are still being prepared (the first-run flow's "Preparing previews" line).
+/// How far the analysis has got for the photos in these folders: the load screen's counters. Counted from those
+/// photos alone, so what else is in the library, and duplicates hiding older photos, cannot throw it off. Runs off
+/// the main thread.
 #[tauri::command]
-fn previews_pending(state: tauri::State<AppState>) -> usize {
-    state.thumbs.pending_count()
+async fn load_progress(state: tauri::State<'_, AppState>, folder_ids: Vec<i64>) -> Result<pixie_core::LoadProgress, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.load_progress(&folder_ids, pixie_analysis::clip::MODEL_VERSION, pixie_analysis::faces::FACES_VERSION).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// What `scan_folders` did: the folders' ids, and whether they joined a scan that was already running.
@@ -1034,23 +1041,20 @@ fn handle_thumb(state: &AppState, path: &str, responder: tauri::UriSchemeRespond
     );
 }
 
-/// Queue grid thumbnails for the whole library (newest first, the order the grid
-/// shows them) at the lowest priority, so scrolling finds them already built.
-fn prefetch_all(db: &Db, thumbs: &ThumbService) {
-    let mut offset = 0;
-    loop {
-        let Ok(page) = db.list_photos(offset, 1000) else { return };
-        if page.is_empty() {
-            return;
-        }
-        offset += page.len() as i64;
-        thumbs.prefetch(
-            page.into_iter()
-                .filter(|p| p.meta.kind == MediaKind::Photo)
-                .map(|p| (ThumbClass::Grid, p.id, p.mtime, p.size, PathBuf::from(p.path)))
-                .collect(),
-        );
-    }
+/// How many of the newest photos get their grid thumbnail made up front.
+const PREFETCH_NEWEST: i64 = 500;
+
+/// Queue grid thumbnails for the newest photos (the first screens of Browse, newest first) at the lowest priority, so
+/// they are ready at once. The rest are made by the analysis pipeline as it reads each photo (it works newest first
+/// too), or when a tile is first shown.
+fn prefetch_newest(db: &Db, thumbs: &ThumbService) {
+    let Ok(page) = db.list_photos(0, PREFETCH_NEWEST) else { return };
+    thumbs.prefetch(
+        page.into_iter()
+            .filter(|p| p.meta.kind == MediaKind::Photo)
+            .map(|p| (ThumbClass::Grid, p.id, p.mtime, p.size, PathBuf::from(p.path)))
+            .collect(),
+    );
 }
 
 pub fn run() {
@@ -1080,7 +1084,7 @@ pub fn run() {
             let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).clamp(2, 6);
             let thumbs = ThumbService::new(dir.join("thumbs"), workers);
             let (pdb, pthumbs) = (db.clone(), thumbs.clone());
-            std::thread::spawn(move || prefetch_all(&pdb, &pthumbs));
+            std::thread::spawn(move || prefetch_newest(&pdb, &pthumbs));
             let fetcher: Arc<dyn pixie_geo::Fetcher> = Arc::new(HttpFetcher::new());
             let places = Arc::new(PlaceService::new(
                 PlaceCache::open(&dir.join("places.db"))?,
@@ -1089,8 +1093,15 @@ pub fn run() {
             ));
             let tiles = TileService::new(dir.join("tiles"), fetcher, 2);
             let gate = pixie_index::ScanGate::default();
+            // One pipeline reads, hashes and decodes each photo once for every step; the two services below give it their
+            // models and show its progress.
+            let pipeline_gate = gate.clone();
+            let pipeline = Arc::new(pixie_analysis::pipeline::PhotoPipeline::start(pixie_analysis::pipeline::PipelineConfig::new(
+                db.clone(),
+                dir.join("thumbs"),
+                Arc::new(move || pipeline_gate.is_busy()),
+            )));
             let analysis_app = app.handle().clone();
-            let scanning_gate = gate.clone();
             let analysis = Arc::new(pixie_analysis::service::AnalysisService::start(pixie_analysis::service::Config {
                 db: db.clone(),
                 version: pixie_analysis::clip::MODEL_VERSION.to_string(),
@@ -1100,14 +1111,12 @@ pub fn run() {
                 loader: Arc::new(|d| {
                     pixie_analysis::clip::ClipEmbedder::load(d).map(|e| Arc::new(e) as Arc<dyn pixie_analysis::embedder::Embedder>)
                 }),
-                scanning: Arc::new(move || scanning_gate.is_busy()),
+                pipeline: pipeline.clone(),
                 on_status: Arc::new(move |s| {
                     let _ = analysis_app.emit("analysis-status", s);
                 }),
-                poll: Duration::from_millis(500),
             }));
             let people_app = app.handle().clone();
-            let people_gate = gate.clone();
             let people = Arc::new(pixie_analysis::people_service::PeopleService::start(pixie_analysis::people_service::PeopleConfig {
                 db: db.clone(),
                 version: pixie_analysis::faces::FACES_VERSION.to_string(),
@@ -1117,11 +1126,10 @@ pub fn run() {
                 loader: Arc::new(|d| {
                     pixie_analysis::faces::FaceModels::load(d).map(|e| Arc::new(e) as Arc<dyn pixie_analysis::faces::FaceEngine>)
                 }),
-                scanning: Arc::new(move || people_gate.is_busy()),
+                pipeline: pipeline.clone(),
                 on_status: Arc::new(move |s| {
                     let _ = people_app.emit("people-status", s);
                 }),
-                poll: Duration::from_millis(500),
             }));
             let dupes_app = app.handle().clone();
             let dupes_gate = gate.clone();
@@ -1147,11 +1155,12 @@ pub fn run() {
                 analysis,
                 people,
                 dupes,
+                pipeline,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, previews_pending, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, load_progress, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
