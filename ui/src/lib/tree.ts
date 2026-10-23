@@ -52,18 +52,3 @@ export function buildDateTree(groups: DayGroup[]): TreeNode[] {
   if (undated) roots.push(undated);
   return roots;
 }
-
-/** Keys of every node (year, month, day) whose range contains `group`. */
-export function activeKeys(tree: TreeNode[], group: number): Set<string> {
-  const keys = new Set<string>();
-  const walk = (nodes: TreeNode[]) => {
-    for (const n of nodes) {
-      if (group >= n.firstGroup && group <= n.lastGroup) {
-        keys.add(n.key);
-        walk(n.children);
-      }
-    }
-  };
-  walk(tree);
-  return keys;
-}

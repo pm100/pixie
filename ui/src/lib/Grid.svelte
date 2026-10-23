@@ -3,14 +3,14 @@
   import { listPhotos, type DayGroup, type Photo, type View } from './api';
   import { formatDay, formatDuration } from './format';
   import { columnsFor } from './gridMath';
-  import { buildLayout, groupAt, groupTop, visibleRows } from './layout';
+  import { buildLayout, groupTop, visibleRows } from './layout';
   import { PageCache } from './pageCache';
   import { makePoster } from './posterFrame';
   import { createPosterQueue } from './posterQueue';
   import { retryDelay } from './retry';
   import { posterUrl, thumbUrl } from './url';
 
-  let { groups, version, view, selected, scrollTo, onopen, onselect, onvisiblegroup }: {
+  let { groups, version, view, selected, scrollTo, onopen, onselect }: {
     groups: DayGroup[];
     version: number;
     view: View;
@@ -18,7 +18,6 @@
     scrollTo: { group: number; n: number } | null;
     onopen: (index: number) => void;
     onselect: (index: number, mods: { ctrl: boolean; shift: boolean }) => void;
-    onvisiblegroup: (group: number) => void;
   } = $props();
 
   const CELL = 180, GAP = 6, PAGE = 200, ROW_H = CELL + GAP, HEAD_H = 40;
@@ -64,7 +63,6 @@
   const layout = $derived(buildLayout(groups, cols, ROW_H, HEAD_H));
   const span = $derived(visibleRows(layout, scrollTop, height));
   const shown = $derived(layout.rows.slice(span[0], span[1]));
-  const current = $derived(groupAt(layout, scrollTop));
 
   const visibleVideoIds = $derived(new Set(
     shown.flatMap((r) => r.kind === 'cells'
@@ -96,16 +94,11 @@
     if (hi > lo) cache.ensure(lo, hi);
   });
 
-  // Tree clicks ask to jump to a group's heading.
+  // Ask to jump to a group's heading (the list is taken back to the top after a new filter).
   $effect(() => {
     const t = scrollTo;
     if (!t) return;
     untrack(() => { scroller.scrollTop = groupTop(layout, t.group); });
-  });
-
-  // Tell the tree which group is at the top, so it can highlight it.
-  $effect(() => {
-    if (current >= 0) onvisiblegroup(current);
   });
 
   function unit(n: number): string {

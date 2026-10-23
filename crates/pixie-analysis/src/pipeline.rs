@@ -652,6 +652,10 @@ mod tests {
         let shown = r.png("a.png", 250, 7);
         let other = r.png("m.png", 5, 9);
         let p = r.pipeline(1);
+        // Photos are read ahead, so which of two identical photos is handled first is not fixed. Hash everything first
+        // (no models yet): which copy is shown is then settled before any of them is analysed.
+        assert!(wait_until(5000, || r.hashed_all()));
+        assert!(r.db.is_dup(hidden).unwrap() && !r.db.is_dup(shown).unwrap());
         with_models(&p);
         assert!(wait_until(5000, || r.counts() == ((2, 2), (2, 2))));
         assert!(r.db.is_dup(hidden).unwrap() && !r.db.is_dup(shown).unwrap() && !r.db.is_dup(other).unwrap());
@@ -689,7 +693,8 @@ mod tests {
         let l = r.db.load_progress(&[r.folder], EV, FV).unwrap();
         assert_eq!((l.photos, l.shown, l.hashed, l.tagged, l.scanned), (2, 2, 2, 2, 2));
         assert_eq!(l.duplicates, 1, "one extra copy in the set that includes the new photo");
-        assert!(l.people >= 1);
+        // (The scan row is written just before the faces are grouped into a person, so give the grouping a moment.)
+        assert!(wait_until(5000, || r.db.load_progress(&[r.folder], EV, FV).unwrap().people >= 1));
         // The older copy is now the hidden one, so the library shows 3 photos, not 4; the new folder's own count is
         // unaffected and is what a load screen should use.
         assert!(r.db.is_dup(older_copy).unwrap() && !r.db.is_dup(new_copy).unwrap() && !r.db.is_dup(new_one).unwrap());
@@ -706,6 +711,7 @@ mod tests {
         let hidden = r.png("z.png", 250, 7);
         let shown = r.png("a.png", 250, 7);
         let p = r.pipeline(1);
+        assert!(wait_until(5000, || r.hashed_all())); // settle which copy is shown before anything is analysed
         with_models(&p);
         assert!(wait_until(5000, || r.counts() == ((1, 1), (1, 1))));
         assert!(r.db.is_dup(hidden).unwrap());

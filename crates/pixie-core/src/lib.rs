@@ -110,6 +110,11 @@ pub enum SortOrder {
     Oldest,
 }
 
+/// A date window whose `since` is this value selects the items that have no date at all (an undated item never falls
+/// inside a real window). It is the lowest whole number a browser can hold exactly, so the window passes through the
+/// UI unchanged.
+pub const UNDATED: i64 = -9_007_199_254_740_991;
+
 /// What the library view is showing: a sort order and an optional folder filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PhotoQuery {
@@ -120,7 +125,8 @@ pub struct PhotoQuery {
     /// Snapshot: only items with `id <= max_id`. New items get higher ids, so the listing (and every
     /// position in it) stays put while a scan adds photos.
     pub max_id: Option<i64>,
-    /// Only items taken at or after this time (unix seconds). Undated items never match.
+    /// Only items taken at or after this time (unix seconds). Undated items never match, unless this is `UNDATED`, which
+    /// matches only them.
     pub since: Option<i64>,
     /// Only items taken before this time (unix seconds, exclusive). Undated items never match.
     pub until: Option<i64>,
@@ -410,6 +416,23 @@ pub struct LoadProgress {
     pub people: i64,
     /// Extra copies in the sets of identical files that include one of these photos.
     pub duplicates: i64,
+}
+
+/// What the left-hand tree shows beside its entries under the filters in force. Each section is counted with every
+/// filter except its own, so choosing a folder narrows People, Auto tags and Trips but not the Folders list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FacetCounts {
+    pub photos: i64,
+    pub videos: i64,
+    pub folders: Vec<(FolderId, i64)>,
+    pub tags: Vec<(String, i64)>,
+    /// Different photos in each group of tags asked for (a category), in the order asked.
+    pub tag_groups: Vec<i64>,
+    /// The name of each of those groups (the category), in the same order.
+    pub tag_group_names: Vec<String>,
+    pub people: Vec<(i64, i64)>,
+    /// Items in each trip window asked for, in the order asked.
+    pub trips: Vec<i64>,
 }
 
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,

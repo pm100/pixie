@@ -11,11 +11,16 @@
   import type { SectionId } from './sections';
   import { nameFromEdit, tripEditText, tripLines, tripSummary, tripTitle, tripYear, tripYears } from './trips';
   import { faceUrl } from './url';
+  import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { groups, activeGroup, kind, recent, scanLine, filterDates, period, recentText, tags, tag, people, facesFound, person, folders, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, ongroup, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, ontoggle }: {
-    groups: DayGroup[]; activeGroup: number; kind: MediaKind | null; recent: boolean; scanLine: string | null;
-    /** On the map, a date filters the pins and photos; elsewhere it scrolls the grid. */
-    filterDates: boolean; period: string | null;
+  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, folders, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+    /** The counts under the filters in force (each section counted without its own filter); null until known, when the
+     *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
+    facets?: Facets | null;
+    /** The days to list under When: the library under the other filters, without the date filter itself. */
+    groups: DayGroup[]; kind: MediaKind | null; recent: boolean; scanLine: string | null;
+    /** The chosen date (a filter like the others): `y:2025`, `m:2025-06`, `d:2025-06-14` or `undated`. */
+    period: string | null;
     /** The text of the recent row, e.g. "Last 30 days". */
     recentText: string;
     /** What the photos show, with counts, and the one chosen as a filter (if any). */
@@ -31,9 +36,11 @@
     /** Where each trip went (by its `since`), once known. `onvisibletrips` says which trips are showing, so those are named first. */
     destinations: Record<number, string>; onvisibletrips: (t: Trip[]) => void;
     onrenametrip: (t: Trip, name: string) => void; onsettrips: () => void;
+    /** Go to the People tab, where people are named (the link under "Nobody is named yet"). */
+    onnamepeople: () => void;
     /** Sections the user has folded away, and the click on a heading. */
     collapsed: SectionId[]; ontoggle: (id: SectionId) => void;
-    ongroup: (group: number) => void; onperiod: (key: string) => void;
+    onperiod: (key: string) => void;
     onkind: (k: MediaKind | null) => void; onrecent: (on: boolean) => void;
   } = $props();
 
@@ -112,22 +119,26 @@
 <nav>
   {@render head('library', 'Media types')}
   {#if !folded('library')}
-    <button class="item" class:active={kind === null} onclick={() => onkind(null)}><span class="mark">{#if kind === null}<Check />{/if}</span>All items</button>
-    <button class="item" class:active={kind === 'photo'} onclick={() => onkind('photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span>Photos only</button>
-    <button class="item" class:active={kind === 'video'} onclick={() => onkind('video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span>Videos only</button>
+    <!-- Like every other filter: click to choose, click again to clear. Nothing chosen shows everything. -->
+    <button class="item" class:active={kind === 'photo'} class:zero={facets && facets.photos === 0 && kind !== 'photo'} aria-pressed={kind === 'photo'} onclick={() => onkind(kind === 'photo' ? null : 'photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span><span class="grow">Photos</span>{#if facets}<span class="n">{facets.photos.toLocaleString()}</span>{/if}</button>
+    <button class="item" class:active={kind === 'video'} class:zero={facets && facets.videos === 0 && kind !== 'video'} aria-pressed={kind === 'video'} onclick={() => onkind(kind === 'video' ? null : 'video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span><span class="grow">Videos</span>{#if facets}<span class="n">{facets.videos.toLocaleString()}</span>{/if}</button>
   {/if}
 
   {#if people.length === 0 && facesFound}
     {@render head('people', 'People')}
-    {#if !folded('people')}<p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>{/if}
+    {#if !folded('people')}
+      <p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>
+      <button class="item more" onclick={onnamepeople}><span class="mark"></span>Name people…</button>
+    {/if}
   {:else if people.length > 0}
     {@render head('people', 'People')}
     {#if !folded('people')}
       {#each shownPeople.rows as p (p.id)}
-        <button class="item" class:active={person === p.id} aria-pressed={person === p.id} onclick={() => onperson(person === p.id ? null : p.id)}>
+        {@const n = countOf(facets?.people, p.id, p.count)}
+        <button class="item" class:active={person === p.id} class:zero={facets && n === 0 && person !== p.id} aria-pressed={person === p.id} onclick={() => onperson(person === p.id ? null : p.id)}>
           <span class="mark">{#if person === p.id}<Check />{/if}</span>
           {#if p.face_id !== null}<img class="avatar" alt="" src={faceUrl(p.face_id)} />{:else}<span class="avatar"></span>{/if}
-          <span class="grow">{personLabel(p)}</span><span class="n">{p.count.toLocaleString()}</span>
+          <span class="grow">{personLabel(p)}</span><span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}
       {#if shownPeople.hidden > 0 || allPeople}
@@ -145,12 +156,14 @@
       <p class="hint">No trips found. A smaller home radius or a shorter minimum length in Settings may find some.</p>
     {:else}
       {#each years as g (g.year)}
-        <button class="item cat" aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
-          <Chevron open={openYears.has(g.year)} /><span class="grow">{g.year}</span><span class="n">{g.trips.length.toLocaleString()}</span>
+        {@const held = tripsHeld(g.trips, facets ?? null)}
+        <button class="item cat" class:zero={facets && held === 0} aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
+          <Chevron open={openYears.has(g.year)} /><span class="grow">{g.year}</span><span class="n">{held.toLocaleString()}</span>
         </button>
         {#if openYears.has(g.year)}
           {#each g.trips as t (t.since)}
             {@const lines = tripLines(t, destinations[t.since])}
+            {@const n = countOf(facets?.trips, t.since, t.photos + t.videos)}
             {#if renaming === t.since}
               <div class="item sub rename"><span class="mark"></span>
                 <input use:focusOnMount bind:value={renameText} aria-label="Trip name" placeholder={tripEditText({ ...t, name: null }, destinations[t.since])} maxlength="120"
@@ -158,10 +171,10 @@
               </div>
             {:else}
               <div class="row">
-                <button class="item sub trip" class:active={trip === t.since} aria-pressed={trip === t.since} title={tripSummary(t)} onclick={() => ontrip(trip === t.since ? null : t)}>
+                <button class="item sub trip" class:active={trip === t.since} class:zero={facets && n === 0 && trip !== t.since} aria-pressed={trip === t.since} title={tripSummary(t)} onclick={() => ontrip(trip === t.since ? null : t)}>
                   <span class="mark">{#if trip === t.since}<Check />{/if}</span>
                   <span class="grow"><span class="when">{lines[0]}</span>{#if lines[1]}<span class="dest">{lines[1]}</span>{/if}</span>
-                  <span class="n">{(t.photos + t.videos).toLocaleString()}</span>
+                  <span class="n">{n.toLocaleString()}</span>
                 </button>
                 <button class="edit" aria-label="Rename this trip" title="Rename this trip" onclick={() => startRename(t)}>✎</button>
               </div>
@@ -176,13 +189,15 @@
     {@render head('tags', 'Auto tags')}
     {#if !folded('tags')}
       {#each tree as g (g.category)}
-        <button class="item cat" aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
-          <Chevron open={isOpen(g.category)} /><span class="grow">{g.category}</span><span class="n">{g.photos.toLocaleString()}</span>
+        {@const held = countOf(facets?.categories, g.category, g.photos)}
+        <button class="item cat" class:zero={facets && held === 0} aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
+          <Chevron open={isOpen(g.category)} /><span class="grow">{g.category}</span><span class="n">{held.toLocaleString()}</span>
         </button>
         {#if isOpen(g.category)}
           {#each g.tags as t (t.tag)}
-            <button class="item sub" class:active={tag === t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
-              <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{t.count.toLocaleString()}</span>
+            {@const n = countOf(facets?.tags, t.tag, t.count)}
+            <button class="item sub" class:active={tag === t.tag} class:zero={facets && n === 0 && tag !== t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
+              <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{n.toLocaleString()}</span>
             </button>
           {/each}
         {/if}
@@ -193,15 +208,16 @@
   {@render head('when', 'When')}
   {#if !folded('when')}
     <button class="item" class:active={recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span>{recentText}</button>
-    <WhenNav {groups} {activeGroup} {ongroup} filter={filterDates} {period} {onperiod} {recent} />
+    <WhenNav {groups} {period} {onperiod} />
   {/if}
 
   {#if folders.length > 0}
     {@render head('folders', 'Folders')}
     {#if !folded('folders')}
       {#each folders as f (f.id)}
-        <button class="item" class:active={folderId === f.id} aria-pressed={folderId === f.id} title={f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
-          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span><span class="n">{f.count.toLocaleString()}</span>
+        {@const n = countOf(facets?.folders, f.id, f.count)}
+        <button class="item" class:active={folderId === f.id} class:zero={facets && n === 0 && folderId !== f.id} aria-pressed={folderId === f.id} title={f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
+          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span><span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}
     {/if}
@@ -220,6 +236,8 @@
   .item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 12px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; }
   .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
+  /* Nothing here under the filters in force: shown, but quiet. */
+  .zero { opacity: .45; }
   .more { color: #555; }
   .cat { font-weight: 600; color: #333; }
   .sub { padding-left: 28px; }

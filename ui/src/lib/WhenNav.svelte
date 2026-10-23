@@ -2,24 +2,27 @@
   import { untrack } from 'svelte';
   import type { DayGroup } from './api';
   import { monthName } from './format';
-  import { activeKeys, buildDateTree, type TreeNode } from './tree';
+  import { buildDateTree, type TreeNode } from './tree';
   import Check from './Check.svelte';
   import Chevron from './Chevron.svelte';
   import { dayBadge, monthCounts, yearEntries } from './whenNav';
 
-  let { groups, activeGroup, ongroup, filter, period, onperiod, recent }: {
-    groups: DayGroup[]; activeGroup: number; ongroup: (group: number) => void;
-    /** Filter mode (the map): a click chooses a period instead of scrolling the grid. */
-    filter: boolean; period: string | null; onperiod: (key: string) => void;
-    /** "Last 30 days" is chosen: the dates below are not a selection, so none is marked. */
-    recent: boolean;
+  let { groups, period, onperiod }: {
+    /** The day groups to list: the whole library under the other filters (the date filter itself is left out, so every
+     *  other date stays there to choose). */
+    groups: DayGroup[];
+    /** The chosen period (a filter, like any other), if any: `y:2025`, `m:2025-06`, `d:2025-06-14` or `undated`. */
+    period: string | null;
+    /** A click on a year, month, day or Undated chooses it as the date filter (the same one again clears it). */
+    onperiod: (key: string) => void;
   } = $props();
 
   const roots = $derived(buildDateTree(groups));
   const entries = $derived(yearEntries(roots));
-  // The keys to highlight: the chosen period and the year/month it sits in, or the place the grid has scrolled to.
-  const periodKeys = $derived.by(() => {
+  // The keys to mark: the chosen period and the year and month it sits in.
+  const marked = $derived.by(() => {
     const out = new Set<string>();
+    if (period === 'undated') return out.add('undated');
     const m = period ? /^[ymd]:(\d{4})(?:-(\d{2}))?/.exec(period) : null;
     if (!period || !m) return out;
     out.add(`y:${m[1]}`);
@@ -27,16 +30,13 @@
     if (period[0] === 'd') out.add(period);
     return out;
   });
-  const active = $derived(filter ? periodKeys : activeKeys(roots, activeGroup));
-  // What is shown as selected. The grid's position (still used to open the right year) is not a selection under Last 30 days.
-  const marked = $derived(recent ? new Set<string>() : active);
 
-  // One year and one month are open at a time. They follow the grid as it scrolls.
+  // One year and one month are open at a time; the year and month of the chosen period are opened.
   let openYear = $state<string | null>(null);
   let openMonth = $state<string | null>(null);
 
   $effect(() => {
-    const keys = active;
+    const keys = marked;
     untrack(() => {
       for (const k of keys) {
         if (k.startsWith('y:')) openYear = k;
@@ -49,13 +49,11 @@
 
   function toggleYear(n: TreeNode) {
     openYear = openYear === n.key ? null : n.key;
-    if (filter) onperiod(n.key);
-    else ongroup(n.firstGroup);
+    onperiod(n.key);
   }
   function pickMonth(m: TreeNode) {
     openMonth = m.key;
-    if (filter) onperiod(m.key);
-    else ongroup(m.firstGroup);
+    onperiod(m.key);
   }
 </script>
 
@@ -72,7 +70,7 @@
       {#each counts as c, i}
         {@const m = monthNode(n, i)}
         {#if m && c > 0}
-          <button class="chip" class:on={filter ? marked.has(m.key) : !recent && openMonth === m.key} onclick={() => pickMonth(m)} title="{monthName(i + 1)} {n.label}: {c}">{monthName(i + 1).slice(0, 3)}{#if filter ? marked.has(m.key) : !recent && openMonth === m.key}<Check />{/if}</button>
+          <button class="chip" class:on={marked.has(m.key)} onclick={() => pickMonth(m)} title="{monthName(i + 1)} {n.label}: {c}">{monthName(i + 1).slice(0, 3)}{#if marked.has(m.key)}<Check />{/if}</button>
         {:else}
           <span class="chip none">{monthName(i + 1).slice(0, 3)}</span>
         {/if}
@@ -82,7 +80,7 @@
       <div class="days">
         {#each m.children as d (d.key)}
           {@const b = dayBadge(d.key.slice(2))}
-          <button class="day" class:active={marked.has(d.key)} onclick={() => (filter ? onperiod(d.key) : ongroup(d.firstGroup))}>
+          <button class="day" class:active={marked.has(d.key)} onclick={() => onperiod(d.key)}>
             <span class="badge" class:we={b.weekend}><i>{b.weekday}</i><b>{b.dom}</b></span>
             <span class="place"></span>
             {#if marked.has(d.key)}<Check />{/if}
@@ -99,7 +97,7 @@
     {#if e.kind === 'year'}
       {@render yearBlock(e.node)}
     {:else}
-      <button class="yr" class:active={marked.has('undated')} disabled={filter} title={filter ? 'Items without a date have no place on the map timeline' : ''} onclick={() => ongroup(e.node.firstGroup)}>
+      <button class="yr" class:active={marked.has('undated')} aria-pressed={marked.has('undated')} onclick={() => onperiod('undated')}>
         <span class="tw"></span><span class="y">Undated</span>{#if marked.has('undated')}<Check />{/if}<span class="n">{e.node.count.toLocaleString()}</span>
       </button>
     {/if}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { periodLabel, periodRange } from './periods';
+import { UNDATED, periodLabel, periodRange } from './periods';
 
 const utc = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 1000;
 
@@ -17,7 +17,15 @@ describe('periodRange', () => {
     expect(periodRange('d:2025-12-31')).toEqual({ since: utc(2025, 12, 31), until: utc(2026, 1, 1) });
   });
   it('anything else is not a period', () => {
-    for (const k of ['undated', 'decade:2010', 'y:abcd', 'm:2025-13', 'm:2025-00', 'd:2025-02-30', '', 'x:1']) expect(periodRange(k)).toBeNull();
+    for (const k of ['decade:2010', 'y:abcd', 'm:2025-13', 'm:2025-00', 'd:2025-02-30', '', 'x:1']) expect(periodRange(k)).toBeNull();
+  });
+});
+
+describe('periodRange for the items without a date', () => {
+  it('is a window starting at the reserved UNDATED value, which a browser holds exactly', () => {
+    expect(periodRange('undated')).toEqual({ since: UNDATED, until: UNDATED + 1 });
+    expect(Number.isSafeInteger(UNDATED)).toBe(true);
+    expect(UNDATED).toBe(-9007199254740991); // the same number as the Rust `UNDATED`
   });
 });
 
@@ -27,7 +35,10 @@ describe('periodLabel', () => {
     expect(periodLabel('m:2026-09')).toBe('September 2026');
     expect(periodLabel('d:2026-09-19')).toBe('19 September 2026');
   });
+  it('names the items without a date', () => {
+    expect(periodLabel('undated')).toBe('items without a date');
+  });
   it('is empty for anything that is not a period', () => {
-    expect(periodLabel('undated')).toBe('');
+    expect(periodLabel('nonsense')).toBe('');
   });
 });

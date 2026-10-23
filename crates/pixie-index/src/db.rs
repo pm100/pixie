@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{DupGroup, DupStatus, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FacePerson, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -154,6 +154,65 @@ pub struct PhotoStat {
     pub missing: bool,
 }
 
+/// What else the tree's counts depend on besides the view's own filters.
+pub struct FacetAsk<'a> {
+    /// The tag and person chosen in the tree (held apart from the view).
+    pub tag: Option<&'a str>,
+    pub person: Option<i64>,
+    /// The view's date window came from a chosen trip: the Trips counts then leave it out, like any section's own filter.
+    pub trip_dates: bool,
+    /// Groups of tags (the categories) to count different photos for.
+    pub tag_groups: &'a [Vec<String>],
+    /// Trip windows `[since, until)` (unix seconds) to count items in.
+    pub trip_windows: &'a [(i64, i64)],
+}
+
+/// The photos the view shows, minus the filters named: the base every count in the tree is taken from.
+struct FacetBase {
+    sql: String,
+    filter: Filter,
+    tag: Option<String>,
+    person: Option<i64>,
+}
+
+impl FacetBase {
+    /// `q` without its folder / kind / date window as asked, with the chosen tag / person as asked. (The view's own
+    /// tag and person hits are never used here: they are passed in.)
+    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>) -> FacetBase {
+        let mut q = *q;
+        q.search = false;
+        if no_folder {
+            q.folder_id = None;
+        }
+        if no_kind {
+            q.kind = None;
+        }
+        if no_dates {
+            q.since = None;
+            q.until = None;
+        }
+        let filter = Filter::of(&q);
+        let mut sql = format!("SELECT id FROM photos WHERE missing = 0{}", filter.sql());
+        if tag.is_some() {
+            sql.push_str(" AND id IN (SELECT photo_id FROM photo_tags WHERE tag = :tag)");
+        }
+        if person.is_some() {
+            sql.push_str(" AND id IN (SELECT photo_id FROM faces WHERE person_id = :person)");
+        }
+        FacetBase { sql, filter, tag: tag.map(str::to_string), person }
+    }
+    fn params(&self) -> Vec<(&str, &dyn rusqlite::ToSql)> {
+        let mut v = self.filter.params();
+        if let Some(t) = &self.tag {
+            v.push((":tag", t));
+        }
+        if let Some(p) = &self.person {
+            v.push((":person", p));
+        }
+        v
+    }
+}
+
 /// A photo and what the analysis pipeline still has to do for it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkItem {
@@ -212,6 +271,8 @@ struct Filter {
     max_id: Option<i64>,
     since: Option<i64>,
     until: Option<i64>,
+    /// Only items with no date (`since` was `UNDATED`).
+    undated: bool,
     search: bool,
 }
 
@@ -222,8 +283,9 @@ impl Filter {
             kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
             bounds: q.bounds.map(|b| b.normalized()),
             max_id: q.max_id,
-            since: q.since,
-            until: q.until,
+            since: q.since.filter(|s| *s != UNDATED),
+            until: if q.since == Some(UNDATED) { None } else { q.until },
+            undated: q.since == Some(UNDATED),
             search: q.search,
         }
     }
@@ -244,6 +306,9 @@ impl Filter {
         }
         if self.until.is_some() {
             s.push_str(" AND taken_at < :until");
+        }
+        if self.undated {
+            s.push_str(" AND taken_at IS NULL");
         }
         if self.search {
             s.push_str(" AND id IN (SELECT photo_id FROM search_hits)");
@@ -661,6 +726,79 @@ impl Db {
             rows
         };
         out.duplicates = sets.iter().filter(|(h, _)| hashes.contains(h)).map(|(_, n)| n - 1).sum();
+        Ok(out)
+    }
+
+    /// The counts for the left-hand tree under the view's filters (`q`) and the chosen tag and person (`ask`). Each
+    /// section is counted with every filter except its own. Short statements, so the database is free in between.
+    pub fn facet_counts(&self, q: &PhotoQuery, ask: &FacetAsk) -> Result<FacetCounts> {
+        let mut out = FacetCounts::default();
+        let pairs = |sql: String, base: &FacetBase| -> Result<Vec<(i64, i64)>> {
+            let c = self.conn();
+            let mut s = c.prepare(&sql).map_err(db_err)?;
+            let rows = s.query_map(base.params().as_slice(), |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+            Ok(rows)
+        };
+
+        // Media types: everything but the media type.
+        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person);
+        for (kind, n) in pairs(format!("SELECT kind, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY kind", base.sql), &base)? {
+            if kind == 1 {
+                out.videos = n;
+            } else {
+                out.photos = n;
+            }
+        }
+        // Folders: everything but the folder.
+        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person);
+        out.folders = pairs(format!("SELECT folder_id, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY folder_id", base.sql), &base)?;
+        // People: everything but the person.
+        let base = FacetBase::new(q, false, false, false, ask.tag, None);
+        out.people = pairs(
+            format!("SELECT person_id, COUNT(DISTINCT photo_id) FROM faces WHERE person_id IS NOT NULL AND photo_id IN ({}) GROUP BY person_id", base.sql),
+            &base,
+        )?;
+        // Auto tags: everything but the tag; then the different photos in each group of tags.
+        let base = FacetBase::new(q, false, false, false, None, ask.person);
+        {
+            let c = self.conn();
+            let mut s = c.prepare(&format!("SELECT tag, COUNT(DISTINCT photo_id) FROM photo_tags WHERE photo_id IN ({}) GROUP BY tag", base.sql)).map_err(db_err)?;
+            out.tags = s.query_map(base.params().as_slice(), |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        }
+        for group in ask.tag_groups {
+            if group.is_empty() {
+                out.tag_groups.push(0);
+                continue;
+            }
+            let names: Vec<String> = (0..group.len()).map(|i| format!(":g{i}")).collect();
+            let sql = format!(
+                "SELECT COUNT(DISTINCT photo_id) FROM photo_tags WHERE tag IN ({}) AND photo_id IN ({})",
+                names.join(","),
+                base.sql
+            );
+            let mut params = base.params();
+            for (name, tag) in names.iter().zip(group) {
+                params.push((name.as_str(), tag as &dyn rusqlite::ToSql));
+            }
+            let c = self.conn();
+            out.tag_groups.push(c.query_row(&sql, params.as_slice(), |r| r.get(0)).map_err(db_err)?);
+        }
+        // Trips: everything but the date window when that came from a trip.
+        if !ask.trip_windows.is_empty() {
+            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person);
+            let mut times: Vec<i64> = {
+                let c = self.conn();
+                let mut s = c.prepare(&format!("SELECT taken_at FROM photos WHERE taken_at IS NOT NULL AND id IN ({})", base.sql)).map_err(db_err)?;
+                let rows = s.query_map(base.params().as_slice(), |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<i64>, _>>().map_err(db_err)?;
+                rows
+            };
+            times.sort_unstable();
+            out.trips = ask
+                .trip_windows
+                .iter()
+                .map(|(since, until)| (times.partition_point(|t| t < until) - times.partition_point(|t| t < since)) as i64)
+                .collect();
+        }
         Ok(out)
     }
 
@@ -2953,5 +3091,103 @@ mod tests {
         assert_eq!(db.face_rejections().unwrap().get(&fa), Some(&vec![b]));
         db.move_face(fa, b).unwrap(); // the user puts it back
         assert!(db.face_rejections().unwrap().get(&fa).is_none());
+    }
+
+    #[test]
+    fn facet_counts_leave_out_each_sections_own_filter() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, b) = (db.add_folder("/a").unwrap(), db.add_folder("/b").unwrap());
+        let p1 = db.upsert_photo(a, "/a/1.jpg", 1, 1, &meta(Some(100))).unwrap();
+        let p2 = db.upsert_photo(a, "/a/2.jpg", 1, 1, &meta(Some(200))).unwrap();
+        let _v = db.upsert_photo(a, "/a/3.mp4", 1, 1, &video_meta(300, 1000)).unwrap();
+        let p3 = db.upsert_photo(b, "/b/4.jpg", 1, 1, &meta(Some(1000))).unwrap();
+        let p4 = db.upsert_photo(b, "/b/5.jpg", 1, 1, &meta(Some(2000))).unwrap();
+        let tag = |id, tags: &[&str]| db.set_tags(id, "m", "t", &tags.iter().map(|t| (t.to_string(), 0.9)).collect::<Vec<_>>()).unwrap();
+        tag(p1, &["beach"]);
+        tag(p2, &["beach", "dog"]);
+        tag(p3, &["dog"]);
+        tag(p4, &["beach"]);
+        let person = person_of(&db, &[p2, p3], [1.0, 0.0]);
+        let groups = vec![vec!["beach".to_string(), "dog".to_string()]];
+        let windows = [(0, 500), (500, 3000)];
+        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, trip_dates, tag_groups: &groups, trip_windows: &windows };
+        let tags = |f: &FacetCounts| {
+            let mut t = f.tags.clone();
+            t.sort();
+            t
+        };
+        let sorted = |mut v: Vec<(i64, i64)>| {
+            v.sort();
+            v
+        };
+
+        // Nothing chosen: the whole library.
+        let all = db.facet_counts(&PhotoQuery::default(), &ask(None, None, false)).unwrap();
+        assert_eq!((all.photos, all.videos), (4, 1));
+        assert_eq!(sorted(all.folders.clone()), vec![(a, 3), (b, 2)]);
+        assert_eq!(tags(&all), vec![("beach".to_string(), 3), ("dog".to_string(), 2)]);
+        assert_eq!(all.tag_groups, vec![4]); // four different photos carry one of the two tags
+        assert_eq!(all.people, vec![(person, 2)]);
+        assert_eq!(all.trips, vec![3, 2]);
+
+        // A folder chosen: every section but Folders narrows to it.
+        let in_a = PhotoQuery { folder_id: Some(a), ..Default::default() };
+        let f = db.facet_counts(&in_a, &ask(None, None, false)).unwrap();
+        assert_eq!(sorted(f.folders.clone()), vec![(a, 3), (b, 2)], "the Folders list ignores its own choice");
+        assert_eq!((f.photos, f.videos), (2, 1));
+        assert_eq!(tags(&f), vec![("beach".to_string(), 2), ("dog".to_string(), 1)]);
+        assert_eq!(f.people, vec![(person, 1)]);
+        assert_eq!(f.trips, vec![3, 0]);
+
+        // A tag chosen: Auto tags ignores it, the rest narrow to it.
+        let t = db.facet_counts(&PhotoQuery::default(), &ask(Some("dog"), None, false)).unwrap();
+        assert_eq!(tags(&t), tags(&all));
+        assert_eq!(sorted(t.folders.clone()), vec![(a, 1), (b, 1)]);
+        assert_eq!((t.photos, t.videos), (2, 0));
+        assert_eq!(t.people, vec![(person, 2)]);
+
+        // A person chosen: People ignores it; tags narrow to that person's photos.
+        let pe = db.facet_counts(&PhotoQuery::default(), &ask(None, Some(person), false)).unwrap();
+        assert_eq!(pe.people, vec![(person, 2)]);
+        assert_eq!(tags(&pe), vec![("beach".to_string(), 1), ("dog".to_string(), 2)]);
+        assert_eq!(sorted(pe.folders.clone()), vec![(a, 1), (b, 1)]);
+
+        // A media type chosen: Media types ignores it; the rest count only that kind.
+        let photos_only = PhotoQuery { kind: Some(MediaKind::Photo), ..Default::default() };
+        let k = db.facet_counts(&photos_only, &ask(None, None, false)).unwrap();
+        assert_eq!((k.photos, k.videos), (4, 1));
+        assert_eq!(sorted(k.folders.clone()), vec![(a, 2), (b, 2)]);
+
+        // A date window: everything narrows to it, except Trips when the window came from a trip.
+        let early = PhotoQuery { since: Some(0), until: Some(500), ..Default::default() };
+        assert_eq!(db.facet_counts(&early, &ask(None, None, false)).unwrap().trips, vec![3, 0]);
+        assert_eq!(db.facet_counts(&early, &ask(None, None, true)).unwrap().trips, vec![3, 2]);
+        assert_eq!(db.facet_counts(&early, &ask(None, None, true)).unwrap().photos, 2);
+
+        // Hidden extra copies are never counted.
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![p4]).unwrap();
+        assert_eq!(db.facet_counts(&PhotoQuery::default(), &ask(None, None, false)).unwrap().photos, 3);
+    }
+
+    #[test]
+    fn the_undated_window_selects_only_items_without_a_date() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/u").unwrap();
+        let dated = db.upsert_photo(f, "/u/a.jpg", 1, 1, &meta(Some(1_000_000))).unwrap();
+        let undated = db.upsert_photo(f, "/u/b.jpg", 1, 1, &meta(None)).unwrap();
+        let also = db.upsert_photo(f, "/u/c.mp4", 1, 1, &PhotoMeta { kind: MediaKind::Video, ..meta(None) }).unwrap();
+        let q = |since, until, kind| PhotoQuery { since, until, kind, ..Default::default() };
+        let none = q(Some(UNDATED), None, None);
+        let ids: Vec<_> = db.list_photos_in(&none, 0, 10).unwrap().iter().map(|p| p.id).collect();
+        assert!(ids.contains(&undated) && ids.contains(&also) && !ids.contains(&dated));
+        assert_eq!(db.count_photos_in(&none).unwrap(), 2);
+        assert_eq!(db.day_groups(&none).unwrap().iter().map(|g| (g.day.clone(), g.count)).collect::<Vec<_>>(), vec![(None, 2)]);
+        // It combines with the other filters, and a real window still never matches an undated item.
+        assert_eq!(db.count_photos_in(&q(Some(UNDATED), None, Some(MediaKind::Video))).unwrap(), 1);
+        assert_eq!(db.count_photos_in(&q(Some(0), Some(i64::MAX), None)).unwrap(), 1);
+        // The counts beside the tree's entries follow it too.
+        let ask = FacetAsk { tag: None, person: None, trip_dates: false, tag_groups: &[], trip_windows: &[] };
+        let facets = db.facet_counts(&none, &ask).unwrap();
+        assert_eq!((facets.photos, facets.videos), (1, 1));
     }
 }

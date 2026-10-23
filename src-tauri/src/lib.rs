@@ -296,6 +296,35 @@ async fn load_progress(state: tauri::State<'_, AppState>, folder_ids: Vec<i64>) 
     .map_err(|e| e.to_string())?
 }
 
+/// The counts beside the entries of the left-hand tree under the filters in force: each section is counted with every
+/// filter except its own. `tag` and `person` are the ones chosen in the tree; `trip_dates` says the date window is a
+/// chosen trip; `trip_windows` are the `[since, until)` windows of the trips listed. Runs off the main thread.
+#[tauri::command]
+async fn facet_counts(
+    state: tauri::State<'_, AppState>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+    max_id: Option<i64>,
+    since: Option<i64>,
+    until: Option<i64>,
+    tag: Option<String>,
+    person: Option<i64>,
+    trip_dates: bool,
+    trip_windows: Vec<(i64, i64)>,
+) -> Result<pixie_core::FacetCounts, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let groups: Vec<Vec<String>> = pixie_analysis::tags::CATEGORIES.iter().map(|(_, labels)| labels.iter().map(|l| l.to_string()).collect()).collect();
+        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, trip_dates, tag_groups: &groups, trip_windows: &trip_windows };
+        let mut counts = db.facet_counts(&query_of(None, folder_id, kind, bounds, max_id, since, until, None), &ask).map_err(|e| e.to_string())?;
+        counts.tag_group_names = pixie_analysis::tags::CATEGORIES.iter().map(|(name, _)| name.to_string()).collect();
+        Ok(counts)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// What `scan_folders` did: the folders' ids, and whether they joined a scan that was already running.
 #[derive(Serialize)]
 struct ScanStart {
@@ -1160,7 +1189,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, load_progress, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])

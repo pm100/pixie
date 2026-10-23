@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DayGroup } from './api';
-import { activeKeys, buildDateTree } from './tree';
+import { buildDateTree } from './tree';
 
 const g = (day: string | null, count: number, first_index: number): DayGroup => ({ day, count, first_index });
 
@@ -34,15 +34,5 @@ describe('buildDateTree', () => {
     expect(buildDateTree([])).toEqual([]);
     const t = buildDateTree([g(null, 7, 0)]);
     expect(t.map((n) => [n.key, n.count])).toEqual([['undated', 7]]);
-  });
-});
-
-describe('activeKeys', () => {
-  it('lists the year, month and day containing a group', () => {
-    const t = buildDateTree(groups);
-    expect([...activeKeys(t, 1)].sort()).toEqual(['d:2024-06-01', 'm:2024-06', 'y:2024']);
-    expect([...activeKeys(t, 3)]).toEqual(['undated']);
-    expect(activeKeys(t, 99).size).toBe(0);
-    expect(activeKeys(t, -1).size).toBe(0);
   });
 });

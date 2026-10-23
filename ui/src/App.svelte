@@ -6,7 +6,7 @@
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
-    listFacePeople, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
+    listFacePeople, facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
@@ -25,6 +25,7 @@
   import { parseKindFilter } from './lib/kind';
   import { POPOUT_CLOSE, POPOUT_CLOSED, POPOUT_MOVED, POPOUT_READY, POPOUT_SHOW, parseMoved } from './lib/popout';
   import { periodLabel, periodRange } from './lib/periods';
+  import { clearAllTitle, filterNames, offerClearAll } from './lib/filterSummary';
   import { parseRecentDays, recentLabel, recentSince } from './lib/recent';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
@@ -38,6 +39,7 @@
   import Welcome from './lib/Welcome.svelte';
   import { allSetSummary, phaseAfterScan, type Phase } from './lib/loadFlow';
   import { analysisView, type LoadProgress } from './lib/analysisView';
+  import { indexFacets, type Facets } from './lib/facets';
   import { createStripFeed, type StripItem } from './lib/stripFeed';
   import { thumbUrl } from './lib/url';
   import { addFound, applyCount, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
@@ -72,14 +74,13 @@
   // The dates offered in the left pane. On the map a chosen period filters the pins and the grid; the pane must
   // stay whole so another period can still be picked, so it is built without that period.
   let navGroups = $state<DayGroup[]>([]);
-  let periodKey = $state<string | null>(null); // y:2025, m:2025-06 or d:2025-06-14, only on the map
+  let periodKey = $state<string | null>(null); // the chosen date: y:2025, m:2025-06, d:2025-06-14 or undated
   // A chosen trip (its `since`). Like Recent and a chosen period it is a date range, so choosing one replaces the others.
   let tripKey = $state<number | null>(null);
   const recentOn = $derived(view.since !== null && periodKey === null && tripKey === null);
   let folders = $state<Folder[]>([]);
   let selection = $state(emptySelection);
   let selectedPhoto = $state<Photo | null>(null);
-  let activeGroup = $state(0);
   let scrollTo = $state<{ group: number; n: number } | null>(null);
   let jumps = 0;
   let scanning = $state(false), seen = $state(0), message = $state('');
@@ -262,8 +263,7 @@
     e.preventDefault();
   }
 
-  // activeGroup is set too: near the end the list cannot scroll far enough to put a short group on top.
-  const jump = (group: number) => { activeGroup = group; scrollTo = { group, n: ++jumps }; };
+  const jump = (group: number) => { scrollTo = { group, n: ++jumps }; };
 
   /** Reload the count and day groups for the current view; the grid refetches on `version`. */
   async function refresh(toTop = false) {
@@ -286,9 +286,10 @@
     if (toTop) jump(0);
   }
 
-  /** The day groups for the left pane: the same as `g`, except that on the map a chosen period is left out. */
+  /** The day groups for the When list: the same as `g`, except that a chosen date (or Last 30 days) is left out, as
+   *  every section is counted without its own filter, so the other dates stay there to choose. */
   async function navGroupsFor(v: View, g: DayGroup[]): Promise<DayGroup[]> {
-    if (mode !== 'map' || periodKey === null) return g;
+    if (periodKey === null && !recentOn) return g;
     return listDayGroups(v.order, v.folderId, v.kind, v.bounds, v.maxId, null, null, v.search);
   }
 
@@ -337,9 +338,8 @@
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
-  const filtered = $derived(activeTag !== null || activePerson !== null || periodKey !== null || tripKey !== null || view.folderId !== null || view.since !== null);
 
-  /** "Show all": drop the tag, person and date range in one go. */
+  /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
     closePopout();
     try {
@@ -348,13 +348,14 @@
     await syncFilters();
     periodKey = null;
     tripKey = null;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null, kind: null };
+    savePref('kind', null);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
   }
 
-  /** On the map: show only one year, month or day (the same key again clears it). */
+  /** Show only one year, month or day, or the items without a date (the same key again clears it). */
   function setPeriod(key: string) {
     const next = key === periodKey ? null : key;
     const r = next === null ? null : periodRange(next);
@@ -364,7 +365,7 @@
     view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    loadPoints();
+    if (mode === 'map') loadPoints();
   }
 
   function setKind(kind: MediaKind | null) {
@@ -406,6 +407,16 @@
   // Trips: runs of days away from home. Home is the user's to confirm (in Settings), so none are shown before that.
   let tripPrefs = $state<TripPrefs>(cleanTripPrefs(loadPref<unknown>('trips', null)));
   let trips = $state<Trip[]>([]);
+
+  /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
+  const activeNames = $derived(filterNames({
+    tag: activeTag === null ? null : tagLabel(activeTag),
+    person: activeInfo === null ? null : personLabel(activeInfo),
+    folder: view.folderId === null ? null : (folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'),
+    trip: tripKey === null ? null : (trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'),
+    date: periodKey !== null ? `Showing only ${periodLabel(periodKey)}` : recentOn ? recentLabel(recentDays) : null,
+    kind: view.kind,
+  }));
   let tripsAsked = 0;
   async function loadTrips() {
     const mine = ++tripsAsked;
@@ -563,10 +574,7 @@
     mode = 'library';
     tab = 'browse';
     points = [];
-    // A period chosen on the map is a map-only filter; Recent stays.
-    const clearPeriod = periodKey !== null;
-    periodKey = null;
-    view = { ...view, bounds: null, ...(clearPeriod ? { since: null, until: null } : {}) };
+    view = { ...view, bounds: null }; // the map's area goes; every other filter, dates included, stays
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
   }
@@ -602,6 +610,22 @@
   /** How far the analysis has got for the photos of this load's folders (null until first counted). */
   let flowLoad = $state<LoadProgress | null>(null);
   let facePeople = $state(0);
+  /** The counts beside the entries of the left-hand tree under the filters in force; null until first counted. */
+  let facets = $state<Facets | null>(null);
+  const facetsLatest = createLatest();
+  $effect(() => {
+    // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
+    // refresh of the listing (a scan added photos, a duplicate was hidden...).
+    const v = view, tag = activeTag, person = activePerson, list = trips, chosenTrip = tripKey;
+    version;
+    const token = facetsLatest.next();
+    const timer = setTimeout(() => {
+      facetCounts(v, tag, person, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]))
+        .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
+        .catch(() => { /* the entries keep the counts they came with */ });
+    }, 120);
+    return () => clearTimeout(timer);
+  });
   let allSet = $state<ReturnType<typeof allSetSummary> | null>(null);
   let flowProblems: string[] = []; // folders that could not be read during this flow, for the end screen
   let flowIds: number[] = [];
@@ -870,6 +894,10 @@
           <span class="filter">Person “{personLabel(activeInfo)}”
             <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
         {/if}
+        {#if view.kind !== null}
+          <span class="filter">{view.kind === 'photo' ? 'Photos only' : 'Videos only'}
+            <button onclick={() => setKind(null)} aria-label="Show photos and videos" title="Show photos and videos">✕</button></span>
+        {/if}
         {#if view.folderId !== null}
           <span class="filter">Folder “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'}”
             <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
@@ -878,11 +906,15 @@
           <span class="filter">Trip “{trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'}”
             <button onclick={() => setTrip(null)} aria-label="Clear trip" title="Clear trip">✕</button></span>
         {/if}
+        {#if recentOn}
+          <span class="filter">{recentLabel(recentDays)}
+            <button onclick={() => setRecent(false)} aria-label="Show all dates" title="Show all dates">✕</button></span>
+        {/if}
         {#if periodKey !== null}
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
         {/if}
-        {#if filtered}<button class="showall" onclick={showAll} title="Clear the tag, person and dates">Show all</button>{/if}
+        {#if offerClearAll(activeNames)}<button class="clearall" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -893,15 +925,15 @@
         {:else}
       <Shell>
         {#snippet left()}
-          <Nav groups={navGroups} {activeGroup} kind={view.kind} recent={recentOn}
-               filterDates={mode === 'map'} period={periodKey} recentText={recentLabel(recentDays)}
-               {tags} tag={activeTag} ontag={setTag}
+          <Nav groups={navGroups} kind={view.kind} recent={recentOn}
+               period={periodKey} recentText={recentLabel(recentDays)}
+               {facets} {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                folders={folderInfos} folderId={view.folderId} onfolder={setFolder}
-               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings}
+               {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
-               ongroup={jump} onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
+               onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
         {#snippet center()}
           {#if mode === 'map'}
@@ -919,8 +951,7 @@
                 {:else}
                   <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                         onopen={openItem}
-                        onselect={(i, mods) => (selection = click(selection, i, mods))}
-                        onvisiblegroup={(g) => (activeGroup = g)} />
+                        onselect={(i, mods) => (selection = click(selection, i, mods))} />
                 {/if}
               </div>
             </div>
@@ -929,8 +960,7 @@
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
-                  onselect={(i, mods) => (selection = click(selection, i, mods))}
-                  onvisiblegroup={(g) => (activeGroup = g)} />
+                  onselect={(i, mods) => (selection = click(selection, i, mods))} />
           {/if}
         {/snippet}
         {#snippet right()}
@@ -990,7 +1020,9 @@
   .content { flex: 1; min-height: 0; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
-  .showall { font: inherit; font-size: 13px; }
+  /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */
+  .clearall { border: 0; background: none; padding: 2px 4px; font: inherit; font-size: 13px; color: #1a3f9a; cursor: pointer; }
+  .clearall:hover { text-decoration: underline; }
   .filter button:hover { background: rgba(47, 111, 237, .2); }
   .page-over { position: absolute; inset: 0; z-index: 5; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }

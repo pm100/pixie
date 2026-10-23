@@ -1,7 +1,12 @@
 import { monthName } from './format';
 
-/** A navigation key (`y:2025`, `m:2025-06`, `d:2025-06-14`) as a time range in unix seconds, UTC: since inclusive, until exclusive. */
+/** The `since` that selects the items with no date (mirrors the Rust `UNDATED`): the lowest whole number a browser holds exactly. */
+export const UNDATED = -9_007_199_254_740_991;
+
+/** A navigation key (`y:2025`, `m:2025-06`, `d:2025-06-14`) as a time range in unix seconds, UTC: since inclusive, until exclusive.
+ *  The key `undated` is the items without a date: a window starting at `UNDATED`. */
 export function periodRange(key: string): { since: number; until: number } | null {
+  if (key === 'undated') return { since: UNDATED, until: UNDATED + 1 };
   const m = /^(y|m|d):(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(key);
   if (!m) return null;
   const [, kind, ys, ms, ds] = m;
@@ -22,6 +27,7 @@ export function periodRange(key: string): { since: number; until: number } | nul
 
 /** A period key as people read it: `2026`, `September 2026`, `19 September 2026`; empty if it is not a period key. */
 export function periodLabel(key: string): string {
+  if (key === 'undated') return 'items without a date';
   if (periodRange(key) === null) return '';
   const [, y, m, d] = /^[ymd]:(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(key)!;
   return [d ? String(Number(d)) : '', m ? monthName(Number(m)) : '', y].filter(Boolean).join(' ');
