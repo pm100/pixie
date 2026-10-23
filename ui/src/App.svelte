@@ -48,7 +48,7 @@
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
   import Shell from './lib/Shell.svelte';
   import Tabs from './lib/Tabs.svelte';
-  import { pickAction, visibleTabs, type TabId } from './lib/tabs';
+  import { visibleTabs, type TabId } from './lib/tabs';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
   import Nav from './lib/Nav.svelte';
   import Viewer from './lib/Viewer.svelte';
@@ -66,6 +66,8 @@
   const same = (a: View, b: View) =>
     a.order === b.order && a.folderId === b.folderId && a.kind === b.kind && a.since === b.since && a.until === b.until && a.search === b.search && sameBounds(a.bounds, b.bounds);
   let view = $state<View>({ ...initial });
+  /** The grid is limited to the part of the map in view ("Only this area"); see Map mode below. */
+  let areaOnly = $state(false);
   // The view the loaded groups/pages belong to. It trails `view` by one round trip, so the grid,
   // details and viewer never mix the new order with old data.
   let shown = $state<View>({ ...initial });
@@ -248,13 +250,7 @@
   /** Tabs only choose what is drawn: selection, scroll and filters live here and survive a switch. */
   function pickTab(id: TabId) {
     closeViewer();
-    switch (pickAction(id, mode, tab)) {
-      case 'enter-map': toggleMap(); break;
-      case 'show-map': tab = 'map'; break;
-      case 'reset-map': mapResetKey++; break;
-      case 'leave-map': leaveMap(); break;
-      default: tab = id;
-    }
+    tab = id;
   }
 
   function noBrowserMenu(e: MouseEvent) {
@@ -348,7 +344,8 @@
     await syncFilters();
     periodKey = null;
     tripKey = null;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null, kind: null };
+    areaOnly = false;
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -408,6 +405,9 @@
   let tripPrefs = $state<TripPrefs>(cleanTripPrefs(loadPref<unknown>('trips', null)));
   let trips = $state<Trip[]>([]);
 
+  /** What the grid says when nothing matches. */
+  const emptyMessage = $derived(view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
     tag: activeTag === null ? null : tagLabel(activeTag),
@@ -416,6 +416,7 @@
     trip: tripKey === null ? null : (trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'),
     date: periodKey !== null ? `Showing only ${periodLabel(periodKey)}` : recentOn ? recentLabel(recentDays) : null,
     kind: view.kind,
+    area: areaOnly,
   }));
   let tripsAsked = 0;
   async function loadTrips() {
@@ -500,10 +501,11 @@
 
   const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
 
-  // Map mode: a map above the grid; the grid shows what is inside the visible map area.
-  let mode = $state<'library' | 'map'>('library');
+  // Map mode (the Grid | Map switch in Browse's toolbar): a map above the grid. The map moves freely; the grid follows
+  // the part in view only when the user asks ("Only this area", which then shows as a pill like every other filter).
+  let mode = $state<'library' | 'map'>(loadPref<unknown>('browseMap', false) === true ? 'map' : 'library');
+  let mapBounds: Bounds | null = null; // the area the map shows now
   let points = $state<GeoPoint[]>([]);
-  let mapResetKey = $state(0); // bumped when Map is clicked again: back to the whole map
   let soloPhoto = $state<Photo | null>(null); // a photo opened from the map's popup
   let lastMap: MapView | null = parseMapView(loadPref<unknown>('mapView', null)); // latest position, kept for the next opening
   let mapStart = $state<MapView | null>(lastMap); // where the map opens; read once by the map
@@ -526,6 +528,8 @@
 
   function setBounds(bounds: Bounds | null) {
     if (mode !== 'map') return;
+    mapBounds = bounds;
+    if (!areaOnly) return; // the map moves freely; only an area the user asked for filters the grid
     if (openIndex !== null || soloPhoto !== null) { pendingBounds = { b: bounds }; return; }
     if (sameBounds(bounds, view.bounds)) return;
 
@@ -540,6 +544,7 @@
    */
   async function focusPhoto(p: Photo) {
     if (mode !== 'map' || p.gps_lat === null || p.gps_lon === null) return;
+    areaOnly = true; // the grid is now limited to this spot, which is a filter like any other (it shows as a pill)
     const d = 0.00002; // about 2 m
     view = { ...view, bounds: { south: p.gps_lat - d, west: p.gps_lon - d, north: p.gps_lat + d, east: p.gps_lon + d } };
     selection = emptySelection;
@@ -569,22 +574,37 @@
     }
   }
 
-  function leaveMap() {
+  /** Show the map above the grid, or go back to the grid alone (which drops the map area; every other filter stays). */
+  function setMapShown(on: boolean) {
+    if (on === (mode === 'map')) return;
+    savePref('browseMap', on);
+    if (on) {
+      mapStart = lastMap;
+      mode = 'map';
+      loadPoints();
+      return;
+    }
     pendingBounds = null;
     mode = 'library';
-    tab = 'browse';
     points = [];
-    view = { ...view, bounds: null }; // the map's area goes; every other filter, dates included, stays
-    selection = emptySelection;
-    refresh(true).catch((e) => (message = String(e)));
+    mapBounds = null;
+    if (areaOnly) {
+      areaOnly = false;
+      view = { ...view, bounds: null };
+      selection = emptySelection;
+      refresh(true).catch((e) => (message = String(e)));
+    }
   }
 
-  function toggleMap() {
-    if (mode === 'map') { mapResetKey++; return; } // clicking Map again shows the whole map
-    mapStart = lastMap;
-    mode = 'map';
-    tab = 'map';
-    loadPoints();
+  /** "Only this area": the grid follows the part of the map in view. Off again (the pill's ✕): the grid shows everything the
+   *  other filters allow, wherever the map is. */
+  function setAreaOnly(on: boolean) {
+    if (on === areaOnly || mode !== 'map') return;
+    areaOnly = on;
+    pendingBounds = null;
+    view = { ...view, bounds: on ? mapBounds : null };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
   }
 
   /** Start a scan of one folder (or all, with null) and show progress. */
@@ -818,6 +838,7 @@
 
   onMount(() => {
     refresh().catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
@@ -881,7 +902,7 @@
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
-      <span>{total.toLocaleString()} {kindWord(view.kind)}{mode === 'map' ? ' in view' : ''}</span>
+      <span>{total.toLocaleString()} {kindWord(view.kind)}{areaOnly ? ' in the map area' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
     <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes'}>
@@ -897,6 +918,10 @@
         {#if view.kind !== null}
           <span class="filter">{view.kind === 'photo' ? 'Photos only' : 'Videos only'}
             <button onclick={() => setKind(null)} aria-label="Show photos and videos" title="Show photos and videos">✕</button></span>
+        {/if}
+        {#if areaOnly}
+          <span class="filter">In the map area
+            <button onclick={() => setAreaOnly(false)} aria-label="Show everything, not just the map area" title="Show everything, not just the map area">✕</button></span>
         {/if}
         {#if view.folderId !== null}
           <span class="filter">Folder “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'}”
@@ -914,7 +939,16 @@
           <span class="filter">Showing only {periodLabel(periodKey)}
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
         {/if}
-        {#if offerClearAll(activeNames)}<button class="clearall" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
+        {#if offerClearAll(activeNames)}<button class="linkbtn" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
+        <div class="viewctl">
+          <label class="check" title="Show a map above the photos">
+            <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Map
+          </label>
+          <!-- Only while the map is on; then the grid follows the part of the map in view, and a pill says so. -->
+          <label class="check" class:off={mode !== 'map'} title={mode === 'map' ? 'Show only the photos in the part of the map you can see' : 'Turn the map on to filter by it'}>
+            <input type="checkbox" checked={areaOnly} disabled={mode !== 'map'} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter by map
+          </label>
+        </div>
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -939,7 +973,7 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} initial={mapStart} resetKey={mapResetKey} route={tripKey !== null ? routeData : null} stopNames={routeNames}
+                <PhotoMap {points} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={focusPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}
@@ -947,7 +981,7 @@
               </div>
               <div class="mapbottom">
                 {#if total === 0 && !scanning}
-                  <p class="empty small">No photos or videos in this part of the map.</p>
+                  <p class="empty small">{areaOnly ? 'No photos or videos in this part of the map.' : emptyMessage}</p>
                 {:else}
                   <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                         onopen={openItem}
@@ -956,7 +990,7 @@
               </div>
             </div>
           {:else if total === 0 && !scanning}
-            <p class="empty">{view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`}</p>
+            <p class="empty">{emptyMessage}</p>
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
                   onopen={openItem}
@@ -1021,8 +1055,13 @@
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */
-  .clearall { border: 0; background: none; padding: 2px 4px; font: inherit; font-size: 13px; color: #1a3f9a; cursor: pointer; }
-  .clearall:hover { text-decoration: underline; }
+  .linkbtn { border: 0; background: none; padding: 2px 4px; font: inherit; font-size: 13px; color: #1a3f9a; cursor: pointer; }
+  .linkbtn:hover { text-decoration: underline; }
+  .viewctl { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+  /* Two independent switches: the map, and whether the grid follows it. */
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #333; cursor: pointer; }
+  .check.off { color: #999; cursor: default; }
+  .check input { margin: 0; }
   .filter button:hover { background: rgba(47, 111, 237, .2); }
   .page-over { position: absolute; inset: 0; z-index: 5; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }

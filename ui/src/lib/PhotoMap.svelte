@@ -9,15 +9,13 @@
   import { tripDates } from './trips';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, initial, resetKey, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
+  let { points, initial, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
     points: GeoPoint[];
     /** A chosen trip: its stops are numbered and arrows show the way from one to the next. */
     route?: Route | null;
     /** The name of each stop of `route`, where known. */
     stopNames?: (string | null)[];
     initial: MapView | null;
-    /** Changes when the user asks for the whole map again. */
-    resetKey: number;
     onbounds: (b: Bounds | null) => void;
     onmove: (v: MapView) => void;
     /** A single pin was clicked: its photo. */
@@ -239,17 +237,6 @@
     };
   });
 
-  // The user clicked Map again: back to the whole map.
-  let lastReset: number | null = null; // the first run only records the starting key
-  $effect(() => {
-    const k = resetKey;
-    if (lastReset === null) { lastReset = k; return; }
-    if (k === lastReset) return;
-    lastReset = k;
-    map?.closePopup();
-    fitAll();
-  });
-
   // A trip was chosen (or cleared, or its stops named): draw it, and show all of it when it first appears.
   let routeShown: Route | null = null;
   $effect(() => {
@@ -276,7 +263,7 @@
 
 <div class="wrap">
   <div class="map" bind:this={el}></div>
-  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Zoom out to fit every photo and video on the map">Show all</button>
+  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Zoom out to fit every photo and video on the map">Zoom to all</button>
   {#if points.length === 0}
     <div class="note">No photos with a location yet.</div>
   {/if}

@@ -6,6 +6,8 @@ export type ActiveFilters = {
   /** A chosen date ("September 2026") or Last 30 days; the two replace each other, so there is at most one. */
   date: string | null;
   kind: MediaKind | null;
+  /** The grid is limited to the part of the map in view. */
+  area: boolean;
 };
 
 /** The filters in force, in the order of the pills in the toolbar, as the pills read. */
@@ -14,6 +16,7 @@ export function filterNames(f: ActiveFilters): string[] {
     f.tag !== null ? `Tagged “${f.tag}”` : null,
     f.person !== null ? `Person “${f.person}”` : null,
     f.kind !== null ? (f.kind === 'photo' ? 'Photos only' : 'Videos only') : null,
+    f.area ? 'In the map area' : null,
     f.folder !== null ? `Folder “${f.folder}”` : null,
     f.trip !== null ? `Trip “${f.trip}”` : null,
     f.date,
