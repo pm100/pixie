@@ -50,6 +50,7 @@ const VISIBLE: &str = "h.missing = 0 AND h.dup = 0";
 
 struct OpenFace {
     id: i64,
+    photo: i64,
     vector: Vec<f32>,
     person: Option<i64>,
 }
@@ -196,7 +197,10 @@ fn plan(snap: &Snapshot) -> Plan {
     let mut groups = Vec::new();
     let mut unsorted = Vec::new();
     for (ci, cluster) in clusters.iter().enumerate() {
-        if cluster.len() < MIN_GROUP {
+        // Two faces in one photo are two people, so faces from the same photo are no evidence that one person recurs:
+        // a group needs MIN_GROUP different photos (a crowd of tiny alike faces in one picture is not a person).
+        let photos: HashSet<i64> = cluster.iter().map(|&m| rest[m].photo).collect();
+        if cluster.len() < MIN_GROUP || photos.len() < MIN_GROUP {
             unsorted.extend(cluster.iter().map(|&m| rest[m].id));
             continue;
         }
@@ -336,12 +340,12 @@ impl Db {
         let rev = rev_of(&c)?;
         let mut st = c
             .prepare(&format!(
-                "SELECT f.id, f.embedding, f.person_id FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
+                "SELECT f.id, f.embedding, f.person_id, f.photo_id FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
                    LEFT JOIN people p ON p.id = f.person_id
                   WHERE f.person_id IS NULL OR p.confirmed = 0 ORDER BY f.id"
             ))
             .map_err(db_err)?;
-        let rows = st.query_map([], |r| Ok(OpenFace { id: r.get(0)?, vector: vector_of(&r.get::<_, Vec<u8>>(1)?), person: r.get(2)? })).map_err(db_err)?;
+        let rows = st.query_map([], |r| Ok(OpenFace { id: r.get(0)?, vector: vector_of(&r.get::<_, Vec<u8>>(1)?), person: r.get(2)?, photo: r.get(3)? })).map_err(db_err)?;
         let open = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)?;
         let groups = {
             let mut st = c.prepare("SELECT id FROM people WHERE confirmed = 0").map_err(db_err)?;
@@ -623,8 +627,7 @@ impl Db {
 
     // ---- what the People tab shows ----
 
-    /// The cards for one section of the People tab. Groups come consistent-looking first, then the ones that look like
-    /// several people; each card has faces chosen to show how the person looks, and (for a group) who it looks like.
+    /// The cards for one section of the People tab. Groups come biggest first (most photos); each card has faces chosen to show how the person looks, and (for a group) who it looks like.
     pub fn list_face_people(&self, view: FaceView) -> Result<Vec<FacePerson>> {
         let cond = match view {
             FaceView::Groups => "p.hidden = 0 AND p.name IS NULL",
@@ -667,7 +670,7 @@ impl Db {
             .map_err(db_err)?;
         let mut cards = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)?;
         match view {
-            FaceView::Groups => cards.sort_by(|a, b| a.card.looks_mixed.cmp(&b.card.looks_mixed).then(b.card.faces.cmp(&a.card.faces)).then(a.card.id.cmp(&b.card.id))),
+            FaceView::Groups => cards.sort_by(|a, b| b.card.photos.cmp(&a.card.photos).then(a.card.id.cmp(&b.card.id))),
             FaceView::People => cards.sort_by(|a, b| {
                 (b.card.unchecked > 0).cmp(&(a.card.unchecked > 0)).then_with(|| a.card.name.as_deref().unwrap_or("").to_lowercase().cmp(&b.card.name.as_deref().unwrap_or("").to_lowercase())).then(a.card.id.cmp(&b.card.id))
             }),
@@ -844,6 +847,23 @@ mod tests {
         assert!(ids[7..].iter().all(|f| person_of(&db, *f).is_none()), "a pair and a single are in no group");
         let o = db.face_overview().unwrap();
         assert_eq!((o.groups, o.unsorted, o.people), (2, 3, 0));
+    }
+
+    #[test]
+    fn faces_that_are_all_in_one_photo_do_not_make_a_group() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let crowd = db.upsert_photo(f, "/p/crowd.jpg", 1, 1, &meta()).unwrap();
+        db.replace_faces(crowd, "fv", &[nf(0.0), nf(2.0), nf(4.0), nf(6.0)]).unwrap();
+        let r = db.tidy().unwrap().unwrap();
+        assert_eq!((r.groups, r.unsorted), (0, 4));
+        // the same faces in three different photos are a person
+        for (i, a) in [8.0f32, 10.0].iter().enumerate() {
+            let p = db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &meta()).unwrap();
+            db.replace_faces(p, "fv", &[nf(*a)]).unwrap();
+        }
+        let r = db.tidy().unwrap().unwrap();
+        assert_eq!((r.groups, r.unsorted), (1, 0), "three photos now, so a group");
     }
 
     #[test]

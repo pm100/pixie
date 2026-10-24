@@ -48,7 +48,7 @@ export type FaceOverview = { groups: number; people: number; unsorted: number; h
 export type FaceView = 'groups' | 'people' | 'hidden';
 export type FaceOrder = 'best' | 'doubtful' | 'unchecked';
 /** The sections of the People tab. */
-export type Section = 'groups' | 'people' | 'unsorted' | 'hidden';
+export type Section = 'groups' | 'people' | 'unsorted';
 
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
 /** "12 photos". (A photo with the same person twice is rare, so faces are not counted separately.) */
@@ -63,15 +63,10 @@ export function personRows(people: PersonInfo[], chosen: number | null, expanded
   return { rows, hidden: people.length - limit };
 }
 
-/** Which section to open the People tab on: the one with something to do, groups to name first. */
-export function firstSection(o: FaceOverview): Section {
-  if (o.groups > 0) return 'groups';
-  if (o.people > 0) return 'people';
-  if (o.unsorted > 0) return 'unsorted';
-  return o.hidden > 0 ? 'hidden' : 'groups';
-}
+/** Which section to open the People tab on: Named, always, so it opens the same way every time. */
+export const firstSection = (_o: FaceOverview): Section => 'people';
 
-export const sectionTitle: Record<Section, string> = { groups: 'Grouped', people: 'Named', unsorted: 'Unsure', hidden: 'Hidden' };
+export const sectionTitle: Record<Section, string> = { groups: 'Pending', people: 'Named', unsorted: 'Unsure' };
 
 /** What the computer thinks of a group's faces, in words. */
 export function verdict(p: Pick<FacePerson, 'mixed' | 'looks_mixed'>): { text: string; mixed: boolean } | null {

@@ -18,11 +18,10 @@
 <div class="tiles">
   {#each tiles as t, i (t.id)}
     <figure class:on={picked.has(t.id)}>
-      <button class="pick" aria-pressed={picked.has(t.id)} aria-label="Pick this face" onclick={(e) => onclick(t.id, e.shiftKey)}>
+      <button class="photo" onclick={() => onzoom(i)} title="See the whole photo this face is in" aria-label="See the whole photo">
         <img alt="" loading="lazy" decoding="async" src={faceUrl(t.id, undefined, 320)} />
-        <span class="tick" aria-hidden="true">{picked.has(t.id) ? '✓' : ''}</span>
       </button>
-      <button class="zoom" onclick={() => onzoom(i)} title="See the whole photo this face is in" aria-label="See the whole photo">⤢</button>
+      <button class="tick" aria-pressed={picked.has(t.id)} aria-label="Select this face" title="Select (shift-click selects a run)" onclick={(e) => onclick(t.id, e.shiftKey)}>{picked.has(t.id) ? '✓' : ''}</button>
       {#if badge}<figcaption>{@render badge(t)}</figcaption>{/if}
     </figure>
   {/each}
@@ -31,13 +30,12 @@
 <style>
   .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   figure { position: relative; margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .pick { padding: 0; border: 3px solid transparent; border-radius: 10px; background: none; cursor: pointer; display: block; position: relative; }
-  figure.on .pick { border-color: #2f6fed; }
-  .pick img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 7px; background: #dde2ee; display: block; }
-  figure.on .pick img { opacity: .85; }
-  .tick { position: absolute; left: 6px; top: 6px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .35); color: #fff; font-size: 14px; line-height: 18px; text-align: center; box-sizing: border-box; }
+  .photo { padding: 0; border: 3px solid transparent; border-radius: 10px; background: none; cursor: zoom-in; display: block; }
+  figure.on .photo { border-color: #2f6fed; }
+  .photo img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 7px; background: #dde2ee; display: block; }
+  figure.on .photo img { opacity: .85; }
+  .tick { position: absolute; left: 8px; top: 8px; width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .35); color: #fff; font-size: 14px; line-height: 20px; text-align: center; box-sizing: border-box; cursor: pointer; }
+  .tick:hover { background: rgba(0, 0, 0, .6); }
   figure.on .tick { background: #2f6fed; }
-  .zoom { position: absolute; right: 6px; top: 6px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: rgba(0, 0, 0, .5); color: #fff; font-size: 15px; line-height: 1; cursor: zoom-in; opacity: 0; }
-  figure:hover .zoom, .zoom:focus-visible { opacity: 1; }
   figcaption { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; min-height: 0; }
 </style>

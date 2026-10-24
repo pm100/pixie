@@ -1,7 +1,7 @@
 <script lang="ts">
   /** "This is…": say who a group or some faces are by typing a name. People already named that match what is typed are
    *  listed to click; Enter commits what was typed (a name somebody has means the same person), Esc closes. */
-  let { people, label = 'This is…', onpick, onnew, small = false }: {
+  let { people, label = 'This is…', onpick, onnew, small = false, disabled = false }: {
     /** The people it can be (named, not hidden, not the one it already is). */
     people: { id: number; name: string }[];
     label?: string;
@@ -9,11 +9,14 @@
     /** A name nobody has: a new person. */
     onnew: (name: string) => void;
     small?: boolean;
+    disabled?: boolean;
   } = $props();
 
   let open = $state(false);
   let draft = $state('');
   let root = $state<HTMLElement | null>(null);
+  /** The match chosen with the arrow keys (-1: none, so Enter uses what was typed). */
+  let active = $state(-1);
 
   const text = $derived(draft.trim());
   const matches = $derived(text === '' ? people : people.filter((p) => p.name.toLowerCase().includes(text.toLowerCase())));
@@ -22,12 +25,19 @@
   function close() {
     open = false;
     draft = '';
+    active = -1;
+  }
+  function move(by: number) {
+    if (matches.length === 0) return;
+    active = Math.min(matches.length - 1, Math.max(0, active + by)); // from none, Down is the first and Up the first too
+    queueMicrotask(() => root?.querySelector('.list button.on')?.scrollIntoView({ block: 'nearest' }));
   }
   function pick(id: number) {
     close();
     onpick(id);
   }
   function commit() {
+    if (active >= 0 && matches[active]) return pick(matches[active].id);
     const name = text; // closing clears the draft, so take what was typed first
     if (name === '') return;
     const same = exact;
@@ -43,24 +53,27 @@
 />
 
 <span class="thisis" bind:this={root}>
-  <button class="trigger" class:small aria-haspopup="dialog" aria-expanded={open} onclick={() => (open = !open)}>{label} <span aria-hidden="true">▾</span></button>
+  <button class="trigger" class:small {disabled} aria-haspopup="dialog" aria-expanded={open} onclick={() => (open = !open)}>{label} <span aria-hidden="true">▾</span></button>
   {#if open}
     <div class="menu">
       <input
         use:focus
         bind:value={draft}
+        oninput={() => (active = -1)}
         placeholder="Who is this? Type a name, then Enter"
         aria-label="Who is this?"
         autocomplete="off"
         onkeydown={(e) => {
           if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          else if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
           else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
         }}
       />
       {#if matches.length > 0}
         <div class="list">
-          {#each matches as p (p.id)}
-            <button onclick={() => pick(p.id)}>{p.name}</button>
+          {#each matches as p, i (p.id)}
+            <button class:on={i === active} tabindex="-1" onclick={() => pick(p.id)}>{p.name}</button>
           {/each}
         </div>
       {/if}
@@ -76,5 +89,6 @@
   input { font: inherit; font-size: 13px; padding: 5px 7px; border: 1px solid #c3c8d4; border-radius: 6px; width: 100%; box-sizing: border-box; }
   .list { display: flex; flex-direction: column; max-height: 220px; overflow: auto; }
   .list button { text-align: left; font: inherit; font-size: 13px; border: 0; background: none; padding: 5px 8px; border-radius: 5px; cursor: pointer; color: inherit; }
-  .list button:hover, .list button:focus-visible { background: #e3ecff; }
+  .list button:hover, .list button:focus-visible, .list button.on { background: #e3ecff; }
+  .list button.on { outline: 1px solid #9db6ee; }
 </style>

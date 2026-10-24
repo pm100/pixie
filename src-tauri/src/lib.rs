@@ -436,41 +436,36 @@ fn faces_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<pixie_c
     state.db.faces_of(photo_id)
 }
 
-static TIDYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static TIDY_AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Something was confirmed (a name, a "this is…"): faces that clearly match it can join now, so regroup in the background
-/// and tell the window when done. Asked again while one runs, it runs once more afterwards.
-fn tidy_soon(state: &AppState) {
-    use std::sync::atomic::Ordering::SeqCst;
-    TIDY_AGAIN.store(true, SeqCst);
-    if TIDYING.swap(true, SeqCst) {
-        return;
+/// Something was confirmed (a name, a "this is…"): faces that clearly match it can join now. This waits for the regroup
+/// (a few seconds) so the screen can redraw with the result, and tells the window.
+fn tidy_now(db: &Db, people: &pixie_analysis::people_service::PeopleService) {
+    if let Err(e) = db.tidy() {
+        eprintln!("[people] cannot regroup faces: {e}");
     }
+    people.announce();
+}
+
+/// Run `f` off the main thread (the regroup is heavy), with the database and the people service.
+async fn blocking<T: Send + 'static>(
+    state: &tauri::State<'_, AppState>,
+    f: impl FnOnce(Db, Arc<pixie_analysis::people_service::PeopleService>) -> Result<T, PixieError> + Send + 'static,
+) -> Result<T, String> {
     let (db, people) = (state.db.clone(), state.people.clone());
-    std::thread::spawn(move || loop {
-        while TIDY_AGAIN.swap(false, SeqCst) {
-            if let Err(e) = db.tidy() {
-                eprintln!("[people] cannot regroup faces: {e}");
-            }
-            people.announce();
-        }
-        TIDYING.store(false, SeqCst);
-        if !TIDY_AGAIN.load(SeqCst) || TIDYING.swap(true, SeqCst) {
-            break;
-        }
-    });
+    tauri::async_runtime::spawn_blocking(move || f(db, people).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
 }
 
 /// Name a person (which confirms them). A name somebody already has means the same person: the two become one. Returns
 /// the id of the person kept.
 #[tauri::command]
-fn rename_person(state: tauri::State<AppState>, id: i64, name: Option<String>) -> Result<i64, PixieError> {
-    let kept = state.db.name_person(id, name.as_deref())?;
-    if name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
-        tidy_soon(&state);
-    }
-    Ok(kept)
+async fn rename_person(state: tauri::State<'_, AppState>, id: i64, name: Option<String>) -> Result<i64, String> {
+    blocking(&state, move |db, people| {
+        let kept = db.name_person(id, name.as_deref())?;
+        if name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
+            tidy_now(&db, &people);
+        }
+        Ok(kept)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -485,18 +480,24 @@ fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieErro
 
 /// Say a group is one person without naming them yet.
 #[tauri::command]
-fn confirm_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
-    state.db.confirm_person(id)?;
-    tidy_soon(&state);
-    Ok(())
+async fn confirm_person(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    blocking(&state, move |db, people| {
+        db.confirm_person(id)?;
+        tidy_now(&db, &people);
+        Ok(())
+    })
+    .await
 }
 
 /// "This is the same person as ...": `from` becomes part of `into`.
 #[tauri::command]
-fn assign_group(state: tauri::State<AppState>, from: i64, into: i64) -> Result<(), PixieError> {
-    state.db.assign_group(from, into)?;
-    tidy_soon(&state);
-    Ok(())
+async fn assign_group(state: tauri::State<'_, AppState>, from: i64, into: i64) -> Result<(), String> {
+    blocking(&state, move |db, people| {
+        db.assign_group(from, into)?;
+        tidy_now(&db, &people);
+        Ok(())
+    })
+    .await
 }
 
 /// What each part of the People tab holds.
@@ -530,10 +531,13 @@ fn confirm_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<()
 }
 
 #[tauri::command]
-fn move_faces(state: tauri::State<AppState>, face_ids: Vec<i64>, person_id: i64) -> Result<(), PixieError> {
-    state.db.move_faces(&face_ids, person_id)?;
-    tidy_soon(&state);
-    Ok(())
+async fn move_faces(state: tauri::State<'_, AppState>, face_ids: Vec<i64>, person_id: i64) -> Result<(), String> {
+    blocking(&state, move |db, people| {
+        db.move_faces(&face_ids, person_id)?;
+        tidy_now(&db, &people);
+        Ok(())
+    })
+    .await
 }
 
 /// "Not this person": the faces wait in no group and are not guessed back.
@@ -544,10 +548,13 @@ fn reject_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<(),
 
 /// Start a new person from these faces (optionally named); returns their id.
 #[tauri::command]
-fn new_person_from_faces(state: tauri::State<AppState>, face_ids: Vec<i64>, name: Option<String>) -> Result<i64, PixieError> {
-    let id = state.db.new_person_from_faces(&face_ids, name.as_deref())?;
-    tidy_soon(&state);
-    Ok(id)
+async fn new_person_from_faces(state: tauri::State<'_, AppState>, face_ids: Vec<i64>, name: Option<String>) -> Result<i64, String> {
+    blocking(&state, move |db, people| {
+        let id = db.new_person_from_faces(&face_ids, name.as_deref())?;
+        tidy_now(&db, &people);
+        Ok(id)
+    })
+    .await
 }
 
 /// Cut a group that looks like several people into pieces; returns how many (0: it does not come apart).

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import {
-    assignGroup, facesOfPerson, faceOverview, hidePerson, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
-    tidyFaces, unhidePerson, unsortedFaces,
+    assignGroup, facesOfPerson, faceOverview, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
+    unsortedFaces,
   } from './api';
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
@@ -34,7 +34,9 @@
   let unsorted = $state<UnsortedFace[]>([]);
   /** One person (or group) opened, with how their faces are shown: all of them in an order, or only those to check. */
   let selected = $state<number | null>(null);
-  let order = $state<FaceOrder>('best');
+  let order = $state<FaceOrder>('doubtful');
+  /** How the Named screen is ordered. */
+  let peopleSort = $state<'name' | 'photos'>('name');
   let tiles = $state<FaceTile[]>([]);
   let shown = $state(PAGE);
   let picked = $state<ReadonlySet<number>>(new Set());
@@ -45,7 +47,6 @@
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
-  let nameDraft = $state<string | null>(null);
   const latest = createLatest();
 
   const current = $derived(selected === null ? null : (cards.find((c) => c.id === selected) ?? named.find((c) => c.id === selected) ?? null));
@@ -54,6 +55,11 @@
   const fraction = $derived(status ? analysisFraction(status) : null);
   const stale = $derived(refreshOffered(status?.rev, loadedRev));
   const total = $derived(section === 'unsorted' && selected === null ? (overview?.unsorted ?? 0) : (current?.faces ?? 0));
+  const shownCards = $derived(
+    section === 'people'
+      ? [...cards].sort((a, b) => (peopleSort === 'photos' ? b.photos - a.photos : 0) || (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' }) || a.id - b.id)
+      : cards,
+  );
   const faceList = $derived(selected === null && section === 'unsorted' ? unsorted.map((u) => u.tile) : tiles);
 
   async function load() {
@@ -76,7 +82,14 @@
       cards = list;
       named = people ?? list;
       unsorted = loose;
-      tiles = faces;
+      // the person was given away (their group joined someone, or every face was moved): back to the list, not an empty screen
+      const gone = sel !== null && ![...list, ...named].some((c) => c.id === sel);
+      if (gone) {
+        selected = null;
+        shown = PAGE;
+        picked = new Set();
+      }
+      tiles = gone ? [] : faces;
       loaded = true;
       loadedRev = ov.rev;
       // what was picked may have moved on
@@ -116,17 +129,15 @@
     tiles = [];
     shown = PAGE;
     picked = new Set();
-    nameDraft = null;
     load();
   }
-  function open(id: number, mode: FaceOrder = 'best') {
+  function open(id: number, mode: FaceOrder = 'doubtful') {
     selected = id;
     order = mode;
     tiles = [];
     shown = PAGE;
     picked = new Set();
     anchor = null;
-    nameDraft = null;
     load();
   }
   const back = () => {
@@ -134,7 +145,6 @@
     tiles = [];
     shown = PAGE;
     picked = new Set();
-    nameDraft = null;
     load();
   };
   const setOrder = (o: FaceOrder) => { order = o; shown = PAGE; picked = new Set(); load(); };
@@ -151,30 +161,11 @@
   // ---- groups and people
   const assign = (p: FacePerson, into: number) => act(async () => { await assignGroup(p.id, into); });
   const name = (p: FacePerson, text: string) => act(async () => { await renamePerson(p.id, text); });
-  const hide = (p: FacePerson) => act(async () => { await hidePerson(p.id); if (selected === p.id) selected = null; });
-  const unhide = (p: FacePerson) => act(() => unhidePerson(p.id));
-  async function saveName() {
-    const cur = current;
-    const text = (nameDraft ?? '').trim();
-    nameDraft = null;
-    if (!cur || text === (cur.name ?? '')) return;
-    await act(async () => {
-      const kept = await renamePerson(cur.id, text === '' ? null : text);
-      if (selected === cur.id) selected = kept; // a name somebody has: the two were joined
-    });
-  }
 
   // ---- faces
   const give = (faceIds: number[], person: number) => act(() => moveFaces(faceIds, person));
   const giveNew = (faceIds: number[], text: string) => act(() => newPersonFromFaces(faceIds, text));
   const notThem = (faceIds: number[]) => act(() => rejectFaces(faceIds));
-  const splitOff = (faceIds: number[]) => act(() => newPersonFromFaces(faceIds, null));
-  async function tidy() {
-    await act(async () => {
-      const done = await tidyFaces();
-      if (!done) notice = 'The faces were changing while this ran. Try again in a moment.';
-    });
-  }
 
   function step(by: number) {
     if (viewing === null || faceList.length === 0) return;
@@ -188,15 +179,19 @@
     if (viewing !== null && viewing >= faceList.length) viewing = faceList.length > 0 ? faceList.length - 1 : null;
   });
 
-  const sections: Section[] = ['groups', 'people', 'unsorted', 'hidden'];
+  /** Opened an unnamed group: with nothing selected, "This is…" names the whole group. */
+  const wholeGroup = $derived(selected !== null && current !== null && current.name === null);
+  const sections: Section[] = ['people', 'groups', 'unsorted'];
 </script>
 
 {#snippet lightActions(t: FaceTile)}
   <ThisIs people={pickers} small onpick={(p) => give([t.id], p)} onnew={(n) => giveNew([t.id], n)} />
-  {#if selected !== null && current?.confirmed}<button onclick={() => notThem([t.id])}>Not this person</button>{/if}
 {/snippet}
 
-<div class="people">
+<div class="people" aria-busy={busy}>
+  {#if busy}
+    <div class="busy" role="status"><span class="spin" aria-hidden="true"></span>Updating face data…</div>
+  {/if}
   <div class="top">
     <header>
       {#if selected !== null}
@@ -209,13 +204,11 @@
             </button>
           {/each}
         </nav>
-        <span class="sp"></span>
-        <button onclick={tidy} disabled={busy} title="Regroup the faces you have not settled yet. This also happens by itself as photos are scanned.">Tidy up</button>
       {/if}
       {#if error}<span class="err">{error}</span>{/if}
     </header>
 
-    {#if scanning || stale}
+    {#if scanning || (stale && !busy)}
       <div class="status" role="status">
         <span>{status ? peopleLine(status) : ''}</span>
         {#if fraction !== null && scanning}<progress value={fraction} max="1"></progress>{/if}
@@ -225,40 +218,45 @@
     {#if notice}<div class="notice" role="status">{notice} <button onclick={() => (notice = null)}>OK</button></div>{/if}
 
     {#if loaded && selected === null && section === 'groups' && (overview?.groups ?? 0) > 0}
-      <p class="hint">Pixie put faces that look alike together. Say who each group is: <b>This is…</b> picks someone you have already named, <b>Somebody else…</b> names a new person.</p>
+      <p class="hint">Pixie put faces that look alike together. Say who each group is: <b>This is…</b> takes a name: type a new one, or pick someone you have already named.</p>
     {/if}
 
     {#if loaded && selected !== null && current}
       <div class="detail-head">
-        <form onsubmit={(e) => { e.preventDefault(); saveName(); }}>
-          <input value={nameDraft ?? current.name ?? ''} oninput={(e) => (nameDraft = e.currentTarget.value)} onblur={saveName} placeholder="Name this person" aria-label="Name" />
-        </form>
+        {#if current.name !== null}<strong class="title">{current.name}</strong>{/if}
         <span class="line">{faceCardLine(current)}</span>
-        {#if current.name === null && !current.hidden}
-          <ThisIs people={pickers} label="This group is…" onpick={(p) => assign(current, p)} onnew={(n) => name(current, n)} />
-        {/if}
-        {#if !current.hidden}<button onclick={() => hide(current)}>Hide</button>{:else}<button onclick={() => unhide(current)}>Unhide</button>{/if}
       </div>
       <div class="listbar">
-        <span>Show:</span>
-        <button class:on={order === 'best'} onclick={() => setOrder('best')} title="The clearest, largest faces first">Best faces first</button>
-        <button class:on={order === 'doubtful'} onclick={() => setOrder('doubtful')} title="The faces least like the rest first: look here for the wrong ones">Least typical first</button>
+        <span>Sort:</span>
+        <button class:on={order === 'doubtful'} onclick={() => setOrder('doubtful')} title="The faces least like the rest first: look here for the wrong ones">Least confident</button>
+        <button class:on={order === 'best'} onclick={() => setOrder('best')} title="The clearest, largest faces first">Most confident</button>
         <span class="sp"></span>
       </div>
     {/if}
 
     {#if loaded && (selected !== null || section === 'unsorted')}
       <div class="bar" class:live={picked.size > 0}>
+        <!-- One "This is…", always in the same place: with faces selected it names those faces; with none, the whole group
+             (in a named person or in Unsure there is nothing to name until something is selected). -->
+        <ThisIs
+          people={pickers}
+          disabled={picked.size === 0 && !wholeGroup}
+          onpick={(p) => (picked.size > 0 ? give(ids(), p) : current && assign(current, p))}
+          onnew={(n) => (picked.size > 0 ? giveNew(ids(), n) : current && name(current, n))}
+        />
         {#if picked.size > 0}
-          <b>{picked.size.toLocaleString()} picked</b>
-          <ThisIs people={pickers} onpick={(p) => give(ids(), p)} onnew={(n) => giveNew(ids(), n)} />
-          {#if selected !== null && current?.confirmed}<button onclick={() => notThem(ids())}>Not this person</button>{/if}
-          {#if selected !== null}<button onclick={() => splitOff(ids())} title="Make these faces a person of their own">Split off as a new person</button>{/if}
-          <button onclick={() => (picked = new Set())}>Clear</button>
+          <b>{picked.size.toLocaleString()} selected</b>
+        {:else if wholeGroup}
+          <span class="muted">names this whole group, or select faces with the circles (shift-click selects a run)</span>
         {:else}
-          <span class="muted">Click faces to pick them (shift-click picks a run), then say who they are.</span>
-          <span class="sp"></span>
-          {#if faceList.length > 0}<button onclick={pickAll}>Pick all shown</button>{/if}
+          <span class="muted">Click a circle to select a face (shift-click selects a run), then say who they are.</span>
+        {/if}
+        <span class="sp"></span>
+        {#if picked.size > 0}
+          {#if selected !== null}<button onclick={() => notThem(ids())}>Move to Unsure</button>{/if}
+          <button onclick={() => (picked = new Set())}>Clear</button>
+        {:else if faceList.length > 0}
+          <button onclick={pickAll}>Select all shown</button>
         {/if}
       </div>
     {/if}
@@ -278,14 +276,21 @@
       {#if cards.length === 0}
         <p class="hint">
           {#if section === 'groups'}{(overview?.people ?? 0) > 0 ? 'Nothing left to name.' : 'No groups yet. Pixie looks for faces in the background once the face models are downloaded: see Settings, Picture analysis.'}
-          {:else if section === 'people'}Nobody is named yet. Name a group in “Grouped”.
-          {:else}Nobody is hidden.{/if}
+          {:else if section === 'people'}Nobody is named yet. Name a group in “Pending”.
+          {/if}
         </p>
       {:else}
+        {#if section === 'people'}
+          <div class="listbar">
+            <span>Sort:</span>
+            <button class:on={peopleSort === 'name'} onclick={() => (peopleSort = 'name')}>Name</button>
+            <button class:on={peopleSort === 'photos'} onclick={() => (peopleSort = 'photos')}>Photos</button>
+          </div>
+        {/if}
         <div class="cards">
-          {#each cards as p (p.id)}
+          {#each shownCards as p (p.id)}
             <PersonCard person={p} people={pickable(named, p.id)} onopen={() => open(p.id)}
-                        onassign={(into) => assign(p, into)} onname={(text) => name(p, text)} onhide={() => hide(p)} onunhide={() => unhide(p)} />
+                        onassign={(into) => assign(p, into)} onname={(text) => name(p, text)} />
           {/each}
         </div>
       {/if}
@@ -306,6 +311,11 @@
 
 <style>
   .people { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fff; font-size: 14px; }
+  /* Shown only if the work takes a moment, so quick changes do not flash it. */
+  .busy { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; gap: 12px; background: rgba(255, 255, 255, .8); font-size: 16px; color: #2a3f7a; opacity: 0; animation: busyin .2s .25s forwards; }
+  .spin { width: 22px; height: 22px; border: 3px solid #c3d1f5; border-top-color: #2f6fed; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes busyin { to { opacity: 1; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .top { flex: none; padding: 14px 18px 8px; border-bottom: 1px solid #e3e6ee; }
   .scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 24px; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
@@ -322,10 +332,8 @@
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 8px; padding: 6px 12px; border-radius: 8px; background: #fff4d6; color: #5b4300; font-size: 13px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
   button { font: inherit; font-size: 13px; }
-  input { font: inherit; font-size: 14px; padding: 3px 6px; border: 1px solid #c3c8d4; border-radius: 6px; background: #fff; color: inherit; }
   .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0 8px; }
-  .detail-head form { width: 240px; }
-  .detail-head input { width: 100%; box-sizing: border-box; }
+  .title { font-size: 16px; }
   .line { color: #666; font-size: 12px; }
   .listbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; color: #555; }
   .listbar button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }

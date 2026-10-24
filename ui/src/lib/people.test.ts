@@ -74,13 +74,10 @@ describe('faceCardLine', () => {
 });
 
 describe('firstSection', () => {
-  const o = (p: Partial<FaceOverview>): FaceOverview => ({ groups: 0, people: 0, unsorted: 0, hidden: 0, unchecked: 0, rev: 0, ...p });
-  it('opens on what there is to do: groups to name first', () => {
-    expect(firstSection(o({ groups: 3, people: 2 }))).toBe('groups');
-    expect(firstSection(o({ people: 2, unsorted: 9 }))).toBe('people');
-    expect(firstSection(o({ unsorted: 9, hidden: 1 }))).toBe('unsorted');
-    expect(firstSection(o({ hidden: 1 }))).toBe('hidden');
-    expect(firstSection(o({}))).toBe('groups');
+  it('always opens on Named', () => {
+    const o: FaceOverview = { groups: 3, people: 0, unsorted: 9, hidden: 1, unchecked: 0, rev: 0 };
+    expect(firstSection(o)).toBe('people');
+    expect(firstSection({ ...o, groups: 0, unsorted: 0 })).toBe('people');
   });
 });
 
