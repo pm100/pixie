@@ -107,12 +107,12 @@ describe('knowing when the whole library is done', () => {
 });
 
 describe('a load: the photos of the folders just added', () => {
-  const load = (o: Partial<LoadProgress> = {}): LoadProgress => ({ photos: 200, shown: 200, hashed: 200, tagged: 200, scanned: 200, people: 5, duplicates: 3, ...o });
+  const load = (o: Partial<LoadProgress> = {}): LoadProgress => ({ photos: 200, shown: 200, hashed: 200, tagged: 200, scanned: 200, faces: 5, duplicates: 3, ...o });
   // The statuses describe the whole library, which is no use for a load's counts: these disagree on purpose.
   const library = { tags: status({ done: 13881, total: 13881 }), faces: status({ done: 13881, total: 13881 }), dupes: dups({ done: 99, total: 99999, extra_files: 700 }) };
 
   it('takes its counts from the load, not from the library', () => {
-    const v = analysisView(input({ ...library, load: load({ tagged: 120, scanned: 100, hashed: 150, people: 2, duplicates: 1 }) }));
+    const v = analysisView(input({ ...library, load: load({ tagged: 120, scanned: 100, hashed: 150, faces: 2, duplicates: 1 }) }));
     expect(counter(v, 'tags').text).toBe('120 photos');
     expect(counter(v, 'faces').text).toBe('2 found');
     expect(counter(v, 'dupes').text).toBe('1 found');

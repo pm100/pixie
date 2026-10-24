@@ -365,12 +365,89 @@ pub struct FacePerson {
     pub id: i64,
     pub name: Option<String>,
     pub hidden: bool,
-    /// Also shown in the nav (not hidden, and named or in two or more photos): only then can Browse filter on them.
-    pub listed: bool,
+    /// The user has named or accepted it: its faces are fixed points for grouping the faces that are not confirmed.
+    pub confirmed: bool,
     pub photos: i64,
     pub faces: i64,
-    /// Up to three of their best faces, best first.
+    /// Faces that joined after it was confirmed, which the user has not looked at yet.
+    pub unchecked: i64,
+    /// The share of its face pairs that look like different people, or None when not measured.
+    pub mixed: Option<f32>,
+    /// It looks like more than one person (see `MIXED_ABOVE`): the card says so and offers to sort it out.
+    pub looks_mixed: bool,
+    /// Faces that show how it looks (the most typical first, then ones unlike those), not just its best faces.
     pub samples: Vec<i64>,
+    /// For a group that is not confirmed yet: the confirmed person it looks most like, if any.
+    pub suggestion: Option<Suggestion>,
+}
+
+/// Which people the People tab lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaceView {
+    /// Nobody has named them yet.
+    Groups,
+    /// Named people.
+    People,
+    /// Hidden from the nav and from the other lists.
+    Hidden,
+}
+
+/// How a person's faces are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaceOrder {
+    /// The clearest first.
+    Best,
+    /// The ones least like the rest first, which is where the wrongly grouped faces are.
+    Doubtful,
+    /// Only faces that joined after the person was confirmed and have not been checked, the most doubtful first.
+    Unchecked,
+}
+
+/// "This looks like <person>", with how sure (the mean similarity of its closest faces, 0 to 1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub person_id: i64,
+    pub name: Option<String>,
+    pub score: f32,
+}
+
+/// A face that belongs to no group, with who it looks like.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnsortedFace {
+    pub tile: FaceTile,
+    pub suggestion: Option<Suggestion>,
+}
+
+/// What the People tab's sections hold.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FaceOverview {
+    /// Groups waiting to be named.
+    pub groups: i64,
+    /// Confirmed people.
+    pub people: i64,
+    /// Faces in no group.
+    pub unsorted: i64,
+    /// Groups the user hid.
+    pub hidden: i64,
+    /// Faces that joined confirmed people since the user last looked.
+    pub unchecked: i64,
+    /// Changes whenever who-is-who changes (see `PeopleStatus::rev`).
+    pub rev: i64,
+}
+
+/// What a regrouping pass did.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TidyReport {
+    /// Faces that were open to regrouping.
+    pub faces: usize,
+    /// Groups now (not confirmed).
+    pub groups: usize,
+    /// Faces left in no group.
+    pub unsorted: usize,
+    /// Faces that clearly looked like a confirmed person and joined them, to be checked.
+    pub attached: usize,
 }
 
 /// Copies of the same file: every live photo whose contents hash to `hash`, the one to keep first.
@@ -412,8 +489,8 @@ pub struct LoadProgress {
     pub tagged: i64,
     /// Shown photos scanned for faces.
     pub scanned: i64,
-    /// Different people in the shown photos.
-    pub people: i64,
+    /// Faces found in the shown photos.
+    pub faces: i64,
     /// Extra copies in the sets of identical files that include one of these photos.
     pub duplicates: i64,
 }

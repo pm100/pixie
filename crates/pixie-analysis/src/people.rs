@@ -1,55 +1,4 @@
-use crate::cluster::{absorb, assign_excluding, Centroid};
 use image::DynamicImage;
-use pixie_index::Db;
-
-/// Group every face that has no person yet: each joins the most similar person (at least `threshold`), else starts a
-/// new one. Returns how many faces were assigned.
-pub fn assign_new_faces(db: &Db, threshold: f32) -> Result<usize, String> {
-    assign_with(db, load_people(db)?, threshold)
-}
-
-fn load_people(db: &Db) -> Result<Vec<Centroid>, String> {
-    Ok(db.people_centroids().map_err(|e| e.to_string())?.into_iter().map(|(id, vector, n)| Centroid { id, vector, n }).collect())
-}
-
-/// `assign_new_faces` starting from a snapshot of the people. The snapshot can go stale while this runs (the user
-/// merges or hides someone): a face whose person has vanished is not lost, the people are re-read and it is tried
-/// again, so one failure never strands the rest.
-fn assign_with(db: &Db, mut people: Vec<Centroid>, threshold: f32) -> Result<usize, String> {
-    let mut assigned = 0;
-    for _ in 0..3 {
-        let mut failed = None;
-        let rejections = db.face_rejections().map_err(|e| e.to_string())?;
-        for (face_id, embedding) in db.unassigned_faces().map_err(|e| e.to_string())? {
-            let skip = rejections.get(&face_id).map(Vec::as_slice).unwrap_or(&[]); // people it was rejected from
-            let outcome = match assign_excluding(&embedding, &people, threshold, skip) {
-                Some(i) => {
-                    let mut moved = people[i].clone();
-                    absorb(&mut moved, &embedding);
-                    db.assign_face(face_id, moved.id, &moved.vector, moved.n).map(|_| people[i] = moved)
-                }
-                None if !skip.is_empty() => db.park_face(face_id), // rejected and nobody else fits: it waits in the rejects
-                None => db.create_person(&embedding).and_then(|id| {
-                    db.assign_face(face_id, id, &embedding, 1)?;
-                    people.push(Centroid { id, vector: embedding.clone(), n: 1 });
-                    Ok(())
-                }),
-            };
-            match outcome {
-                Ok(()) => assigned += 1,
-                Err(e) => failed = Some(e.to_string()),
-            }
-        }
-        match failed {
-            None => return Ok(assigned),
-            Some(e) => {
-                eprintln!("[people] grouping again after: {e}");
-                people = load_people(db)?;
-            }
-        }
-    }
-    Ok(assigned)
-}
 
 /// A square picture of a face: centred on its box (fractions of `img`), `margin` wider than the box's longer side
 /// (0.35 = 35 % more), kept inside the photo, scaled to `out` x `out`.
@@ -108,45 +57,6 @@ pub fn cached_face(dir: &std::path::Path, key: &str, make: impl FnOnce() -> Resu
 mod tests {
     use super::*;
     use image::GenericImageView;
-    use pixie_core::{NewFace, PhotoMeta};
-
-    fn face(v: [f32; 2]) -> NewFace {
-        NewFace { x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.9, embedding: v.to_vec() }
-    }
-
-    fn library(n: usize) -> (Db, Vec<i64>) {
-        let db = Db::open_in_memory().unwrap();
-        let f = db.add_folder("/p").unwrap();
-        let ids = (0..n).map(|i| db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &PhotoMeta::default()).unwrap()).collect();
-        (db, ids)
-    }
-
-    #[test]
-    fn similar_faces_share_a_person_and_a_different_one_starts_another() {
-        let (db, ids) = library(3);
-        db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
-        db.replace_faces(ids[1], "v", &[face([0.99, 0.141])]).unwrap();
-        db.replace_faces(ids[2], "v", &[face([0.0, 1.0])]).unwrap();
-        assert_eq!(assign_new_faces(&db, 0.42).unwrap(), 3);
-        let a = db.faces_of(ids[0]).unwrap()[0].person_id;
-        let b = db.faces_of(ids[1]).unwrap()[0].person_id;
-        let c = db.faces_of(ids[2]).unwrap()[0].person_id;
-        assert!(a.is_some() && a == b && a != c && c.is_some());
-        assert_eq!(db.people_centroids().unwrap().len(), 2);
-        assert_eq!(assign_new_faces(&db, 0.42).unwrap(), 0); // nothing left to do
-    }
-
-    #[test]
-    fn a_new_face_joins_an_existing_person_and_updates_the_count() {
-        let (db, ids) = library(2);
-        db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        db.replace_faces(ids[1], "v", &[face([0.98, 0.2])]).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        let cs = db.people_centroids().unwrap();
-        assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].2, 2);
-    }
 
     #[test]
     fn crop_square_is_centred_on_the_face_and_has_the_asked_size() {
@@ -193,18 +103,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_snapshot_does_not_strand_faces() {
-        // The snapshot says person 999 (who no longer exists, e.g. merged away meanwhile) is the match for both faces.
-        let (db, ids) = library(2);
-        db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
-        db.replace_faces(ids[1], "v", &[face([0.0, 1.0])]).unwrap();
-        let stale = vec![Centroid { id: 999, vector: vec![0.7, 0.7], n: 3 }];
-        assert_eq!(assign_with(&db, stale, 0.42).unwrap(), 2);
-        assert!(db.unassigned_faces().unwrap().is_empty());
-        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id.is_some(), true);
-    }
-
-    #[test]
     fn the_asked_picture_size_is_one_of_the_offered_ones() {
         assert_eq!(face_size(None), 96);
         assert_eq!(face_size(Some("s=160")), 160);
@@ -238,40 +136,4 @@ mod tests {
         assert_eq!(names, vec!["9-1-2-96.jpg".to_string()]);
     }
 
-    #[test]
-    fn a_rejected_face_is_guessed_again_and_never_returns_to_the_person_it_was_rejected_from() {
-        let (db, ids) = library(4);
-        db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
-        db.replace_faces(ids[1], "v", &[face([0.99, 0.141])]).unwrap();
-        db.replace_faces(ids[2], "v", &[face([0.6, 0.8])]).unwrap(); // someone a bit like them
-        assign_new_faces(&db, 0.9).unwrap(); // strict: the third is a person of their own
-        let first = db.faces_of(ids[0]).unwrap()[0].person_id.unwrap();
-        let other = db.faces_of(ids[2]).unwrap()[0].person_id.unwrap();
-        let face = db.faces_of(ids[0]).unwrap()[0].id;
-        db.reject_face(face).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        let after = db.faces_of(ids[0]).unwrap()[0].person_id;
-        assert!(after.is_some(), "it was given to someone");
-        assert_ne!(after, Some(first), "but not to the person it was rejected from");
-        let _ = other;
-        assert_eq!(assign_new_faces(&db, 0.42).unwrap(), 0);
-    }
-
-    #[test]
-    fn a_rejected_face_nobody_else_matches_waits_in_the_rejects() {
-        let (db, ids) = library(2);
-        db.replace_faces(ids[0], "v", &[face([1.0, 0.0])]).unwrap();
-        db.replace_faces(ids[1], "v", &[face([1.0, 0.0])]).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        let only = db.faces_of(ids[0]).unwrap()[0].person_id.unwrap();
-        db.reject_face(db.faces_of(ids[0]).unwrap()[0].id).unwrap();
-        assign_new_faces(&db, 0.42).unwrap();
-        assert_eq!(db.faces_of(ids[0]).unwrap()[0].person_id, None);
-        let parked = db.rejected_faces(10).unwrap();
-        assert_eq!(parked.len(), 1);
-        assert_eq!(assign_new_faces(&db, 0.42).unwrap(), 0, "and is not grouped again");
-        // the user can still say who it is
-        db.move_face(parked[0].id, only).unwrap();
-        assert!(db.rejected_faces(10).unwrap().is_empty());
-    }
 }

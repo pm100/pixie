@@ -436,10 +436,41 @@ fn faces_for(state: tauri::State<AppState>, photo_id: i64) -> Result<Vec<pixie_c
     state.db.faces_of(photo_id)
 }
 
-/// Name a person; an empty name clears it.
+static TIDYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TIDY_AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Something was confirmed (a name, a "this is…"): faces that clearly match it can join now, so regroup in the background
+/// and tell the window when done. Asked again while one runs, it runs once more afterwards.
+fn tidy_soon(state: &AppState) {
+    use std::sync::atomic::Ordering::SeqCst;
+    TIDY_AGAIN.store(true, SeqCst);
+    if TIDYING.swap(true, SeqCst) {
+        return;
+    }
+    let (db, people) = (state.db.clone(), state.people.clone());
+    std::thread::spawn(move || loop {
+        while TIDY_AGAIN.swap(false, SeqCst) {
+            if let Err(e) = db.tidy() {
+                eprintln!("[people] cannot regroup faces: {e}");
+            }
+            people.announce();
+        }
+        TIDYING.store(false, SeqCst);
+        if !TIDY_AGAIN.load(SeqCst) || TIDYING.swap(true, SeqCst) {
+            break;
+        }
+    });
+}
+
+/// Name a person (which confirms them). A name somebody already has means the same person: the two become one. Returns
+/// the id of the person kept.
 #[tauri::command]
-fn rename_person(state: tauri::State<AppState>, id: i64, name: Option<String>) -> Result<(), PixieError> {
-    state.db.rename_person(id, name.as_deref())
+fn rename_person(state: tauri::State<AppState>, id: i64, name: Option<String>) -> Result<i64, PixieError> {
+    let kept = state.db.name_person(id, name.as_deref())?;
+    if name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
+        tidy_soon(&state);
+    }
+    Ok(kept)
 }
 
 #[tauri::command]
@@ -448,69 +479,89 @@ fn hide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError>
 }
 
 #[tauri::command]
-fn merge_people(state: tauri::State<AppState>, from: i64, into: i64) -> Result<(), PixieError> {
-    state.db.merge_people(from, into)
+fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.unhide_person(id)
 }
 
-/// After "not this person" the faces are guessed again at once (never as a person they were rejected from); one nobody else matches waits in the rejects.
-fn guess_again(db: &Db) {
-    if let Err(e) = pixie_analysis::people::assign_new_faces(db, pixie_analysis::cluster::JOIN_THRESHOLD) {
-        eprintln!("[people] cannot guess again: {e}");
-    }
-}
-
-/// "Not this person".
+/// Say a group is one person without naming them yet.
 #[tauri::command]
-fn reject_face(state: tauri::State<AppState>, face_id: i64) -> Result<(), PixieError> {
-    state.db.reject_face(face_id)?;
-    guess_again(&state.db);
+fn confirm_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.db.confirm_person(id)?;
+    tidy_soon(&state);
     Ok(())
 }
 
-/// Everyone for the Faces tab (see `Db::list_face_people`).
+/// "This is the same person as ...": `from` becomes part of `into`.
 #[tauri::command]
-fn list_face_people(state: tauri::State<AppState>, include_hidden: bool) -> Result<Vec<pixie_core::FacePerson>, PixieError> {
-    state.db.list_face_people(include_hidden)
+fn assign_group(state: tauri::State<AppState>, from: i64, into: i64) -> Result<(), PixieError> {
+    state.db.assign_group(from, into)?;
+    tidy_soon(&state);
+    Ok(())
 }
 
-/// One person's faces (at most `limit`, default 60): best first, or the most doubtful first.
+/// What each part of the People tab holds.
 #[tauri::command]
-fn faces_of_person(state: tauri::State<AppState>, person_id: i64, limit: Option<i64>, doubtful_first: Option<bool>) -> Result<Vec<pixie_core::FaceTile>, PixieError> {
-    state.db.faces_of_person(person_id, limit.unwrap_or(60).clamp(1, 5000), doubtful_first.unwrap_or(false))
+fn face_overview(state: tauri::State<AppState>) -> Result<pixie_core::FaceOverview, PixieError> {
+    state.db.face_overview()
 }
 
-/// Faces marked "not this person" and not given to anyone since.
+/// The cards of one section of the People tab (see `Db::list_face_people`).
 #[tauri::command]
-fn rejected_faces(state: tauri::State<AppState>, limit: Option<i64>) -> Result<Vec<pixie_core::FaceTile>, PixieError> {
-    state.db.rejected_faces(limit.unwrap_or(60).clamp(1, 500))
+fn list_face_people(state: tauri::State<AppState>, view: pixie_core::FaceView) -> Result<Vec<pixie_core::FacePerson>, PixieError> {
+    state.db.list_face_people(view)
 }
 
+/// One person's faces, `limit` (default 60) from `offset`, in the order asked for.
 #[tauri::command]
-fn move_face(state: tauri::State<AppState>, face_id: i64, person_id: i64) -> Result<(), PixieError> {
-    state.db.move_face(face_id, person_id)
+fn faces_of_person(state: tauri::State<AppState>, person_id: i64, offset: Option<i64>, limit: Option<i64>, order: pixie_core::FaceOrder) -> Result<Vec<pixie_core::FaceTile>, PixieError> {
+    state.db.faces_of_person(person_id, offset.unwrap_or(0).max(0), limit.unwrap_or(60).clamp(1, 5000), order)
+}
+
+/// Faces in no group, each with who it looks like.
+#[tauri::command]
+fn unsorted_faces(state: tauri::State<AppState>, offset: Option<i64>, limit: Option<i64>) -> Result<Vec<pixie_core::UnsortedFace>, PixieError> {
+    state.db.unsorted_faces(offset.unwrap_or(0).max(0), limit.unwrap_or(60).clamp(1, 500))
+}
+
+/// Say these faces are who they are filed under.
+#[tauri::command]
+fn confirm_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<(), PixieError> {
+    state.db.confirm_faces(&face_ids)
 }
 
 #[tauri::command]
 fn move_faces(state: tauri::State<AppState>, face_ids: Vec<i64>, person_id: i64) -> Result<(), PixieError> {
-    state.db.move_faces(&face_ids, person_id)
-}
-
-#[tauri::command]
-fn reject_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<(), PixieError> {
-    state.db.reject_faces(&face_ids)?;
-    guess_again(&state.db);
+    state.db.move_faces(&face_ids, person_id)?;
+    tidy_soon(&state);
     Ok(())
 }
 
-/// Start a new person from a face; returns their id.
+/// "Not this person": the faces wait in no group and are not guessed back.
 #[tauri::command]
-fn new_person_from_face(state: tauri::State<AppState>, face_id: i64, name: Option<String>) -> Result<i64, PixieError> {
-    state.db.new_person_from_face(face_id, name.as_deref())
+fn reject_faces(state: tauri::State<AppState>, face_ids: Vec<i64>) -> Result<(), PixieError> {
+    state.db.reject_faces(&face_ids)
 }
 
+/// Start a new person from these faces (optionally named); returns their id.
 #[tauri::command]
-fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
-    state.db.unhide_person(id)
+fn new_person_from_faces(state: tauri::State<AppState>, face_ids: Vec<i64>, name: Option<String>) -> Result<i64, PixieError> {
+    let id = state.db.new_person_from_faces(&face_ids, name.as_deref())?;
+    tidy_soon(&state);
+    Ok(id)
+}
+
+/// Cut a group that looks like several people into pieces; returns how many (0: it does not come apart).
+#[tauri::command]
+async fn split_group(state: tauri::State<'_, AppState>, id: i64) -> Result<usize, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.split_group(id).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
+}
+
+/// Regroup the faces nobody has settled now. Returns false when the faces kept changing meanwhile.
+#[tauri::command]
+async fn tidy_faces(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.tidy().map(|r| r.is_some()).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
 }
 
 /// The tag and the person the listings are really restricted to, so the chips can never disagree with them.
@@ -1191,7 +1242,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, merge_people, reject_face, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, rejected_faces, move_face, move_faces, reject_faces, new_person_from_face, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])

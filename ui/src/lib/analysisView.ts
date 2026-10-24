@@ -26,7 +26,7 @@ export type AnalysisView = {
 };
 
 /** How far the analysis has got for the photos of some folders, counted from those photos (mirrors the Rust `LoadProgress`). */
-export type LoadProgress = { photos: number; shown: number; hashed: number; tagged: number; scanned: number; people: number; duplicates: number };
+export type LoadProgress = { photos: number; shown: number; hashed: number; tagged: number; scanned: number; faces: number; duplicates: number };
 
 export type AnalysisInput = {
   /** The analyses' states. They say whether a model is on its way, failed or paused; for the whole library
@@ -99,7 +99,7 @@ export function analysisView(o: AnalysisInput): AnalysisView {
   }
   if (on('faces')) {
     const counts: Counts | null = load === undefined ? (o.faces ? { done: o.faces.done, total: o.faces.total } : null) : load && { done: load.scanned, total: load.shown };
-    built.push(modelRow('faces', o.faces, counts, `${n(load === undefined ? o.people : load?.people ?? 0)} found`));
+    built.push(modelRow('faces', o.faces, counts, `${n(load === undefined ? o.people : load?.faces ?? 0)} found`));
   }
   if (on('dupes') && (o.dupes || load)) {
     const counts: Counts | null = load === undefined ? (o.dupes ? { done: o.dupes.done, total: o.dupes.total } : null) : load && { done: load.hashed, total: load.photos };

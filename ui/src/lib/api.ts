@@ -119,12 +119,10 @@ import type { FaceInfo, PeopleStatus, PersonInfo } from './people';
 export const peopleStatus = () => invoke<PeopleStatus>('people_status');
 export const listPeople = () => invoke<PersonInfo[]>('list_people');
 export const facesFor = (photoId: number) => invoke<FaceInfo[]>('faces_for', { photoId });
-/** Name a person; an empty name clears it. */
-export const renamePerson = (id: number, name: string | null) => invoke<void>('rename_person', { id, name });
+/** Name a person (which confirms them); an empty name clears it. A name somebody has means the same person: the two
+ *  become one. Returns the id of the person kept. */
+export const renamePerson = (id: number, name: string | null) => invoke<number>('rename_person', { id, name });
 export const hidePerson = (id: number) => invoke<void>('hide_person', { id });
-export const mergePeople = (from: number, into: number) => invoke<void>('merge_people', { from, into });
-/** "Not this person": the face leaves its person and is not grouped automatically again. */
-export const rejectFace = (faceId: number) => invoke<void>('reject_face', { faceId });
 /** Show only photos with this person (null: off). List with `View.search`. */
 // ---- first run ----
 /** A place Pixie thinks holds photos (mirrors the Rust `Suggestion`). `included_in`: already part of another suggestion. */
@@ -169,20 +167,30 @@ export const renameTrip = (since: number, until: number, name: string) => invoke
 export const activeFilters = () => invoke<{ tag: string | null; person: number | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 
-// ---- the Faces tab ----
-import type { FacePerson, FaceTile } from './people';
-/** Everyone, most faces first (hidden people only when asked). */
-export const listFacePeople = (includeHidden: boolean) => invoke<FacePerson[]>('list_face_people', { includeHidden });
-/** A person's faces: best first, or the most doubtful (least like the rest) first. */
-export const facesOfPerson = (personId: number, limit?: number, doubtfulFirst?: boolean) => invoke<FaceTile[]>('faces_of_person', { personId, limit, doubtfulFirst });
-/** Faces marked "not this person" and not given to anyone since. */
-export const rejectedFaces = (limit?: number) => invoke<FaceTile[]>('rejected_faces', { limit });
-export const moveFace = (faceId: number, personId: number) => invoke<void>('move_face', { faceId, personId });
+// ---- the People tab ----
+import type { FaceOrder, FaceOverview, FacePerson, FaceTile, FaceView, UnsortedFace } from './people';
+/** How many groups, people, unsorted faces and hidden people there are. */
+export const faceOverview = () => invoke<FaceOverview>('face_overview');
+/** The cards of one section: groups to name, named people, or hidden ones. */
+export const listFacePeople = (view: FaceView) => invoke<FacePerson[]>('list_face_people', { view });
+/** A person's faces, `limit` from `offset`, in the order asked for. */
+export const facesOfPerson = (personId: number, offset: number, limit: number, order: FaceOrder) => invoke<FaceTile[]>('faces_of_person', { personId, offset, limit, order });
+/** Faces in no group, with who each looks like. */
+export const unsortedFaces = (offset: number, limit: number) => invoke<UnsortedFace[]>('unsorted_faces', { offset, limit });
+/** "This is the same person as ...": a whole group joins a person. */
+export const assignGroup = (from: number, into: number) => invoke<void>('assign_group', { from, into });
+/** Say faces are who they are filed under. */
+export const confirmFaces = (faceIds: number[]) => invoke<void>('confirm_faces', { faceIds });
 export const moveFaces = (faceIds: number[], personId: number) => invoke<void>('move_faces', { faceIds, personId });
+/** "Not this person": the faces wait in Unsorted and are not guessed back. */
 export const rejectFaces = (faceIds: number[]) => invoke<void>('reject_faces', { faceIds });
-/** Start a new person from a face; returns their id. */
-export const newPersonFromFace = (faceId: number, name: string | null) => invoke<number>('new_person_from_face', { faceId, name });
+/** Start a new person from faces (optionally named); returns their id. */
+export const newPersonFromFaces = (faceIds: number[], name: string | null) => invoke<number>('new_person_from_faces', { faceIds, name });
 export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id });
+/** Cut a group that looks like several people into pieces; returns how many (0: it does not come apart). */
+export const splitGroup = (id: number) => invoke<number>('split_group', { id });
+/** Regroup the faces nobody has settled now; false when they kept changing meanwhile. */
+export const tidyFaces = () => invoke<boolean>('tidy_faces');
 
 import type { DupGroup, DupStatus } from './dupes';
 /** Sets of identical files, most wasted space first; the copy to keep is first in each. */

@@ -5,8 +5,8 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
-    listFacePeople, facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
+    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
@@ -15,7 +15,7 @@
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
-  import FacesTab from './lib/FacesTab.svelte';
+  import PeopleTab from './lib/PeopleTab.svelte';
   import DuplicatesTab from './lib/DuplicatesTab.svelte';
   import { dupPass, type DupStatus } from './lib/dupes';
   import Details from './lib/Details.svelte';
@@ -197,8 +197,6 @@
     }, 3000);
   }
   let peopleAt = 0;
-  /** Counts people edits made in Browse, so the People tab knows to reload when it is shown again. */
-  let peopleEdits = $state(0);
   /** The People tab is built on first use and then kept, so switching back to it is instant. */
   let peopleTabBuilt = $state(false);
   $effect(() => { if (tab === 'faces') peopleTabBuilt = true; });
@@ -759,10 +757,10 @@
       photos += await countPhotos(f.id, 'photo');
       videos += await countPhotos(f.id, 'video');
     }
-    const people = await listFacePeople(false).catch(() => []);
+    const overview = await faceOverview().catch(() => null);
     allSet = allSetSummary({
       folders: infos.map((f) => ({ name: folderName(f.path), count: f.count })),
-      photos, videos, seconds: (Date.now() - flowStartedAt) / 1000, facesFound: people.length > 0, problems: flowProblems,
+      photos, videos, seconds: (Date.now() - flowStartedAt) / 1000, facesFound: overview !== null && overview.groups + overview.people > 0, problems: flowProblems,
     });
   }
 
@@ -789,7 +787,8 @@
         // Counted from the folders' own photos, so duplicates found among them (or hiding older photos elsewhere) cannot
         // throw the totals off.
         if (flow && flowIds.length > 0) flowLoad = await loadProgress(flowIds);
-        facePeople = (await listFacePeople(false)).length;
+        const o = await faceOverview();
+        facePeople = o.groups + o.people;
       } catch { /* the next tick tries again */ }
     };
     void tick();
@@ -1007,7 +1006,7 @@
     </div>
     {#if peopleTabBuilt}
       <div class="page-over" hidden={tab !== 'faces'}>
-        <FacesTab active={tab === 'faces'} status={peopleState} edits={peopleEdits} onchange={peopleTabChanged} />
+        <PeopleTab active={tab === 'faces'} status={peopleState} onchange={peopleTabChanged} />
       </div>
     {/if}
     {#if tab === 'dupes'}

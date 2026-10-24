@@ -11,10 +11,8 @@
 //! Photos are handled by several workers at once. The results come back to one thread, which stores them and groups
 //! people, because grouping is not safe to run in parallel. A hidden extra copy of a duplicate is not analysed.
 
-use crate::cluster::JOIN_THRESHOLD;
 use crate::embedder::Embedder;
 use crate::faces::{default_workers, FaceEngine};
-use crate::people::assign_new_faces;
 use crate::tags::{vocab, TagIndex, TAGS_VERSION};
 use image::DynamicImage;
 use pixie_core::NewFace;
@@ -43,6 +41,9 @@ const REPORT_EVERY: usize = 4;
 const POLL: Duration = Duration::from_millis(500);
 /// How long an idle pipeline sleeps before looking for new photos on its own.
 const IDLE_WAIT: Duration = Duration::from_secs(5);
+/// While photos are still being scanned, faces are regrouped each time this many new ones have been found (and once
+/// more when the work runs out): regrouping reads every face that is not settled, so it is not done per photo.
+const TIDY_EVERY: usize = 300;
 /// This many photos in a row failing in a model (not in reading or decoding) means the model is the problem.
 const ENGINE_FAILURES: usize = 3;
 /// What a file that could not be read gets as its quick key: it is not offered for hashing again until it changes.
@@ -92,6 +93,8 @@ struct Shared {
     reporters: Mutex<Vec<Reporter>>,
     embed_error: Mutex<Option<String>>,
     face_error: Mutex<Option<String>>,
+    /// Faces stored since the faces were last regrouped.
+    new_faces: AtomicUsize,
     paused: AtomicBool,
     stop: AtomicBool,
     hold_reported: AtomicBool,
@@ -216,6 +219,23 @@ impl Shared {
         Outcome::Analysed { vector, faces }
     }
 
+    /// Regroup the faces that are not settled when enough new ones have come in (`idle`: any at all). A pass that found
+    /// the faces changing under it is tried again next time.
+    fn tidy_faces(&self, idle: bool) {
+        let n = self.new_faces.load(Ordering::SeqCst);
+        if n == 0 || (!idle && n < TIDY_EVERY) {
+            return;
+        }
+        self.new_faces.fetch_sub(n, Ordering::SeqCst);
+        match self.db.tidy() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.new_faces.fetch_add(n, Ordering::SeqCst);
+            }
+            Err(e) => eprintln!("[people] cannot regroup faces: {e}"),
+        }
+    }
+
     fn run(&self) {
         let (mut embed_failures, mut face_failures) = (0usize, 0usize);
         while !self.stop.load(Ordering::SeqCst) {
@@ -240,11 +260,13 @@ impl Shared {
                 }
             };
             if batch.is_empty() {
+                self.tidy_faces(true);
                 self.report();
                 self.wait(IDLE_WAIT);
                 continue;
             }
             let down = self.batch(&batch, &embedder, &faces, index, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+            self.tidy_faces(false);
             self.report();
             if down {
                 self.wait(self.poll * 10);
@@ -360,11 +382,14 @@ impl Shared {
                                     *face_failures = 0;
                                     *lock(&self.face_error) = None;
                                     match self.db.replace_faces(id, v, &list) {
-                                        Ok(_) => {
-                                            if !list.is_empty() {
-                                                if let Err(e) = assign_new_faces(&self.db, JOIN_THRESHOLD) {
-                                                    eprintln!("[people] cannot group faces: {e}");
+                                        Ok(ids) => {
+                                            // a face that is clearly a confirmed person's joins them now (to be checked);
+                                            // the rest wait to be grouped with the others (`tidy_faces`)
+                                            if !ids.is_empty() {
+                                                if let Err(e) = self.db.attach_confident(Some(&ids)) {
+                                                    eprintln!("[people] cannot place new faces: {e}");
                                                 }
+                                                self.new_faces.fetch_add(ids.len(), Ordering::SeqCst);
                                             }
                                         }
                                         Err(e) => eprintln!("[people] cannot store result for {}: {e}", w.photo.path),
@@ -413,6 +438,8 @@ impl PhotoPipeline {
             reporters: Mutex::new(Vec::new()),
             embed_error: Mutex::new(None),
             face_error: Mutex::new(None),
+            // faces found by an earlier run (or grouped by an older version) are regrouped once, when the work runs out
+            new_faces: AtomicUsize::new(1),
             paused: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             hold_reported: AtomicBool::new(false),
@@ -595,7 +622,7 @@ mod tests {
             assert!(thumb_path(&r.thumbs(), ThumbClass::Grid, id, ph.mtime, ph.size).exists(), "grid thumbnail of {id}");
         }
         // The two red photos hold the same "person".
-        assert!(wait_until(5000, || r.db.people_centroids().unwrap().iter().map(|c| c.2).collect::<Vec<_>>() == vec![2]));
+        assert!(wait_until(5000, || r.db.face_overview().unwrap().unsorted == 2)); // two faces are too few to be a group
         p.stop();
     }
 
@@ -693,8 +720,7 @@ mod tests {
         let l = r.db.load_progress(&[r.folder], EV, FV).unwrap();
         assert_eq!((l.photos, l.shown, l.hashed, l.tagged, l.scanned), (2, 2, 2, 2, 2));
         assert_eq!(l.duplicates, 1, "one extra copy in the set that includes the new photo");
-        // (The scan row is written just before the faces are grouped into a person, so give the grouping a moment.)
-        assert!(wait_until(5000, || r.db.load_progress(&[r.folder], EV, FV).unwrap().people >= 1));
+        assert_eq!(l.faces, 1, "only the red photo has a face");
         // The older copy is now the hidden one, so the library shows 3 photos, not 4; the new folder's own count is
         // unaffected and is what a load screen should use.
         assert!(r.db.is_dup(older_copy).unwrap() && !r.db.is_dup(new_copy).unwrap() && !r.db.is_dup(new_one).unwrap());
@@ -834,7 +860,7 @@ mod tests {
         let p = r.pipeline(4);
         with_models(&p);
         assert!(wait_until(15000, || r.counts() == ((40, 40), (40, 40))));
-        assert!(wait_until(5000, || r.db.people_centroids().unwrap().iter().map(|c| c.2).collect::<Vec<_>>() == vec![40]));
+        assert!(wait_until(5000, || r.db.list_face_people(pixie_core::FaceView::Groups).unwrap().iter().map(|c| c.faces).collect::<Vec<_>>() == vec![40]));
         assert!(r.hashed_all());
         p.stop();
     }

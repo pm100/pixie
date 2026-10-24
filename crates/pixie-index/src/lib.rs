@@ -1,5 +1,7 @@
 pub mod db;
 pub mod dupes;
+pub mod people;
+pub mod regroup;
 pub mod queue;
 pub mod scanner;
 pub mod suggest;

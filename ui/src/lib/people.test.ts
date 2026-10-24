@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { faceCardLine, peopleLine, personLabel, personRows, resolveFaceName, sameNamePerson, shouldRefreshOnShow, type PeopleStatus, type PersonInfo } from './people';
+import { clickSelection, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
 import { hitsActive } from './tagNav';
 
 const status = (o: Partial<PeopleStatus> = {}): PeopleStatus => ({
-  models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, error: null, ...o,
+  models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, rev: 0, error: null, ...o,
 });
 const people = (n: number): PersonInfo[] => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: null, count: n - i, face_id: i + 100 }));
 
@@ -66,57 +66,78 @@ describe('hitsActive with a person', () => {
 });
 
 describe('faceCardLine', () => {
-  it('counts photos and faces in plain words', () => {
-    expect(faceCardLine({ photos: 12, faces: 15 })).toBe('12 photos · 15 faces');
-    expect(faceCardLine({ photos: 1, faces: 1 })).toBe('1 photo · 1 face');
-    expect(faceCardLine({ photos: 1200, faces: 1500 })).toBe('1,200 photos · 1,500 faces');
+  it('counts photos in plain words', () => {
+    expect(faceCardLine({ photos: 12 })).toBe('12 photos');
+    expect(faceCardLine({ photos: 1 })).toBe('1 photo');
+    expect(faceCardLine({ photos: 1200 })).toBe('1,200 photos');
   });
 });
 
-describe('sameNamePerson', () => {
-  const list = [{ id: 1, name: 'Gran' }, { id: 2, name: null }, { id: 3, name: 'Sam Smith' }];
-  it('finds another person with the same name, ignoring case and spaces', () => {
-    expect(sameNamePerson(list, ' gran ', 2)?.id).toBe(1);
-    expect(sameNamePerson(list, 'SAM SMITH', 2)?.id).toBe(3);
-  });
-  it('does not match the person being named, a blank name, or a new name', () => {
-    expect(sameNamePerson(list, 'Gran', 1)).toBeNull();
-    expect(sameNamePerson(list, '   ', 2)).toBeNull();
-    expect(sameNamePerson(list, 'Grandad', 2)).toBeNull();
+describe('firstSection', () => {
+  const o = (p: Partial<FaceOverview>): FaceOverview => ({ groups: 0, people: 0, unsorted: 0, hidden: 0, unchecked: 0, rev: 0, ...p });
+  it('opens on what there is to do: groups to name first', () => {
+    expect(firstSection(o({ groups: 3, people: 2 }))).toBe('groups');
+    expect(firstSection(o({ people: 2, unsorted: 9 }))).toBe('people');
+    expect(firstSection(o({ unsorted: 9, hidden: 1 }))).toBe('unsorted');
+    expect(firstSection(o({ hidden: 1 }))).toBe('hidden');
+    expect(firstSection(o({}))).toBe('groups');
   });
 });
 
-describe('resolveFaceName', () => {
-  const list = [{ id: 1, name: 'Gran' }, { id: 2, name: 'Sam Smith' }];
-  it('does nothing for a blank name or the name the face already has', () => {
-    expect(resolveFaceName(list, '   ', 1)).toEqual({ kind: 'none' });
-    expect(resolveFaceName(list, 'gran', 1)).toEqual({ kind: 'none' });
-  });
-  it('moves the face to the person with that name, ignoring case and spaces', () => {
-    expect(resolveFaceName(list, ' sam smith ', 1)).toEqual({ kind: 'move', personId: 2 });
-    expect(resolveFaceName(list, 'Gran', null)).toEqual({ kind: 'move', personId: 1 });
-  });
-  it('starts a new person for a name nobody has', () => {
-    expect(resolveFaceName(list, ' Grandad ', 1)).toEqual({ kind: 'new', name: 'Grandad' });
+describe('verdict', () => {
+  it('says what the faces look like, or nothing when it was not measured', () => {
+    expect(verdict({ mixed: null, looks_mixed: false })).toBeNull();
+    expect(verdict({ mixed: 0.01, looks_mixed: false })).toEqual({ text: 'Looks like one person', mixed: false });
+    expect(verdict({ mixed: 0.3, looks_mixed: true })).toEqual({ text: 'Looks like several people', mixed: true });
   });
 });
 
-describe('shouldRefreshOnShow', () => {
-  const base = { wasActive: false, active: true, loaded: true, onOverview: true, more: true };
-  it('refreshes when the tab is switched to, on the overview, and the scan has found more faces', () => {
-    expect(shouldRefreshOnShow(base)).toBe(true);
+describe('suggestionLine', () => {
+  it('names who a group looks like', () => {
+    expect(suggestionLine({ person_id: 1, name: 'Gran', score: 0.6 })).toBe('Looks like Gran');
+    expect(suggestionLine({ person_id: 1, name: null, score: 0.6 })).toBeNull();
+    expect(suggestionLine(null)).toBeNull();
   });
-  it('does nothing when there is nothing new', () => {
-    expect(shouldRefreshOnShow({ ...base, more: false })).toBe(false);
+});
+
+describe('pickable', () => {
+  const ppl = [
+    { id: 1, name: 'sam', hidden: false },
+    { id: 2, name: null, hidden: false },
+    { id: 3, name: 'Gran', hidden: false },
+    { id: 4, name: 'Zed', hidden: true },
+  ];
+  it('offers named, visible people in name order, never the one it already is', () => {
+    expect(pickable(ppl, null).map((p) => p.name)).toEqual(['Gran', 'sam']);
+    expect(pickable(ppl, 3).map((p) => p.name)).toEqual(['sam']);
   });
-  it('does not move things under the user while the tab is showing: that is what the button is for', () => {
-    expect(shouldRefreshOnShow({ ...base, wasActive: true })).toBe(false);
+});
+
+describe('clickSelection', () => {
+  const order = [10, 11, 12, 13, 14];
+  it('a click picks a face and a second click takes it out', () => {
+    const a = clickSelection(order, new Set(), null, 12, false);
+    expect([...a.picked]).toEqual([12]);
+    const b = clickSelection(order, a.picked, a.anchor, 12, false);
+    expect([...b.picked]).toEqual([]);
   });
-  it('leaves the faces of one person alone when the user is partway through reviewing them', () => {
-    expect(shouldRefreshOnShow({ ...base, onOverview: false })).toBe(false);
+  it('shift-click picks everything between the last click and this one, in either direction', () => {
+    const a = clickSelection(order, new Set(), null, 11, false);
+    expect([...clickSelection(order, a.picked, a.anchor, 13, true).picked].sort()).toEqual([11, 12, 13]);
+    const c = clickSelection(order, new Set(), null, 14, false);
+    expect([...clickSelection(order, c.picked, c.anchor, 12, true).picked].sort()).toEqual([12, 13, 14]);
   });
-  it('waits for the first load, and does nothing while the tab is hidden', () => {
-    expect(shouldRefreshOnShow({ ...base, loaded: false })).toBe(false);
-    expect(shouldRefreshOnShow({ ...base, active: false })).toBe(false);
+  it('shift-click with nothing clicked yet just picks that face', () => {
+    expect([...clickSelection(order, new Set(), null, 13, true).picked]).toEqual([13]);
+  });
+});
+
+describe('refreshOffered', () => {
+  it('offers a refresh only when faces were regrouped after the list on screen was loaded', () => {
+    expect(refreshOffered(5, 4)).toBe(true);
+    expect(refreshOffered(4, 4)).toBe(false);
+    expect(refreshOffered(3, 4)).toBe(false);
+    expect(refreshOffered(undefined, 4)).toBe(false);
+    expect(refreshOffered(5, null)).toBe(false);
   });
 });

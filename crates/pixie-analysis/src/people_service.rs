@@ -18,6 +18,8 @@ pub struct PeopleStatus {
     pub done: i64,
     pub total: i64,
     pub paused: bool,
+    /// Changes whenever who-is-who changes (a regrouping ran in the background, or the user edited someone).
+    pub rev: i64,
     pub error: Option<String>,
 }
 
@@ -69,6 +71,7 @@ impl Inner {
             done,
             total,
             paused: s.paused,
+            rev: self.cfg.db.face_rev().unwrap_or(0),
             error: s.error.clone().or_else(|| self.cfg.pipeline.face_error()),
         }
     }
@@ -168,6 +171,11 @@ impl PeopleService {
         self.inner.emit();
         let inner = self.inner.clone();
         std::thread::spawn(move || inner.setup());
+    }
+
+    /// Tell the window now (something changed that the status shows, such as faces being regrouped).
+    pub fn announce(&self) {
+        self.inner.emit();
     }
 
     pub fn status(&self) -> PeopleStatus {
@@ -295,7 +303,7 @@ mod tests {
         let s = r.svc.status();
         assert_eq!((s.done, s.total, s.error.clone()), (3, 3, None));
         assert!(r.events.lock().unwrap().iter().any(|e| e.models == "downloading"));
-        assert_eq!(r.db.people_centroids().unwrap().len(), 1); // three photos of the same "person" (unnamed, so not in the nav)
+        assert!(wait_until(5000, || r.db.face_overview().unwrap().groups == 1)); // three photos of the same "person": one group to name
     }
 
     #[test]

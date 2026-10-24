@@ -22,3 +22,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The face grouping is heavy arithmetic over thousands of vectors.
+[profile.dev.package.pixie-index]
+opt-level = 3

@@ -4,8 +4,8 @@ import type { AnalysisStatus } from './analysis';
 export type PersonInfo = { id: number; name: string | null; count: number; face_id: number | null };
 /** A face in one photo; the box is a fraction (0..1) of the upright image (mirrors the Rust `FaceInfo`). */
 export type FaceInfo = { id: number; person_id: number | null; person_name: string | null; x: number; y: number; w: number; h: number };
-/** The face scan reports progress the same way the search analysis does. */
-export type PeopleStatus = AnalysisStatus;
+/** The face scan reports progress the same way the search analysis does; `rev` changes whenever who-is-who changes. */
+export type PeopleStatus = AnalysisStatus & { rev: number };
 
 const n = (x: number) => x.toLocaleString();
 
@@ -26,43 +26,33 @@ export function peopleLine(s: PeopleStatus): string {
   return `Looking for people… ${n(s.done)} of ${n(s.total)} photos`;
 }
 
-/** A person for the Faces tab (mirrors the Rust `FacePerson`). `listed`: also in the nav, so Browse can filter on them. */
-export type FacePerson = { id: number; name: string | null; hidden: boolean; listed: boolean; photos: number; faces: number; samples: number[] };
 /** One face to look at: the photo it is in (with that photo's version, to show it) and the face's box as fractions
  *  (0..1) of the upright photo (mirrors the Rust `FaceTile`). */
 export type FaceTile = { id: number; photo_id: number; mtime: number; size: number; x: number; y: number; w: number; h: number };
-
-/** Reload the People tab when it is switched to: only at that moment, only on the overview (not partway through one
- *  person's faces), and only when the scan has found something new. While the tab is showing, new faces are offered
- *  with a button instead, so cards never jump under the user. */
-export const shouldRefreshOnShow = (o: { wasActive: boolean; active: boolean; loaded: boolean; onOverview: boolean; more: boolean }): boolean =>
-  o.active && !o.wasActive && o.loaded && o.onOverview && o.more;
+/** "This looks like <person>", with how alike (0 to 1) (mirrors the Rust `Suggestion`). */
+export type Suggestion = { person_id: number; name: string | null; score: number };
+/** A person or a group for the People tab (mirrors the Rust `FacePerson`). A group is what the computer suggested; a
+ *  `confirmed` person is one the user named, accepted or set apart. */
+export type FacePerson = {
+  id: number; name: string | null; hidden: boolean; confirmed: boolean; photos: number; faces: number;
+  /** Faces that joined after the person was confirmed and have not been looked at. */
+  unchecked: number;
+  mixed: number | null; looks_mixed: boolean;
+  /** Faces that show how the person looks (not just the best ones). */
+  samples: number[];
+  suggestion: Suggestion | null;
+};
+export type UnsortedFace = { tile: FaceTile; suggestion: Suggestion | null };
+export type FaceOverview = { groups: number; people: number; unsorted: number; hidden: number; unchecked: number; rev: number };
+/** Which cards the server lists; Unsorted is faces, not cards. */
+export type FaceView = 'groups' | 'people' | 'hidden';
+export type FaceOrder = 'best' | 'doubtful' | 'unchecked';
+/** The sections of the People tab. */
+export type Section = 'groups' | 'people' | 'unsorted' | 'hidden';
 
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
-/** "12 photos · 15 faces". */
-export const faceCardLine = (p: { photos: number; faces: number }): string => `${plural(p.photos, 'photo')} · ${plural(p.faces, 'face')}`;
-
-/** Another person already called this (ignoring case and surrounding spaces), if any: naming someone that offers a merge. */
-export function sameNamePerson<T extends { id: number; name: string | null }>(people: T[], name: string, exceptId: number): T | null {
-  const wanted = name.trim().toLowerCase();
-  if (wanted === '') return null;
-  return people.find((p) => p.id !== exceptId && p.name?.trim().toLowerCase() === wanted) ?? null;
-}
-
-/** What typing `name` for a face means: nothing (blank, or the name it already has), move it to the person with that
- *  name, or start a new person. Moving one face is easy to undo, so it needs no confirmation. */
-export function resolveFaceName(
-  people: { id: number; name: string | null }[],
-  name: string,
-  currentPersonId: number | null,
-): { kind: 'none' } | { kind: 'move'; personId: number } | { kind: 'new'; name: string } {
-  const text = name.trim();
-  if (text === '') return { kind: 'none' };
-  const current = currentPersonId === null ? null : people.find((p) => p.id === currentPersonId);
-  if (current?.name?.trim().toLowerCase() === text.toLowerCase()) return { kind: 'none' };
-  const same = sameNamePerson(people, text, currentPersonId ?? -1);
-  return same ? { kind: 'move', personId: same.id } : { kind: 'new', name: text };
-}
+/** "12 photos". (A photo with the same person twice is rare, so faces are not counted separately.) */
+export const faceCardLine = (p: { photos: number }): string => plural(p.photos, 'photo');
 
 /** The rows the People list shows: the first `limit` (or all when expanded), plus the chosen person even if further down. */
 export function personRows(people: PersonInfo[], chosen: number | null, expanded: boolean, limit: number): { rows: PersonInfo[]; hidden: number } {
@@ -72,3 +62,47 @@ export function personRows(people: PersonInfo[], chosen: number | null, expanded
   if (pick && !rows.includes(pick)) rows = [...rows.slice(0, limit - 1), pick];
   return { rows, hidden: people.length - limit };
 }
+
+/** Which section to open the People tab on: the one with something to do, groups to name first. */
+export function firstSection(o: FaceOverview): Section {
+  if (o.groups > 0) return 'groups';
+  if (o.people > 0) return 'people';
+  if (o.unsorted > 0) return 'unsorted';
+  return o.hidden > 0 ? 'hidden' : 'groups';
+}
+
+export const sectionTitle: Record<Section, string> = { groups: 'Grouped', people: 'Named', unsorted: 'Unsure', hidden: 'Hidden' };
+
+/** What the computer thinks of a group's faces, in words. */
+export function verdict(p: Pick<FacePerson, 'mixed' | 'looks_mixed'>): { text: string; mixed: boolean } | null {
+  if (p.mixed === null) return null;
+  return p.looks_mixed ? { text: 'Looks like several people', mixed: true } : { text: 'Looks like one person', mixed: false };
+}
+
+/** "Looks like Gran", or null when the person it looks like has no name to show. */
+export const suggestionLine = (s: Suggestion | null): string | null => (s?.name ? `Looks like ${s.name}` : null);
+
+/** Who a group or face can be given to: named people (not hidden), not the one it already is. */
+export const pickable = (people: Pick<FacePerson, 'id' | 'name' | 'hidden'>[], exceptId: number | null): { id: number; name: string }[] =>
+  people
+    .filter((p) => p.name !== null && !p.hidden && p.id !== exceptId)
+    .map((p) => ({ id: p.id, name: p.name as string }))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+
+/** Clicking a face in a grid: a plain click adds it to the picked faces or takes it out; shift+click picks everything
+ *  between the last click and this one. `order` is the faces as shown. */
+export function clickSelection(order: number[], picked: ReadonlySet<number>, anchor: number | null, id: number, shift: boolean): { picked: Set<number>; anchor: number } {
+  const next = new Set(picked);
+  const to = order.indexOf(id);
+  const from = anchor === null ? -1 : order.indexOf(anchor);
+  if (shift && from >= 0 && to >= 0) {
+    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(order[i]);
+  } else if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return { picked: next, anchor: id };
+}
+
+/** The list on screen is out of date because faces were regrouped since it was loaded (offered, never forced: cards must
+ *  not move under the user). */
+export const refreshOffered = (statusRev: number | undefined, loadedRev: number | null): boolean =>
+  statusRev !== undefined && loadedRev !== null && statusRev > loadedRev;
