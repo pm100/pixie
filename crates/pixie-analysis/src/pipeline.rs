@@ -726,7 +726,7 @@ mod tests {
             assert!(thumb_path(&r.thumbs(), ThumbClass::Grid, id, ph.mtime, ph.size).exists(), "grid thumbnail of {id}");
         }
         // The two red photos hold the same "person".
-        assert!(wait_until(5000, || r.db.face_overview().unwrap().unsorted == 2)); // two faces are too few to be a group
+        assert!(wait_until(5000, || r.db.face_overview().unwrap().groups == 1)); // two photos of the same "person" are a group to name
         p.stop();
     }
 

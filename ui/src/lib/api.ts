@@ -197,8 +197,6 @@ export const ignoredFaces = (offset: number, limit: number) => invoke<FaceTile[]
 /** Who faces (or a group) look like among the named people, best first: the candidates for "This is…". */
 export const suggestForFaces = (faceIds: number[]) => invoke<FaceSuggestion[]>('suggest_for_faces', { faceIds });
 export const suggestForGroup = (id: number) => invoke<FaceSuggestion[]>('suggest_for_group', { id });
-/** "Try to group": group the faces left in Unsure more loosely; returns how many left Unsure. */
-export const tryGroup = () => invoke<number>('try_group');
 /** Regroup the faces nobody has settled now; false when they kept changing meanwhile. */
 export const tidyFaces = () => invoke<boolean>('tidy_faces');
 

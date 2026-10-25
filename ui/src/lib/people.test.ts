@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clickSelection, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
+import { clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
 import { hitsActive } from './tagNav';
 
@@ -78,6 +78,13 @@ describe('firstSection', () => {
     const o: FaceOverview = { groups: 3, people: 0, unsorted: 9, hidden: 1, unchecked: 0, rev: 0 };
     expect(firstSection(o)).toBe('people');
     expect(firstSection({ ...o, groups: 0, unsorted: 0 })).toBe('people');
+  });
+});
+
+describe('sectionCount', () => {
+  it('counts groups and loose faces together under To name', () => {
+    const o: FaceOverview = { groups: 40, people: 7, unsorted: 120, hidden: 3, unchecked: 0, rev: 0 };
+    expect([sectionCount(o, 'groups'), sectionCount(o, 'people'), sectionCount(o, 'hidden')]).toEqual([160, 7, 3]);
   });
 });
 

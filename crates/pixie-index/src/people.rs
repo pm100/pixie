@@ -74,8 +74,6 @@ struct Snapshot {
     anchors: Vec<(i64, Vec<Vec<f32>>)>,
     rejections: HashMap<i64, Vec<i64>>,
     groups: Vec<i64>,
-    /// The user asked to try harder to group what is left over.
-    loose: bool,
 }
 
 /// What a regrouping decided.
@@ -196,8 +194,9 @@ fn plan(snap: &Snapshot) -> Plan {
     let mut taken: HashSet<i64> = HashSet::new();
     let (mut groups, mut unsorted) = make_groups(snap, &rest, &clusters, MIN_GROUP, MIN_GROUP, &mut taken);
 
-    // Asked to try harder: what is left over is grouped again with a lower bar (two photos are enough).
-    if snap.loose && !unsorted.is_empty() {
+    // What is left over is grouped again with a lower bar (two photos are enough): a person seen in only two photos is a
+    // group to name too.
+    if !unsorted.is_empty() {
         let by_id: HashMap<i64, &OpenFace> = rest.iter().map(|f| (f.id, *f)).collect();
         let left: Vec<&OpenFace> = unsorted.iter().filter_map(|id| by_id.get(id).copied()).collect();
         let vectors: Vec<&[f32]> = left.iter().map(|f| f.vector.as_slice()).collect();
@@ -413,7 +412,6 @@ impl Db {
             anchors: anchors_of(&c, false)?,
             rejections: rejections_of(&c)?,
             groups,
-            loose: c.query_row("SELECT loose FROM face_meta WHERE id = 1", [], |r| r.get::<_, i64>(0)).map_err(db_err)? != 0,
         })
     }
 
@@ -482,15 +480,6 @@ impl Db {
         }
         tx.commit().map_err(db_err)?;
         Ok(Some(TidyReport { faces: snap.open.len(), groups: plan.groups.len(), unsorted: plan.unsorted.len(), attached: plan.attach.len() }))
-    }
-
-    /// "Try to group": regroup, grouping what is left over more loosely (and keep doing so on later regroupings).
-    /// Returns how many faces left Unsure.
-    pub fn try_group(&self) -> Result<i64> {
-        let before = self.face_overview()?.unsorted;
-        self.conn().execute("UPDATE face_meta SET loose = 1", []).map_err(db_err)?;
-        self.tidy()?;
-        Ok(before - self.face_overview()?.unsorted)
     }
 
     /// Who this face (or these faces, or this group's faces) looks most like among the named people: up to three, most
@@ -1000,17 +989,19 @@ mod tests {
     const ANGLES: [f32; 10] = [0.0, 3.0, 6.0, 90.0, 93.0, 96.0, 99.0, 180.0, 183.0, 270.0];
 
     #[test]
-    fn tidy_makes_groups_of_three_or_more_and_leaves_the_rest_unsorted() {
+    fn tidy_makes_groups_from_faces_in_two_or_more_photos_and_leaves_the_rest_unsorted() {
         let db = Db::open_in_memory().unwrap();
         let ids = library(&db, &ANGLES);
         let r = db.tidy().unwrap().unwrap();
-        assert_eq!((r.groups, r.unsorted, r.attached), (2, 3, 0));
+        assert_eq!((r.groups, r.unsorted, r.attached), (3, 1, 0));
         assert_eq!(person_of(&db, ids[0]), person_of(&db, ids[2]));
         assert_eq!(person_of(&db, ids[3]), person_of(&db, ids[6]));
         assert_ne!(person_of(&db, ids[0]), person_of(&db, ids[3]));
-        assert!(ids[7..].iter().all(|f| person_of(&db, *f).is_none()), "a pair and a single are in no group");
+        assert_eq!(person_of(&db, ids[7]), person_of(&db, ids[8]), "a pair in two photos is a group too");
+        assert!(person_of(&db, ids[7]).is_some());
+        assert_eq!(person_of(&db, ids[9]), None, "a single face is in no group");
         let o = db.face_overview().unwrap();
-        assert_eq!((o.groups, o.unsorted, o.people), (2, 3, 0));
+        assert_eq!((o.groups, o.unsorted, o.people), (3, 1, 0));
     }
 
     #[test]
@@ -1031,54 +1022,31 @@ mod tests {
     }
 
     #[test]
-    fn try_group_groups_the_leftovers_more_loosely_and_keeps_doing_so() {
+    fn a_person_in_only_two_photos_is_a_group_too() {
         let db = Db::open_in_memory().unwrap();
-        // two people each in only two photos (the strict bar is three), and one face on its own
+        // two people each in only two photos, and one face on its own
         let ids = library(&db, &[0.0, 8.0, 100.0, 108.0, 250.0]);
         let r = db.tidy().unwrap().unwrap();
-        assert_eq!((r.groups, r.unsorted), (0, 5));
-        assert_eq!(db.try_group().unwrap(), 4, "two pairs left Unsure; the single face stays");
-        assert_eq!(db.face_overview().unwrap().groups, 2);
+        assert_eq!((r.groups, r.unsorted), (2, 1));
         assert_eq!(person_of(&db, ids[0]), person_of(&db, ids[1]));
         assert_ne!(person_of(&db, ids[0]), person_of(&db, ids[2]));
         assert_eq!(person_of(&db, ids[4]), None);
-        // later regroupings keep the looser bar, so the groups are not dissolved again
-        db.tidy().unwrap();
-        assert_eq!(db.face_overview().unwrap().groups, 2);
-    }
-
-    #[test]
-    fn artwork_faces_are_left_out_of_unsure_and_out_of_groups() {
-        let db = Db::open_in_memory().unwrap();
-        let ids = library(&db, &[0.0, 100.0, 200.0]);
-        assert_eq!(db.face_overview().unwrap().unsorted, 3);
-        assert_eq!(db.faces_needing_art(db.face_location(ids[0]).unwrap().unwrap().0.id).unwrap().len(), 1, "not looked at yet");
-        db.set_face_art(ids[1], true).unwrap();
-        assert_eq!(db.face_overview().unwrap().unsorted, 2);
-        let listed: Vec<i64> = db.unsorted_faces(0, 10).unwrap().iter().map(|u| u.tile.id).collect();
-        assert_eq!(listed.len(), 2);
-        assert!(!listed.contains(&ids[1]));
-
-        // three look-alike faces in three photos are a group, unless one of them is a painting
-        let db = Db::open_in_memory().unwrap();
-        let ids = library(&db, &[0.0, 3.0, 6.0, 9.0]);
-        db.set_face_art(ids[3], true).unwrap();
+        // and two faces in the same photo are not
+        let f = db.add_folder("/p").unwrap();
+        let one = db.upsert_photo(f, "/p/one.jpg", 1, 1, &meta()).unwrap();
+        db.replace_faces(one, "fv", &[nf(175.0), nf(178.0)]).unwrap();
         let r = db.tidy().unwrap().unwrap();
-        assert_eq!((r.groups, r.unsorted), (1, 1));
-        assert_eq!(person_of(&db, ids[3]), None);
-        assert!(person_of(&db, ids[0]).is_some());
-        // and a face marked artwork after it was grouped leaves its group at the next regrouping
-        db.set_face_art(ids[2], true).unwrap();
-        db.conn().execute("UPDATE face_meta SET rev = rev + 1", []).unwrap();
-        db.tidy().unwrap();
-        assert_eq!(person_of(&db, ids[2]), None);
+        assert_eq!(r.groups, 2, "two alike faces from one photo are not a person");
     }
 
     #[test]
     fn faces_in_no_group_are_listed_with_look_alikes_together() {
         let db = Db::open_in_memory().unwrap();
-        // interleaved in the order they were found, so only the ordering can bring each person together
-        let ids = library(&db, &[0.0, 100.0, 4.0, 104.0, 250.0]);
+        // all in one photo (so no group can be made of them), interleaved in the order they were found: only the ordering
+        // can bring each person together
+        let f = db.add_folder("/p").unwrap();
+        let crowd = db.upsert_photo(f, "/p/crowd.jpg", 1, 1, &meta()).unwrap();
+        let ids = db.replace_faces(crowd, "fv", &[nf(0.0), nf(100.0), nf(4.0), nf(104.0), nf(250.0)]).unwrap();
         db.tidy().unwrap();
         let order: Vec<i64> = db.unsorted_faces(0, 20).unwrap().iter().map(|u| u.tile.id).collect();
         assert_eq!(order.len(), 5);
@@ -1202,8 +1170,8 @@ mod tests {
         let u = db.unsorted_faces(0, 20).unwrap();
         let s = u.iter().find(|u| u.tile.id == maybe).unwrap().suggestion.clone();
         assert!(s.is_none() || s.unwrap().name.as_deref() == Some("Joe"));
-        let nearby = u.iter().find(|u| u.tile.id == ids[7]).unwrap();
-        assert!(nearby.suggestion.is_none(), "180 degrees away is nobody Joe looks like");
+        let nearby = u.iter().find(|u| u.tile.id == ids[9]).unwrap();
+        assert!(nearby.suggestion.is_none(), "270 degrees round is nobody Joe looks like");
     }
 
     #[test]
@@ -1300,12 +1268,12 @@ mod tests {
         let g = person_of(&db, ids[0]).unwrap();
         db.hide_person(g).unwrap();
         assert_eq!(db.list_face_people(FaceView::Hidden).unwrap().len(), 1);
-        assert_eq!(db.face_overview().unwrap().groups, 1);
+        assert_eq!(db.face_overview().unwrap().groups, 2);
         db.tidy().unwrap();
         assert_eq!(person_of(&db, ids[0]), Some(g), "a hidden person is not regrouped");
         db.unhide_person(g).unwrap();
         assert!(!confirmed_of(&db, ids[0]));
-        assert_eq!(db.face_overview().unwrap().groups, 2);
+        assert_eq!(db.face_overview().unwrap().groups, 3);
     }
 
     #[test]
@@ -1427,25 +1395,4 @@ mod tests {
         TRIM.store(ANCHOR_TRIM.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// `PIXIE_LIVE_DB=path cargo test --release -p pixie-index live_try_group -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn live_try_group() {
-        let path = std::env::var("PIXIE_LIVE_DB").expect("PIXIE_LIVE_DB");
-        let copy = format!("{path}.loose.db");
-        std::fs::copy(&path, &copy).unwrap();
-        let db = Db::open(std::path::Path::new(&copy)).unwrap();
-        db.tidy().unwrap();
-        let before = db.face_overview().unwrap();
-        let t = std::time::Instant::now();
-        let moved = db.try_group().unwrap();
-        let after = db.face_overview().unwrap();
-        println!("try_group {:?}: {} faces left Unsure; groups {} -> {}, unsure {} -> {}", t.elapsed(), moved, before.groups, after.groups, before.unsorted, after.unsorted);
-        let cards = db.list_face_people(FaceView::Groups).unwrap();
-        let small: Vec<i64> = cards.iter().filter(|c| c.photos <= 3).map(|c| c.faces).collect();
-        println!("groups with 3 or fewer photos: {}; mixed-looking: {}", small.len(), cards.iter().filter(|c| c.looks_mixed).count());
-        let t = std::time::Instant::now();
-        let u = db.unsorted_faces(0, 60).unwrap();
-        println!("unsure page {:?}: {}", t.elapsed(), u.len());
-    }
 }

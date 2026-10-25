@@ -8,9 +8,18 @@ export VCPKGRS_DYNAMIC := "1"
 # So tests and cargo run find the DLLs.
 export PATH := if os() == "windows" { VCPKG_ROOT / "installed/x64-windows/bin;" + env_var("PATH") } else { env_var("PATH") }
 
+# `tauri dev` rebuilds on every edit. Ctrl-C while it is compiling or linking leaves half-written output, and the next launch
+# then fails with "unresolved external symbol anon..." (in whichever of our crates was being built, not just the app). So the
+# launch leaves a marker, a normal exit removes it, and a launch that finds it cleans all of our own crates (third-party ones
+# stay cached; rebuilding ours takes about a minute and a half).
+
 # Launch the app on Windows in dev mode (hot reload for the UI).
 winlaunch:
-    npm run tauri dev
+    New-Item -ItemType Directory -Force target | Out-Null
+    if (Test-Path target/.dev-running) { cargo clean -p pixie-analysis -p pixie-core -p pixie-geo -p pixie-image -p pixie-index -p pixie-mail -p pixie-testutil -p pixie-app }
+    New-Item -ItemType File -Force target/.dev-running | Out-Null
+    -npm run tauri dev
+    Remove-Item target/.dev-running -ErrorAction SilentlyContinue
 
 # Launch the app on a Mac in dev mode (hot reload for the UI). Needs Homebrew's libheif and pkg-config for HEIC pictures.
 maclaunch:

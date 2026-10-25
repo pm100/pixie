@@ -5,7 +5,9 @@ edition.workspace = true
 
 [lib]
 name = "pixie_app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop only: the staticlib/cdylib the Tauri mobile template adds were never used, and linking the cdylib is what
+# kept failing on Windows ("unresolved external symbol anon..." in pixie_app_lib).
+crate-type = ["rlib"]
 
 [features]
 default = ["heic"]

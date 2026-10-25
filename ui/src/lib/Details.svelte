@@ -61,7 +61,7 @@
       {#if photo.width && photo.height}<dt>Size</dt><dd>{photo.width} × {photo.height}</dd>{/if}
       {#if photo.kind === 'video'}<dt>Duration</dt><dd>{formatDuration(photo.duration_ms)}</dd>{/if}
       <dt>File</dt><dd>{formatBytes(photo.size)}</dd>
-      <dt>Folder</dt><dd class="path" title={dirname(photo.path)}>{dirname(photo.path)}</dd>
+      <dt>Folder</dt><dd class="path" title={dirname(photo.path)}><bdi dir="ltr">{dirname(photo.path)}</bdi></dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
@@ -82,6 +82,8 @@
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 16px; }
   dt { color: #777; }
   dd { margin: 0; min-width: 0; }
+  /* Cut off at the left (rtl) so the end of a long path shows; the <bdi> keeps the path itself left-to-right, or the colon of a
+     drive letter (P:) would jump to the wrong side. */
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { padding: 1px 8px; border-radius: 10px; background: #eef2fb; color: #2a3f7a; font-size: 12px; }
