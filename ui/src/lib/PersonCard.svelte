@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { faceCardLine, type FacePerson } from './people';
+  import { suggestForGroup } from './api';
+  import { faceCardLine, toCandidates, type FacePerson } from './people';
   import { faceUrl } from './url';
   import ThisIs from './ThisIs.svelte';
 
-  let { person, people, onopen, onassign, onname }: {
+  let { person, people, onopen, onassign, onname, onhide }: {
     person: FacePerson;
     /** Who a group can be given to. */
     people: { id: number; name: string }[];
     onopen: () => void;
     onassign: (personId: number) => void;
     onname: (name: string) => void;
+    onhide: () => void;
   } = $props();
 
   const group = $derived(person.name === null);
@@ -42,8 +44,11 @@
   </div>
   {#if person.name}<div class="line">{faceCardLine(person)}</div>{/if}
   <div class="actions">
-    {#if group}
-      <ThisIs {people} onpick={onassign} onnew={onname} />
+    {#if group && !person.hidden}
+      <ThisIs {people} onpick={onassign} onnew={onname} onignore={onhide} candidates={() => suggestForGroup(person.id).then(toCandidates)} />
+    {/if}
+    {#if !person.hidden && !group}
+      <button onclick={onhide} title="Leave this out of the lists">Ignore</button>
     {/if}
   </div>
 </section>

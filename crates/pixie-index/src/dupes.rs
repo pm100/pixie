@@ -224,7 +224,7 @@ mod tests {
 
     /// What the analysis pipeline does for every photo it reads: the keys, then the photo's duplicate group.
     fn hash_photos(db: &Db) {
-        for w in db.photos_needing_work(None, None, 10_000).unwrap() {
+        for w in db.photos_needing_work(None, None, false, 10_000).unwrap() {
             let path = Path::new(&w.photo.path);
             let (quick, full) = (quick_key(path).unwrap(), full_hash(path).unwrap());
             db.set_file_keys(w.photo.id, &quick, Some(&full)).unwrap();

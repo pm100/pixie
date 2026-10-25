@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clickSelection, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
+import { clickSelection, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
 import { hitsActive } from './tagNav';
 
@@ -94,6 +94,14 @@ describe('suggestionLine', () => {
     expect(suggestionLine({ person_id: 1, name: 'Gran', score: 0.6 })).toBe('Looks like Gran');
     expect(suggestionLine({ person_id: 1, name: null, score: 0.6 })).toBeNull();
     expect(suggestionLine(null)).toBeNull();
+  });
+});
+
+describe('toCandidates', () => {
+  it('keeps the named people in the order given', () => {
+    expect(toCandidates([{ person_id: 3, name: 'Gran', score: 0.6 }, { person_id: 4, name: null, score: 0.5 }, { person_id: 1, name: 'Sam', score: 0.4 }])).toEqual([
+      { id: 3, name: 'Gran' }, { id: 1, name: 'Sam' },
+    ]);
   });
 });
 

@@ -1,4 +1,5 @@
 pub mod align;
+pub mod art;
 pub mod clip;
 
 pub mod clip_pre;

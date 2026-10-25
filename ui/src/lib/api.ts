@@ -168,7 +168,7 @@ export const activeFilters = () => invoke<{ tag: string | null; person: number |
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 
 // ---- the People tab ----
-import type { FaceOrder, FaceOverview, FacePerson, FaceTile, FaceView, UnsortedFace } from './people';
+import type { FaceOrder, FaceOverview, FacePerson, FaceTile, FaceView, Suggestion as FaceSuggestion, UnsortedFace } from './people';
 /** How many groups, people, unsorted faces and hidden people there are. */
 export const faceOverview = () => invoke<FaceOverview>('face_overview');
 /** The cards of one section: groups to name, named people, or hidden ones. */
@@ -189,6 +189,16 @@ export const newPersonFromFaces = (faceIds: number[], name: string | null) => in
 export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id });
 /** Cut a group that looks like several people into pieces; returns how many (0: it does not come apart). */
 export const splitGroup = (id: number) => invoke<number>('split_group', { id });
+/** Ignore faces, each on its own: out of every group and list but "Ignored". */
+export const ignoreFaces = (faceIds: number[]) => invoke<void>('ignore_faces', { faceIds });
+export const unignoreFaces = (faceIds: number[]) => invoke<void>('unignore_faces', { faceIds });
+/** The faces that were ignored. */
+export const ignoredFaces = (offset: number, limit: number) => invoke<FaceTile[]>('ignored_faces', { offset, limit });
+/** Who faces (or a group) look like among the named people, best first: the candidates for "This is…". */
+export const suggestForFaces = (faceIds: number[]) => invoke<FaceSuggestion[]>('suggest_for_faces', { faceIds });
+export const suggestForGroup = (id: number) => invoke<FaceSuggestion[]>('suggest_for_group', { id });
+/** "Try to group": group the faces left in Unsure more loosely; returns how many left Unsure. */
+export const tryGroup = () => invoke<number>('try_group');
 /** Regroup the faces nobody has settled now; false when they kept changing meanwhile. */
 export const tidyFaces = () => invoke<boolean>('tidy_faces');
 

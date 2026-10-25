@@ -155,6 +155,17 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX idx_faces_confirmed ON faces(person_id, confirmed);
      UPDATE people SET confirmed = 1 WHERE name IS NOT NULL OR hidden = 1;
      UPDATE faces SET confirmed = 1 WHERE person_id IN (SELECT id FROM people WHERE confirmed = 1);",
+    // V14: faces in no group are listed with look-alikes together (`unsure_rank`, set when faces are regrouped), and the
+    // user can ask for looser grouping of what is left over (`loose`).
+    "ALTER TABLE faces ADD COLUMN unsure_rank INTEGER;
+     ALTER TABLE face_meta ADD COLUMN loose INTEGER NOT NULL DEFAULT 0;",
+    // V15: whether a face is artwork (a painting, drawing, statue...) rather than a person: NULL until it has been looked at.
+    "ALTER TABLE faces ADD COLUMN art INTEGER;",
+    // V16: (a first try at ignoring faces, replaced by V17)
+    "ALTER TABLE people ADD COLUMN bin INTEGER NOT NULL DEFAULT 0;",
+    // V17: a face the user ignored: out of every group and list but "Ignored", where it keeps its own picture.
+    "ALTER TABLE people DROP COLUMN bin;
+     ALTER TABLE faces ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,6 +244,8 @@ pub struct WorkItem {
     pub hash: bool,
     pub embed: bool,
     pub faces: bool,
+    /// Some of the photo's faces have not been checked for being artwork.
+    pub art: bool,
 }
 
 #[derive(Clone)]
@@ -590,28 +603,55 @@ impl Db {
 
     /// Photos (not videos, not hidden duplicates) that still need something from the analysis pipeline, newest
     /// first: a hash, an Auto tags vector (when `embed_version` is given) or a face scan (when `face_version` is).
-    pub fn photos_needing_work(&self, embed_version: Option<&str>, face_version: Option<&str>, limit: i64) -> Result<Vec<WorkItem>> {
+    pub fn photos_needing_work(&self, embed_version: Option<&str>, face_version: Option<&str>, check_art: bool, limit: i64) -> Result<Vec<WorkItem>> {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT {PHOTO_COLS}, need_hash, need_embed, need_faces FROM (
+                "SELECT {PHOTO_COLS}, need_hash, need_embed, need_faces, need_art FROM (
                     SELECT p.*,
                            (p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!') AS need_hash,
                            (?1 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)) AS need_embed,
-                           (?2 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?2)) AS need_faces
+                           (?2 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?2)) AS need_faces,
+                           (?3 AND EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = p.id AND f.art IS NULL)) AS need_art
                       FROM photos p WHERE p.missing = 0 AND p.dup = 0 AND p.kind = 0)
-                  WHERE need_hash OR need_embed OR need_faces
-                  ORDER BY id DESC LIMIT ?3"
+                  WHERE need_hash OR need_embed OR need_faces OR need_art
+                  ORDER BY id DESC LIMIT ?4"
             ))
             .map_err(db_err)?;
         let rows = s
-            .query_map(params![embed_version, face_version, limit], |r| {
-                Ok(WorkItem { photo: row_to_photo(r)?, hash: r.get::<_, i64>(14)? != 0, embed: r.get::<_, i64>(15)? != 0, faces: r.get::<_, i64>(16)? != 0 })
+            .query_map(params![embed_version, face_version, check_art, limit], |r| {
+                Ok(WorkItem {
+                    photo: row_to_photo(r)?,
+                    hash: r.get::<_, i64>(14)? != 0,
+                    embed: r.get::<_, i64>(15)? != 0,
+                    faces: r.get::<_, i64>(16)? != 0,
+                    art: r.get::<_, i64>(17)? != 0,
+                })
             })
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
         Ok(rows)
+    }
+
+    /// The faces of a photo not yet checked for being artwork, with their boxes (fractions of the upright photo).
+    pub fn faces_needing_art(&self, photo_id: PhotoId) -> Result<Vec<(i64, [f32; 4])>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, x, y, w, h FROM faces WHERE photo_id = ?1 AND art IS NULL ORDER BY id").map_err(db_err)?;
+        let rows = s.query_map(params![photo_id], |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
+    /// Record whether a face is artwork. Artwork is taken out of any group it was in at the next regrouping.
+    pub fn set_face_art(&self, face_id: i64, art: bool) -> Result<()> {
+        self.conn().execute("UPDATE faces SET art = ?2 WHERE id = ?1", params![face_id, art]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// A photo whose faces cannot be looked at (it will not decode): they count as not artwork, so it is not offered again.
+    pub fn settle_art(&self, photo_id: PhotoId) -> Result<()> {
+        self.conn().execute("UPDATE faces SET art = 0 WHERE photo_id = ?1 AND art IS NULL", params![photo_id]).map_err(db_err)?;
+        Ok(())
     }
 
     /// Record the keys of a photo whose bytes were just read. `hash` is None for a file that could not be read.

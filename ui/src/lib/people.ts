@@ -48,7 +48,7 @@ export type FaceOverview = { groups: number; people: number; unsorted: number; h
 export type FaceView = 'groups' | 'people' | 'hidden';
 export type FaceOrder = 'best' | 'doubtful' | 'unchecked';
 /** The sections of the People tab. */
-export type Section = 'groups' | 'people' | 'unsorted';
+export type Section = 'groups' | 'people' | 'unsorted' | 'hidden';
 
 const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
 /** "12 photos". (A photo with the same person twice is rare, so faces are not counted separately.) */
@@ -66,13 +66,17 @@ export function personRows(people: PersonInfo[], chosen: number | null, expanded
 /** Which section to open the People tab on: Named, always, so it opens the same way every time. */
 export const firstSection = (_o: FaceOverview): Section => 'people';
 
-export const sectionTitle: Record<Section, string> = { groups: 'Pending', people: 'Named', unsorted: 'Unsure' };
+export const sectionTitle: Record<Section, string> = { groups: 'Pending', people: 'Named', unsorted: 'Unsure', hidden: 'Ignored' };
 
 /** What the computer thinks of a group's faces, in words. */
 export function verdict(p: Pick<FacePerson, 'mixed' | 'looks_mixed'>): { text: string; mixed: boolean } | null {
   if (p.mixed === null) return null;
   return p.looks_mixed ? { text: 'Looks like several people', mixed: true } : { text: 'Looks like one person', mixed: false };
 }
+
+/** The people a suggestion names, ready for "This is…" (one with no name to show is left out). */
+export const toCandidates = (s: Suggestion[]): { id: number; name: string }[] =>
+  s.filter((x) => x.name !== null).map((x) => ({ id: x.person_id, name: x.name as string }));
 
 /** "Looks like Gran", or null when the person it looks like has no name to show. */
 export const suggestionLine = (s: Suggestion | null): string | null => (s?.name ? `Looks like ${s.name}` : null);

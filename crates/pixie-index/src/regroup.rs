@@ -234,6 +234,14 @@ pub struct Anchor<'a> {
 /// is not enough and a person with many confirmed faces is not favoured over one with a few. The margin is how far
 /// ahead of the runner-up it is.
 pub fn best_person(face: &[f32], anchors: &[Anchor], excluded: &[i64], top: usize) -> Option<(i64, f32, f32)> {
+    let scored = rank_people(face, anchors, excluded, top);
+    let (person, score) = *scored.first()?;
+    let margin = scored.get(1).map_or(score, |second| score - second.1);
+    Some((person, score, margin))
+}
+
+/// Everyone, most like `face` first, each with the mean similarity of the `top` closest of their faces.
+pub fn rank_people(face: &[f32], anchors: &[Anchor], excluded: &[i64], top: usize) -> Vec<(i64, f32)> {
     let mut scored: Vec<(i64, f32)> = anchors
         .iter()
         .filter(|a| !excluded.contains(&a.person) && !a.faces.is_empty())
@@ -245,9 +253,7 @@ pub fn best_person(face: &[f32], anchors: &[Anchor], excluded: &[i64], top: usiz
         })
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let (person, score) = *scored.first()?;
-    let margin = scored.get(1).map_or(score, |second| score - second.1);
-    Some((person, score, margin))
+    scored
 }
 
 /// Try to take a mixed group apart: regroup its faces at stricter and stricter levels and use the first that gives at least
@@ -261,6 +267,29 @@ pub fn split(vectors: &[&[f32]], levels: &[f32], min_piece: usize, max_units: us
         }
     }
     None
+}
+
+/// An order for looking through faces in which look-alikes sit together: loose clusters (biggest first), and inside each a
+/// walk from the most typical face to whichever unvisited face is nearest.
+pub fn similarity_order(vectors: &[&[f32]], cluster_cut: f32, max_units: usize) -> Vec<usize> {
+    let mut clusters = upgma(vectors, cluster_cut, max_units);
+    clusters.sort_by(|a, b| b.len().cmp(&a.len()).then(a.iter().min().cmp(&b.iter().min())));
+    let mut order = Vec::with_capacity(vectors.len());
+    for cluster in clusters {
+        let members: Vec<&[f32]> = cluster.iter().map(|&i| vectors[i]).collect();
+        let mean = centroid(&members);
+        let mut left: Vec<usize> = (0..cluster.len()).collect();
+        let first = left.iter().copied().max_by(|&a, &b| dot(members[a], &mean).total_cmp(&dot(members[b], &mean))).expect("a member");
+        left.retain(|&m| m != first);
+        let mut at = first;
+        order.push(cluster[first]);
+        while !left.is_empty() {
+            let (k, _) = left.iter().enumerate().max_by(|(_, &a), (_, &b)| dot(members[at], members[a]).total_cmp(&dot(members[at], members[b]))).expect("one left");
+            at = left.swap_remove(k);
+            order.push(cluster[at]);
+        }
+    }
+    order
 }
 
 #[cfg(test)]
@@ -374,5 +403,21 @@ mod tests {
         let pieces = split(&refs(&v), &[0.5, 0.7, 0.9], 3, 100).expect("splits");
         assert_eq!(sorted(pieces), vec![vec![0, 1, 2, 3, 4], vec![5, 6, 7, 8]]);
         assert!(split(&refs(&v[..5]), &[0.5, 0.7, 0.9], 3, 100).is_none()); // one person does not split
+    }
+
+    #[test]
+    fn similarity_order_puts_look_alikes_together_and_covers_every_face() {
+        // two interleaved people: 0, 90, 1, 91, 2, 92 degrees
+        let at = |d: f32| vec![d.to_radians().cos(), d.to_radians().sin()];
+        let faces: Vec<Vec<f32>> = [0.0, 90.0, 1.0, 91.0, 2.0, 92.0, 3.0].iter().map(|d| at(*d)).collect();
+        let refs: Vec<&[f32]> = faces.iter().map(Vec::as_slice).collect();
+        let order = similarity_order(&refs, 0.3, 100);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..7).collect::<Vec<_>>());
+        let side = |i: &usize| faces[*i][0] > 0.5; // near 0 degrees
+        let flips = order.windows(2).filter(|w| side(&w[0]) != side(&w[1])).count();
+        assert_eq!(flips, 1, "each person is one run: {order:?}");
+        assert!(order[0] == 2 || order[0] == 4, "the biggest cluster (four near 0 degrees) first, from its most typical face");
     }
 }

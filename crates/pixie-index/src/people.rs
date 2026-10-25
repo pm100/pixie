@@ -17,6 +17,12 @@ pub const MIN_GROUP: usize = 3;
 /// More faces than this are pre-grouped into units before the exact grouping (see `regroup::upgma`).
 pub const MAX_UNITS: usize = 6000;
 /// A new face joins a confirmed person on its own only when this alike (mean of its closest faces) ...
+/// "Try to group": the lower bar for the faces left over: a lower cut, and two faces from two photos are enough.
+pub const LOOSE_JOIN: f32 = 0.40;
+const LOOSE_MIN_FACES: usize = 2;
+const LOOSE_MIN_PHOTOS: usize = 2;
+/// Faces in no group are listed with look-alikes together: clusters this loose, each walked nearest to nearest.
+const ORDER_JOIN: f32 = 0.33;
 pub const ATTACH_SCORE: f32 = 0.50;
 /// ... and at least this much more alike than the next person.
 pub const ATTACH_MARGIN: f32 = 0.05;
@@ -48,9 +54,15 @@ const TIDY_TRIES: usize = 3;
 
 const VISIBLE: &str = "h.missing = 0 AND h.dup = 0";
 
+/// A condition on a face `f`: it is a candidate to be someone. Not artwork (a painting, drawing or statue is not a person
+/// to name), and not ignored by the user.
+const NOT_ART: &str = "f.art IS NOT 1 AND f.ignored = 0";
+
 struct OpenFace {
     id: i64,
     photo: i64,
+    /// Artwork: never grouped, never attached to anyone.
+    art: bool,
     vector: Vec<f32>,
     person: Option<i64>,
 }
@@ -62,6 +74,8 @@ struct Snapshot {
     anchors: Vec<(i64, Vec<Vec<f32>>)>,
     rejections: HashMap<i64, Vec<i64>>,
     groups: Vec<i64>,
+    /// The user asked to try harder to group what is left over.
+    loose: bool,
 }
 
 /// What a regrouping decided.
@@ -70,6 +84,8 @@ struct Plan {
     /// (existing group to reuse, faces)
     groups: Vec<(Option<i64>, Vec<i64>)>,
     unsorted: Vec<i64>,
+    /// The faces in no group, look-alikes together.
+    order: Vec<i64>,
 }
 
 fn rev_of(c: &Connection) -> Result<i64> {
@@ -163,7 +179,12 @@ fn plan(snap: &Snapshot) -> Plan {
     let refs = anchor_refs(&snap.anchors);
     let mut attach = Vec::new();
     let mut rest: Vec<&OpenFace> = Vec::new();
+    let mut artwork: Vec<i64> = Vec::new();
     for f in &snap.open {
+        if f.art {
+            artwork.push(f.id);
+            continue;
+        }
         let excluded = snap.rejections.get(&f.id).map(Vec::as_slice).unwrap_or(&[]);
         match confident(&f.vector, &refs, excluded) {
             Some(person) => attach.push((f.id, person)),
@@ -172,8 +193,40 @@ fn plan(snap: &Snapshot) -> Plan {
     }
     let vectors: Vec<&[f32]> = rest.iter().map(|f| f.vector.as_slice()).collect();
     let clusters = settle(&vectors, regroup::upgma(&vectors, GROUP_JOIN, MAX_UNITS));
+    let mut taken: HashSet<i64> = HashSet::new();
+    let (mut groups, mut unsorted) = make_groups(snap, &rest, &clusters, MIN_GROUP, MIN_GROUP, &mut taken);
 
-    // A cluster keeps the id of the old group most of its faces came from, so a group is the same group tomorrow.
+    // Asked to try harder: what is left over is grouped again with a lower bar (two photos are enough).
+    if snap.loose && !unsorted.is_empty() {
+        let by_id: HashMap<i64, &OpenFace> = rest.iter().map(|f| (f.id, *f)).collect();
+        let left: Vec<&OpenFace> = unsorted.iter().filter_map(|id| by_id.get(id).copied()).collect();
+        let vectors: Vec<&[f32]> = left.iter().map(|f| f.vector.as_slice()).collect();
+        let clusters = settle(&vectors, regroup::upgma(&vectors, LOOSE_JOIN, MAX_UNITS));
+        let (more, still) = make_groups(snap, &left, &clusters, LOOSE_MIN_FACES, LOOSE_MIN_PHOTOS, &mut taken);
+        groups.extend(more);
+        unsorted = still;
+    }
+
+    // Faces in no group are listed with look-alikes together.
+    let by_id: HashMap<i64, &OpenFace> = snap.open.iter().map(|f| (f.id, f)).collect();
+    let loose: Vec<&OpenFace> = unsorted.iter().filter_map(|id| by_id.get(id).copied()).collect();
+    let vectors: Vec<&[f32]> = loose.iter().map(|f| f.vector.as_slice()).collect();
+    let order = regroup::similarity_order(&vectors, ORDER_JOIN, MAX_UNITS).into_iter().map(|i| loose[i].id).collect();
+    unsorted.extend(artwork); // out of any group, and not listed in Unsure (see `NOT_ART`)
+    Plan { attach, groups, unsorted, order }
+}
+
+/// Turn clusters into groups (a group needs `min_faces` faces from `min_photos` different photos: two faces in one photo
+/// are two people, so they are no evidence that one person recurs) and the faces left over. A cluster keeps the id of the
+/// old group most of its faces came from (not one in `taken`), so a group is the same group tomorrow.
+fn make_groups(
+    snap: &Snapshot,
+    rest: &[&OpenFace],
+    clusters: &[Vec<usize>],
+    min_faces: usize,
+    min_photos: usize,
+    taken: &mut HashSet<i64>,
+) -> (Vec<(Option<i64>, Vec<i64>)>, Vec<i64>) {
     let mut overlaps: Vec<(usize, usize, i64)> = Vec::new();
     for (ci, cluster) in clusters.iter().enumerate() {
         let mut counts: HashMap<i64, usize> = HashMap::new();
@@ -186,9 +239,12 @@ fn plan(snap: &Snapshot) -> Plan {
     }
     overlaps.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     let mut reuse: HashMap<usize, i64> = HashMap::new();
-    let mut taken: HashSet<i64> = HashSet::new();
     for (n, ci, old) in overlaps {
-        if n * 2 >= clusters[ci].len() && !reuse.contains_key(&ci) && !taken.contains(&old) {
+        let big_enough = {
+            let photos: HashSet<i64> = clusters[ci].iter().map(|&m| rest[m].photo).collect();
+            clusters[ci].len() >= min_faces && photos.len() >= min_photos
+        };
+        if big_enough && n * 2 >= clusters[ci].len() && !reuse.contains_key(&ci) && !taken.contains(&old) {
             reuse.insert(ci, old);
             taken.insert(old);
         }
@@ -197,10 +253,8 @@ fn plan(snap: &Snapshot) -> Plan {
     let mut groups = Vec::new();
     let mut unsorted = Vec::new();
     for (ci, cluster) in clusters.iter().enumerate() {
-        // Two faces in one photo are two people, so faces from the same photo are no evidence that one person recurs:
-        // a group needs MIN_GROUP different photos (a crowd of tiny alike faces in one picture is not a person).
         let photos: HashSet<i64> = cluster.iter().map(|&m| rest[m].photo).collect();
-        if cluster.len() < MIN_GROUP || photos.len() < MIN_GROUP {
+        if cluster.len() < min_faces || photos.len() < min_photos {
             unsorted.extend(cluster.iter().map(|&m| rest[m].id));
             continue;
         }
@@ -208,7 +262,7 @@ fn plan(snap: &Snapshot) -> Plan {
         let mut members = Vec::new();
         for &m in cluster {
             let face = rest[m].id;
-            // "Not this person" on a group keeps the face out of it
+            // "Move to Unsure" on a group keeps the face out of it
             if id.is_some_and(|g| snap.rejections.get(&face).is_some_and(|r| r.contains(&g))) {
                 unsorted.push(face);
             } else {
@@ -217,7 +271,7 @@ fn plan(snap: &Snapshot) -> Plan {
         }
         groups.push((id, members));
     }
-    Plan { attach, groups, unsorted }
+    (groups, unsorted)
 }
 
 fn same_name(c: &Connection, name: &str, except: i64) -> Result<Option<i64>> {
@@ -268,8 +322,9 @@ impl Db {
         Ok(FaceOverview {
             groups: count("SELECT COUNT(*) FROM people WHERE hidden = 0 AND name IS NULL")?,
             people: count("SELECT COUNT(*) FROM people WHERE hidden = 0 AND name IS NOT NULL")?,
-            unsorted: count(&format!("SELECT COUNT(*) FROM faces f JOIN photos h ON h.id = f.photo_id WHERE f.person_id IS NULL AND {VISIBLE}"))?,
-            hidden: count("SELECT COUNT(*) FROM people WHERE hidden = 1")?,
+            unsorted: count(&format!("SELECT COUNT(*) FROM faces f JOIN photos h ON h.id = f.photo_id WHERE f.person_id IS NULL AND {VISIBLE} AND {NOT_ART}"))?,
+            hidden: count("SELECT COUNT(*) FROM people WHERE hidden = 1")?
+                + count(&format!("SELECT COUNT(*) FROM faces f JOIN photos h ON h.id = f.photo_id WHERE f.ignored = 1 AND {VISIBLE}"))?,
             unchecked: count(&format!(
                 "SELECT COUNT(*) FROM faces f JOIN people p ON p.id = f.person_id JOIN photos h ON h.id = f.photo_id
                   WHERE p.confirmed = 1 AND p.hidden = 0 AND f.confirmed = 0 AND {VISIBLE}"
@@ -291,8 +346,8 @@ impl Db {
             }
             let sql = match only {
                 Some(ids) if ids.is_empty() => return Ok(0),
-                Some(ids) => format!("SELECT id, embedding FROM faces WHERE person_id IS NULL AND id IN ({})", ids_sql(ids)),
-                None => "SELECT id, embedding FROM faces WHERE person_id IS NULL".to_string(),
+                Some(ids) => format!("SELECT id, embedding FROM faces WHERE person_id IS NULL AND art IS NOT 1 AND ignored = 0 AND id IN ({})", ids_sql(ids)),
+                None => "SELECT id, embedding FROM faces WHERE person_id IS NULL AND art IS NOT 1 AND ignored = 0".to_string(),
             };
             let mut st = c.prepare(&sql).map_err(db_err)?;
             let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, vector_of(&r.get::<_, Vec<u8>>(1)?)))).map_err(db_err)?;
@@ -340,19 +395,26 @@ impl Db {
         let rev = rev_of(&c)?;
         let mut st = c
             .prepare(&format!(
-                "SELECT f.id, f.embedding, f.person_id, f.photo_id FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
+                "SELECT f.id, f.embedding, f.person_id, f.photo_id, f.art IS 1 FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
                    LEFT JOIN people p ON p.id = f.person_id
-                  WHERE f.person_id IS NULL OR p.confirmed = 0 ORDER BY f.id"
+                  WHERE f.ignored = 0 AND (f.person_id IS NULL OR p.confirmed = 0) ORDER BY f.id"
             ))
             .map_err(db_err)?;
-        let rows = st.query_map([], |r| Ok(OpenFace { id: r.get(0)?, vector: vector_of(&r.get::<_, Vec<u8>>(1)?), person: r.get(2)?, photo: r.get(3)? })).map_err(db_err)?;
+        let rows = st.query_map([], |r| Ok(OpenFace { id: r.get(0)?, vector: vector_of(&r.get::<_, Vec<u8>>(1)?), person: r.get(2)?, photo: r.get(3)?, art: r.get::<_, i64>(4)? != 0 })).map_err(db_err)?;
         let open = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)?;
         let groups = {
             let mut st = c.prepare("SELECT id FROM people WHERE confirmed = 0").map_err(db_err)?;
             let rows = st.query_map([], |r| r.get(0)).map_err(db_err)?;
             rows.collect::<rusqlite::Result<Vec<i64>>>().map_err(db_err)?
         };
-        Ok(Snapshot { rev, open, anchors: anchors_of(&c, false)?, rejections: rejections_of(&c)?, groups })
+        Ok(Snapshot {
+            rev,
+            open,
+            anchors: anchors_of(&c, false)?,
+            rejections: rejections_of(&c)?,
+            groups,
+            loose: c.query_row("SELECT loose FROM face_meta WHERE id = 1", [], |r| r.get::<_, i64>(0)).map_err(db_err)? != 0,
+        })
     }
 
     /// Regroup every face the user has not settled: those clearly a confirmed person's join them (to be checked), the
@@ -404,6 +466,9 @@ impl Db {
                 changes += tx.execute("UPDATE faces SET person_id = NULL, confirmed = 0 WHERE id = ?1", params![face]).map_err(db_err)?;
             }
         }
+        for (rank, face) in plan.order.iter().enumerate() {
+            tx.execute("UPDATE faces SET unsure_rank = ?2 WHERE id = ?1", params![face, rank as i64]).map_err(db_err)?;
+        }
         // groups nobody kept (their faces are placed above)
         for g in snap.groups.iter().filter(|g| !kept.contains(g)) {
             changes += tx.execute("DELETE FROM people WHERE id = ?1 AND confirmed = 0", params![g]).map_err(db_err)?;
@@ -417,6 +482,105 @@ impl Db {
         }
         tx.commit().map_err(db_err)?;
         Ok(Some(TidyReport { faces: snap.open.len(), groups: plan.groups.len(), unsorted: plan.unsorted.len(), attached: plan.attach.len() }))
+    }
+
+    /// "Try to group": regroup, grouping what is left over more loosely (and keep doing so on later regroupings).
+    /// Returns how many faces left Unsure.
+    pub fn try_group(&self) -> Result<i64> {
+        let before = self.face_overview()?.unsorted;
+        self.conn().execute("UPDATE face_meta SET loose = 1", []).map_err(db_err)?;
+        self.tidy()?;
+        Ok(before - self.face_overview()?.unsorted)
+    }
+
+    /// Who this face (or these faces, or this group's faces) looks most like among the named people: up to three, most
+    /// alike first, each at least `SUGGEST_SCORE`. `except` is a person that cannot be the answer (the group asking).
+    fn suggest(&self, face_ids: &[i64], except: Option<i64>) -> Result<Vec<Suggestion>> {
+        let c = self.conn();
+        // the faces' average look (at most 300 of them, spread evenly)
+        let step = (face_ids.len() / 300).max(1);
+        let ids: Vec<i64> = face_ids.iter().copied().step_by(step).collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut st = c.prepare(&format!("SELECT embedding FROM faces WHERE id IN ({})", ids_sql(&ids))).map_err(db_err)?;
+        let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(db_err)?;
+        let vectors: Vec<Vec<f32>> = rows.map(|r| r.map(|b| vector_of(&b))).collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let refs: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mean = regroup::centroid(&refs);
+        let anchors = anchors_of(&c, true)?;
+        let ranked = regroup::rank_people(&mean, &anchor_refs(&anchors), &except.into_iter().collect::<Vec<_>>(), ANCHOR_TOP);
+        let mut out = Vec::new();
+        for (person, score) in ranked.into_iter().filter(|r| r.1 >= SUGGEST_SCORE).take(3) {
+            let name: Option<String> = c.query_row("SELECT name FROM people WHERE id = ?1", params![person], |r| r.get(0)).optional().map_err(db_err)?.flatten();
+            out.push(Suggestion { person_id: person, name, score });
+        }
+        Ok(out)
+    }
+
+    /// "This is…" candidates for some faces.
+    pub fn suggest_for_faces(&self, face_ids: &[i64]) -> Result<Vec<Suggestion>> {
+        self.suggest(face_ids, None)
+    }
+
+    /// "This is…" candidates for a whole group (or person).
+    pub fn suggest_for_group(&self, id: i64) -> Result<Vec<Suggestion>> {
+        let ids: Vec<i64> = {
+            let c = self.conn();
+            let mut st = c.prepare("SELECT id FROM faces WHERE person_id = ?1 ORDER BY id").map_err(db_err)?;
+            let rows = st.query_map(params![id], |r| r.get(0)).map_err(db_err)?;
+            rows.collect::<rusqlite::Result<_>>().map_err(db_err)?
+        };
+        self.suggest(&ids, Some(id))
+    }
+
+    /// Ignore these faces, each on its own: they leave whatever group they were in and are left out of grouping and of every
+    /// list but "Ignored".
+    pub fn ignore_faces(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let list = ids_sql(ids);
+        let before = people_of_faces(&tx, &list)?;
+        tx.execute(&format!("UPDATE faces SET ignored = 1, person_id = NULL, confirmed = 0 WHERE id IN ({list})"), []).map_err(db_err)?;
+        for p in before {
+            recompute_person(&tx, p)?;
+        }
+        prune_people(&tx)?;
+        bump_rev(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Stop ignoring these faces: they are loose again (in Unsure) until they are grouped or named.
+    pub fn unignore_faces(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute(&format!("UPDATE faces SET ignored = 0 WHERE id IN ({})", ids_sql(ids)), []).map_err(db_err)?;
+        bump_rev(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The faces the user ignored, in visible photos.
+    pub fn ignored_faces(&self, offset: i64, limit: i64) -> Result<Vec<FaceTile>> {
+        let c = self.conn();
+        let mut st = c
+            .prepare(&format!(
+                "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
+                  WHERE f.ignored = 1 ORDER BY f.id DESC LIMIT ?1 OFFSET ?2"
+            ))
+            .map_err(db_err)?;
+        let rows = st.query_map(params![limit, offset], row_to_tile).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
     }
 
     // ---- what the user can do ----
@@ -492,7 +656,7 @@ impl Db {
         let confirmed: i64 = tx.query_row("SELECT confirmed FROM people WHERE id = ?1", params![person], |r| r.get(0)).map_err(db_err)?;
         let list = ids_sql(ids);
         let before = people_of_faces(&tx, &list)?;
-        tx.execute(&format!("UPDATE faces SET person_id = ?1, confirmed = ?2 WHERE id IN ({list})"), params![person, confirmed]).map_err(db_err)?;
+        tx.execute(&format!("UPDATE faces SET person_id = ?1, confirmed = ?2, ignored = 0 WHERE id IN ({list})"), params![person, confirmed]).map_err(db_err)?;
         tx.execute(&format!("DELETE FROM face_rejections WHERE person_id = ?1 AND face_id IN ({list})"), params![person]).map_err(db_err)?;
         for p in before.into_iter().chain([person]) {
             recompute_person(&tx, p)?;
@@ -525,7 +689,7 @@ impl Db {
             }
         };
         let confirmed: i64 = tx.query_row("SELECT confirmed FROM people WHERE id = ?1", params![person], |r| r.get(0)).map_err(db_err)?;
-        tx.execute(&format!("UPDATE faces SET person_id = ?1, confirmed = ?2 WHERE id IN ({list})"), params![person, confirmed]).map_err(db_err)?;
+        tx.execute(&format!("UPDATE faces SET person_id = ?1, confirmed = ?2, ignored = 0 WHERE id IN ({list})"), params![person, confirmed]).map_err(db_err)?;
         tx.execute(&format!("DELETE FROM face_rejections WHERE person_id = ?1 AND face_id IN ({list})"), params![person]).map_err(db_err)?;
         for p in before.into_iter().chain([person]) {
             recompute_person(&tx, p)?;
@@ -756,7 +920,7 @@ impl Db {
         let mut st = c
             .prepare(&format!(
                 "SELECT f.id, f.photo_id, h.mtime, h.size, f.x, f.y, f.w, f.h, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
-                  WHERE f.person_id IS NULL ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?1 OFFSET ?2"
+                  WHERE f.person_id IS NULL AND {NOT_ART} ORDER BY f.unsure_rank IS NULL, f.unsure_rank, f.score * f.w * f.h DESC, f.id LIMIT ?1 OFFSET ?2"
             ))
             .map_err(db_err)?;
         let rows = st
@@ -864,6 +1028,63 @@ mod tests {
         }
         let r = db.tidy().unwrap().unwrap();
         assert_eq!((r.groups, r.unsorted), (1, 0), "three photos now, so a group");
+    }
+
+    #[test]
+    fn try_group_groups_the_leftovers_more_loosely_and_keeps_doing_so() {
+        let db = Db::open_in_memory().unwrap();
+        // two people each in only two photos (the strict bar is three), and one face on its own
+        let ids = library(&db, &[0.0, 8.0, 100.0, 108.0, 250.0]);
+        let r = db.tidy().unwrap().unwrap();
+        assert_eq!((r.groups, r.unsorted), (0, 5));
+        assert_eq!(db.try_group().unwrap(), 4, "two pairs left Unsure; the single face stays");
+        assert_eq!(db.face_overview().unwrap().groups, 2);
+        assert_eq!(person_of(&db, ids[0]), person_of(&db, ids[1]));
+        assert_ne!(person_of(&db, ids[0]), person_of(&db, ids[2]));
+        assert_eq!(person_of(&db, ids[4]), None);
+        // later regroupings keep the looser bar, so the groups are not dissolved again
+        db.tidy().unwrap();
+        assert_eq!(db.face_overview().unwrap().groups, 2);
+    }
+
+    #[test]
+    fn artwork_faces_are_left_out_of_unsure_and_out_of_groups() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &[0.0, 100.0, 200.0]);
+        assert_eq!(db.face_overview().unwrap().unsorted, 3);
+        assert_eq!(db.faces_needing_art(db.face_location(ids[0]).unwrap().unwrap().0.id).unwrap().len(), 1, "not looked at yet");
+        db.set_face_art(ids[1], true).unwrap();
+        assert_eq!(db.face_overview().unwrap().unsorted, 2);
+        let listed: Vec<i64> = db.unsorted_faces(0, 10).unwrap().iter().map(|u| u.tile.id).collect();
+        assert_eq!(listed.len(), 2);
+        assert!(!listed.contains(&ids[1]));
+
+        // three look-alike faces in three photos are a group, unless one of them is a painting
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &[0.0, 3.0, 6.0, 9.0]);
+        db.set_face_art(ids[3], true).unwrap();
+        let r = db.tidy().unwrap().unwrap();
+        assert_eq!((r.groups, r.unsorted), (1, 1));
+        assert_eq!(person_of(&db, ids[3]), None);
+        assert!(person_of(&db, ids[0]).is_some());
+        // and a face marked artwork after it was grouped leaves its group at the next regrouping
+        db.set_face_art(ids[2], true).unwrap();
+        db.conn().execute("UPDATE face_meta SET rev = rev + 1", []).unwrap();
+        db.tidy().unwrap();
+        assert_eq!(person_of(&db, ids[2]), None);
+    }
+
+    #[test]
+    fn faces_in_no_group_are_listed_with_look_alikes_together() {
+        let db = Db::open_in_memory().unwrap();
+        // interleaved in the order they were found, so only the ordering can bring each person together
+        let ids = library(&db, &[0.0, 100.0, 4.0, 104.0, 250.0]);
+        db.tidy().unwrap();
+        let order: Vec<i64> = db.unsorted_faces(0, 20).unwrap().iter().map(|u| u.tile.id).collect();
+        assert_eq!(order.len(), 5);
+        let person = |id: i64| ids.iter().position(|x| *x == id).map(|i| [0, 1, 0, 1, 2][i]).unwrap();
+        let flips = order.windows(2).filter(|w| person(w[0]) != person(w[1])).count();
+        assert!(flips <= 2, "each person is one run: {order:?}");
     }
 
     #[test]
@@ -1027,6 +1248,51 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_name_who_some_faces_or_a_group_look_like_best_first() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &[0.0, 3.0, 6.0, 90.0, 93.0, 96.0, 60.0, 64.0, 68.0]);
+        let (joe, sam) = (db.new_person_from_faces(&ids[0..3], Some("Joe")).unwrap(), db.new_person_from_faces(&ids[3..6], Some("Sam")).unwrap());
+        // a face at 30 degrees looks like Joe (cos 0.87 to 6) and a bit like Sam (cos 0.5); at 60 like Sam more
+        let near_joe = db.suggest_for_faces(&[ids[0]]).unwrap();
+        assert_eq!(near_joe.first().map(|s| (s.person_id, s.name.clone())), Some((joe, Some("Joe".to_string()))));
+        // a group of faces between the two: ranked, best first, never the group itself
+        let group = db.new_person_from_faces(&ids[6..9], None).unwrap();
+        db.conn().execute("UPDATE people SET confirmed = 0 WHERE id = ?1", params![group]).unwrap();
+        let s = db.suggest_for_group(group).unwrap();
+        assert!(s.iter().all(|x| x.person_id != group));
+        assert_eq!(s.first().map(|x| x.person_id), Some(sam), "{s:?}");
+        assert!(s.windows(2).all(|w| w[0].score >= w[1].score));
+        assert!(db.suggest_for_faces(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ignored_faces_keep_their_own_picture_and_leave_their_group() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &[0.0, 3.0, 6.0, 9.0, 100.0]);
+        db.tidy().unwrap();
+        let group = person_of(&db, ids[0]).unwrap();
+        assert_eq!(db.face_overview().unwrap().unsorted, 1);
+        // ignore one grouped face and the loose one: each stays its own face, nothing is made of them
+        db.ignore_faces(&[ids[1], ids[4]]).unwrap();
+        assert_eq!(person_of(&db, ids[1]), None);
+        assert_eq!(person_of(&db, ids[0]), Some(group), "the rest of the group is untouched");
+        let o = db.face_overview().unwrap();
+        assert_eq!((o.unsorted, o.hidden), (0, 2));
+        assert_eq!(db.ignored_faces(0, 10).unwrap().len(), 2);
+        assert!(db.list_face_people(FaceView::Hidden).unwrap().is_empty(), "no group was made of them");
+        // regrouping leaves them alone
+        db.tidy().unwrap();
+        assert_eq!(person_of(&db, ids[1]), None);
+        assert_eq!(db.ignored_faces(0, 10).unwrap().len(), 2);
+        // stop ignoring one: it is loose again; give the other to someone: it is no longer ignored
+        db.unignore_faces(&[ids[4]]).unwrap();
+        assert_eq!(db.face_overview().unwrap().unsorted, 1);
+        db.move_faces(&[ids[1]], group).unwrap();
+        assert_eq!(db.ignored_faces(0, 10).unwrap().len(), 0);
+        assert_eq!(person_of(&db, ids[1]), Some(group));
+    }
+
+    #[test]
     fn hiding_confirms_and_unhiding_an_unnamed_group_makes_it_a_group_again() {
         let db = Db::open_in_memory().unwrap();
         let ids = library(&db, &ANGLES);
@@ -1159,5 +1425,27 @@ mod tests {
             println!("trim {share}: named {named} faces; tidy attached {} (groups {} -> {}, unsorted {} -> {}, unchecked {})", r.attached, before.groups, after.groups, before.unsorted, after.unsorted, after.unchecked);
         }
         TRIM.store(ANCHOR_TRIM.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `PIXIE_LIVE_DB=path cargo test --release -p pixie-index live_try_group -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_try_group() {
+        let path = std::env::var("PIXIE_LIVE_DB").expect("PIXIE_LIVE_DB");
+        let copy = format!("{path}.loose.db");
+        std::fs::copy(&path, &copy).unwrap();
+        let db = Db::open(std::path::Path::new(&copy)).unwrap();
+        db.tidy().unwrap();
+        let before = db.face_overview().unwrap();
+        let t = std::time::Instant::now();
+        let moved = db.try_group().unwrap();
+        let after = db.face_overview().unwrap();
+        println!("try_group {:?}: {} faces left Unsure; groups {} -> {}, unsure {} -> {}", t.elapsed(), moved, before.groups, after.groups, before.unsorted, after.unsorted);
+        let cards = db.list_face_people(FaceView::Groups).unwrap();
+        let small: Vec<i64> = cards.iter().filter(|c| c.photos <= 3).map(|c| c.faces).collect();
+        println!("groups with 3 or fewer photos: {}; mixed-looking: {}", small.len(), cards.iter().filter(|c| c.looks_mixed).count());
+        let t = std::time::Instant::now();
+        let u = db.unsorted_faces(0, 60).unwrap();
+        println!("unsure page {:?}: {}", t.elapsed(), u.len());
     }
 }

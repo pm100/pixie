@@ -2,12 +2,12 @@
   import { untrack } from 'svelte';
   import {
     assignGroup, facesOfPerson, faceOverview, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
-    unsortedFaces,
+    hidePerson, ignoredFaces, ignoreFaces, unignoreFaces, suggestForFaces, suggestForGroup, tryGroup, unhidePerson, unsortedFaces,
   } from './api';
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import {
-    clickSelection, faceCardLine, firstSection, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
+    clickSelection, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
     type FaceOrder, type FaceOverview, type FacePerson, type FaceTile, type PeopleStatus, type Section, type UnsortedFace,
   } from './people';
   import FaceGrid from './FaceGrid.svelte';
@@ -32,6 +32,8 @@
   let cards = $state<FacePerson[]>([]);
   let named = $state<FacePerson[]>([]);
   let unsorted = $state<UnsortedFace[]>([]);
+  /** The faces ignored one by one (the Ignored section also lists groups that were ignored whole). */
+  let ignored = $state<FaceTile[]>([]);
   /** One person (or group) opened, with how their faces are shown: all of them in an order, or only those to check. */
   let selected = $state<number | null>(null);
   let order = $state<FaceOrder>('doubtful');
@@ -60,7 +62,7 @@
       ? [...cards].sort((a, b) => (peopleSort === 'photos' ? b.photos - a.photos : 0) || (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' }) || a.id - b.id)
       : cards,
   );
-  const faceList = $derived(selected === null && section === 'unsorted' ? unsorted.map((u) => u.tile) : tiles);
+  const faceList = $derived(selected === null && section === 'unsorted' ? unsorted.map((u) => u.tile) : selected === null && section === 'hidden' ? ignored : tiles);
 
   async function load() {
     const token = latest.next();
@@ -70,11 +72,12 @@
     try {
       const ov = await faceOverview();
       const sec = section ?? firstSection(ov);
-      const [list, people, loose, faces] = await Promise.all([
+      const [list, people, loose, faces, gone1] = await Promise.all([
         sec === 'unsorted' ? Promise.resolve<FacePerson[]>([]) : listFacePeople(sec),
         sec === 'people' ? Promise.resolve<FacePerson[] | null>(null) : listFacePeople('people'),
         sec === 'unsorted' && sel === null ? unsortedFaces(0, count) : Promise.resolve<UnsortedFace[]>([]),
         sel === null ? Promise.resolve<FaceTile[]>([]) : facesOfPerson(sel, 0, count, ord),
+        sec === 'hidden' && sel === null ? ignoredFaces(0, count) : Promise.resolve<FaceTile[]>([]),
       ]);
       if (!latest.isCurrent(token)) return;
       overview = ov;
@@ -82,6 +85,7 @@
       cards = list;
       named = people ?? list;
       unsorted = loose;
+      ignored = gone1;
       // the person was given away (their group joined someone, or every face was moved): back to the list, not an empty screen
       const gone = sel !== null && ![...list, ...named].some((c) => c.id === sel);
       if (gone) {
@@ -162,10 +166,27 @@
   const assign = (p: FacePerson, into: number) => act(async () => { await assignGroup(p.id, into); });
   const name = (p: FacePerson, text: string) => act(async () => { await renamePerson(p.id, text); });
 
+  const ignoreSelected = () => act(() => ignoreFaces(ids()));
+  const unignoreSelected = () => act(() => unignoreFaces(ids()));
+  /** Looking at the faces ignored one by one (not a person's faces, not Unsure). */
+  const inIgnored = $derived(selected === null && section === 'hidden');
+  /** Who the faces on screen look like (for the top of "This is…"): the selection, else the whole group. */
+  const candidatesFor = () => (picked.size > 0 ? suggestForFaces(ids()).then(toCandidates) : current ? suggestForGroup(current.id).then(toCandidates) : Promise.resolve([]));
+  const hide = (p: FacePerson) => act(() => hidePerson(p.id));
+  const unhide = (p: FacePerson) => act(() => unhidePerson(p.id));
+
   // ---- faces
   const give = (faceIds: number[], person: number) => act(() => moveFaces(faceIds, person));
   const giveNew = (faceIds: number[], text: string) => act(() => newPersonFromFaces(faceIds, text));
   const notThem = (faceIds: number[]) => act(() => rejectFaces(faceIds));
+
+  /** Group what is left in Unsure more loosely; the new groups appear in Pending. */
+  async function tryToGroup() {
+    const before = overview?.unsorted ?? 0;
+    await act(async () => { await tryGroup(); });
+    const moved = before - (overview?.unsorted ?? before);
+    notice = moved > 0 ? `${moved.toLocaleString()} faces were put into groups. See Pending.` : 'Nothing more to group.';
+  }
 
   function step(by: number) {
     if (viewing === null || faceList.length === 0) return;
@@ -181,11 +202,12 @@
 
   /** Opened an unnamed group: with nothing selected, "This is…" names the whole group. */
   const wholeGroup = $derived(selected !== null && current !== null && current.name === null);
-  const sections: Section[] = ['people', 'groups', 'unsorted'];
+  const sections: Section[] = ['people', 'groups', 'unsorted', 'hidden'];
 </script>
 
 {#snippet lightActions(t: FaceTile)}
-  <ThisIs people={pickers} small onpick={(p) => give([t.id], p)} onnew={(n) => giveNew([t.id], n)} />
+  <ThisIs people={pickers} small alignRight onpick={(p) => give([t.id], p)} onnew={(n) => giveNew([t.id], n)} onignore={inIgnored ? undefined : () => act(() => ignoreFaces([t.id]))}
+          candidates={() => suggestForFaces([t.id]).then(toCandidates)} />
 {/snippet}
 
 <div class="people" aria-busy={busy}>
@@ -217,6 +239,12 @@
     {/if}
     {#if notice}<div class="notice" role="status">{notice} <button onclick={() => (notice = null)}>OK</button></div>{/if}
 
+    {#if loaded && selected === null && section === 'unsorted' && unsorted.length > 0}
+      <div class="trybar">
+        <button onclick={tryToGroup} disabled={busy} title="Group these more loosely: two photos of someone are enough. The groups go to Pending.">Try to group</button>
+        <span class="muted">Faces that look alike are shown together.</span>
+      </div>
+    {/if}
     {#if loaded && selected === null && section === 'groups' && (overview?.groups ?? 0) > 0}
       <p class="hint">Pixie put faces that look alike together. Say who each group is: <b>This is…</b> takes a name: type a new one, or pick someone you have already named.</p>
     {/if}
@@ -225,6 +253,7 @@
       <div class="detail-head">
         {#if current.name !== null}<strong class="title">{current.name}</strong>{/if}
         <span class="line">{faceCardLine(current)}</span>
+        {#if !current.hidden && current.name !== null}<button onclick={() => hide(current)} title="Leave this out of the lists">Ignore</button>{/if}
       </div>
       <div class="listbar">
         <span>Sort:</span>
@@ -234,15 +263,17 @@
       </div>
     {/if}
 
-    {#if loaded && (selected !== null || section === 'unsorted')}
+    {#if loaded && (selected !== null || section === 'unsorted' || (inIgnored && ignored.length > 0))}
       <div class="bar" class:live={picked.size > 0}>
         <!-- One "This is…", always in the same place: with faces selected it names those faces; with none, the whole group
              (in a named person or in Unsure there is nothing to name until something is selected). -->
         <ThisIs
           people={pickers}
           disabled={picked.size === 0 && !wholeGroup}
+          candidates={candidatesFor}
           onpick={(p) => (picked.size > 0 ? give(ids(), p) : current && assign(current, p))}
           onnew={(n) => (picked.size > 0 ? giveNew(ids(), n) : current && name(current, n))}
+          onignore={inIgnored || (picked.size === 0 && !wholeGroup) ? undefined : () => (picked.size > 0 ? ignoreSelected() : current && hide(current))}
         />
         {#if picked.size > 0}
           <b>{picked.size.toLocaleString()} selected</b>
@@ -253,10 +284,15 @@
         {/if}
         <span class="sp"></span>
         {#if picked.size > 0}
-          {#if selected !== null}<button onclick={() => notThem(ids())}>Move to Unsure</button>{/if}
+          {#if inIgnored}
+            <button onclick={unignoreSelected}>Unignore</button>
+          {:else}
+            {#if selected !== null}<button onclick={() => notThem(ids())}>Move to Unsure</button>{/if}
+          {/if}
           <button onclick={() => (picked = new Set())}>Clear</button>
-        {:else if faceList.length > 0}
-          <button onclick={pickAll}>Select all shown</button>
+        {:else}
+          {#if current?.hidden}<button onclick={() => unhide(current)} title="Bring this group back">Unignore this group</button>{/if}
+          {#if faceList.length > 0}<button onclick={pickAll}>Select all shown</button>{/if}
         {/if}
       </div>
     {/if}
@@ -273,11 +309,11 @@
         {#if unsorted.length < total}<p><button onclick={showMore}>Show more faces</button></p>{/if}
       {/if}
     {:else if selected === null}
-      {#if cards.length === 0}
+      {#if cards.length === 0 && !(inIgnored && ignored.length > 0)}
         <p class="hint">
           {#if section === 'groups'}{(overview?.people ?? 0) > 0 ? 'Nothing left to name.' : 'No groups yet. Pixie looks for faces in the background once the face models are downloaded: see Settings, Picture analysis.'}
           {:else if section === 'people'}Nobody is named yet. Name a group in “Pending”.
-          {/if}
+          {:else}Nothing is ignored.{/if}
         </p>
       {:else}
         {#if section === 'people'}
@@ -287,12 +323,18 @@
             <button class:on={peopleSort === 'photos'} onclick={() => (peopleSort = 'photos')}>Photos</button>
           </div>
         {/if}
-        <div class="cards">
-          {#each shownCards as p (p.id)}
-            <PersonCard person={p} people={pickable(named, p.id)} onopen={() => open(p.id)}
-                        onassign={(into) => assign(p, into)} onname={(text) => name(p, text)} />
-          {/each}
-        </div>
+        {#if cards.length > 0}
+          <div class="cards">
+            {#each shownCards as p (p.id)}
+              <PersonCard person={p} people={pickable(named, p.id)} onopen={() => open(p.id)}
+                          onassign={(into) => assign(p, into)} onname={(text) => name(p, text)} onhide={() => hide(p)} />
+            {/each}
+          </div>
+        {/if}
+        {#if inIgnored && ignored.length > 0}
+          <FaceGrid tiles={ignored} {picked} onclick={click} onzoom={(i) => (viewing = i)} />
+          {#if ignored.length >= shown}<p><button onclick={showMore}>Show more faces</button></p>{/if}
+        {/if}
       {/if}
     {:else}
       {#if tiles.length === 0}
@@ -337,6 +379,7 @@
   .line { color: #666; font-size: 12px; }
   .listbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; color: #555; }
   .listbar button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+  .trybar { display: flex; align-items: center; gap: 10px; margin: 6px 0 8px; }
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 30px; padding: 4px 8px; border-radius: 8px; background: #f4f6fb; }
   .bar.live { background: #e3ecff; }
 </style>

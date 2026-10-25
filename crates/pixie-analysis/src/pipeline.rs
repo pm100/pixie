@@ -11,6 +11,7 @@
 //! Photos are handled by several workers at once. The results come back to one thread, which stores them and groups
 //! people, because grouping is not safe to run in parallel. A hidden extra copy of a duplicate is not analysed.
 
+use crate::art::{face_is_art, ArtIndex};
 use crate::embedder::Embedder;
 use crate::faces::{default_workers, FaceEngine};
 use crate::tags::{vocab, TagIndex, TAGS_VERSION};
@@ -77,8 +78,20 @@ enum Outcome {
     Unusable,
     /// A hidden extra copy of another photo: its hash is saved and that is all.
     Duplicate,
-    Analysed { vector: Option<Result<Vec<f32>, String>>, faces: Option<Result<Vec<NewFace>, String>> },
+    Analysed { vector: Option<Result<Vec<f32>, String>>, faces: Option<Result<Vec<NewFace>, String>>, art: ArtVerdicts },
 }
+
+/// What looking at the faces for artwork found. A face with no verdict (the check failed) is looked at again later.
+#[derive(Default)]
+struct ArtVerdicts {
+    /// For the faces just found, in the same order.
+    new: Vec<Option<bool>>,
+    /// For faces stored earlier without a verdict: (face id, artwork).
+    old: Vec<(i64, bool)>,
+}
+
+/// The picture model and the descriptions that tell artwork from a person.
+type ArtCheck = (Arc<dyn Embedder>, Arc<ArtIndex>);
 
 struct Shared {
     db: Db,
@@ -90,6 +103,7 @@ struct Shared {
     embedder: Mutex<Option<Arc<dyn Embedder>>>,
     faces: Mutex<Option<Arc<dyn FaceEngine>>>,
     tag_index: Mutex<Option<Arc<TagIndex>>>,
+    art_index: Mutex<Option<Arc<ArtIndex>>>,
     reporters: Mutex<Vec<Reporter>>,
     embed_error: Mutex<Option<String>>,
     face_error: Mutex<Option<String>>,
@@ -180,11 +194,26 @@ impl Shared {
         Some(index)
     }
 
+    /// The artwork check, once the picture model is loaded (its descriptions are worked out once).
+    fn art_check(&self, embedder: &Arc<dyn Embedder>) -> Option<ArtCheck> {
+        let mut slot = lock(&self.art_index);
+        if slot.is_none() {
+            match ArtIndex::build(&**embedder) {
+                Ok(i) => *slot = Some(Arc::new(i)),
+                Err(e) => {
+                    eprintln!("[analysis] cannot prepare the artwork check: {e}");
+                    return None;
+                }
+            }
+        }
+        slot.clone().map(|i| (embedder.clone(), i))
+    }
+
     /// Everything that needs the photo, from one read and one decode. A decoder or model that panics is a failure of
     /// that photo or of the model, never of this thread.
-    fn process_one(&self, w: &WorkItem, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>) -> Outcome {
+    fn process_one(&self, w: &WorkItem, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>, art: Option<&ArtCheck>) -> Outcome {
         let p = &w.photo;
-        if !w.hash && embedder.is_none() && faces.is_none() {
+        if !w.hash && embedder.is_none() && faces.is_none() && !(w.art && art.is_some()) {
             return Outcome::Nothing;
         }
         let path = Path::new(&p.path);
@@ -216,7 +245,21 @@ impl Shared {
             catch_unwind(AssertUnwindSafe(|| e.embed_image(&small))).unwrap_or_else(|_| Err("the search model crashed".into()))
         });
         let faces = faces.map(|f| catch_unwind(AssertUnwindSafe(|| find_faces(f, &img))).unwrap_or_else(|_| Err("the face model crashed".into())));
-        Outcome::Analysed { vector, faces }
+        // Faces are looked at for being artwork: those just found, and any stored earlier without a verdict.
+        let mut verdicts = ArtVerdicts::default();
+        if let Some((e, index)) = art {
+            let verdict = |b: [f32; 4]| catch_unwind(AssertUnwindSafe(|| face_is_art(&**e, index, &img, b))).ok().and_then(Result::ok);
+            if let Some(Ok(list)) = &faces {
+                verdicts.new = list.iter().map(|f| verdict([f.x, f.y, f.w, f.h])).collect();
+            } else if w.art {
+                for (id, b) in self.db.faces_needing_art(p.id).unwrap_or_default() {
+                    if let Some(is_art) = verdict(b) {
+                        verdicts.old.push((id, is_art));
+                    }
+                }
+            }
+        }
+        Outcome::Analysed { vector, faces, art: verdicts }
     }
 
     /// Regroup the faces that are not settled when enough new ones have come in (`idle`: any at all). A pass that found
@@ -250,8 +293,9 @@ impl Shared {
             let embedder = lock(&self.embedder).clone();
             let faces = lock(&self.faces).clone();
             let index = embedder.as_ref().and_then(|e| self.tag_pass(e));
+            let art = embedder.as_ref().and_then(|e| self.art_check(e));
             let (ev, fv) = (embedder.as_ref().map(|e| e.version().to_string()), faces.as_ref().map(|f| f.version().to_string()));
-            let batch = match self.db.photos_needing_work(ev.as_deref(), fv.as_deref(), BATCH) {
+            let batch = match self.db.photos_needing_work(ev.as_deref(), fv.as_deref(), art.is_some(), BATCH) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("[analysis] cannot list photos: {e}");
@@ -265,7 +309,7 @@ impl Shared {
                 self.wait(IDLE_WAIT);
                 continue;
             }
-            let down = self.batch(&batch, &embedder, &faces, index, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+            let down = self.batch(&batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
             self.tidy_faces(false);
             self.report();
             if down {
@@ -281,6 +325,7 @@ impl Shared {
         embedder: &Option<Arc<dyn Embedder>>,
         faces: &Option<Arc<dyn FaceEngine>>,
         index: Option<Arc<TagIndex>>,
+        art: Option<ArtCheck>,
         (ev, fv): (Option<&str>, Option<&str>),
         (embed_failures, face_failures): (&mut usize, &mut usize),
     ) -> bool {
@@ -302,7 +347,7 @@ impl Shared {
                     }
                     let i = next_read.fetch_add(1, Ordering::SeqCst);
                     let Some(w) = batch.get(i) else { break };
-                    let wanted = w.hash || w.embed || w.faces;
+                    let wanted = w.hash || w.embed || w.faces || w.art;
                     let mut msg = (i, if wanted { std::fs::read(&w.photo.path) } else { Ok(Vec::new()) });
                     loop {
                         match btx.try_send(msg) {
@@ -322,7 +367,7 @@ impl Shared {
             drop(btx);
             for _ in 0..self.workers.clamp(1, batch.len()) {
                 let tx = tx.clone();
-                let (brx, embed_off, faces_off) = (&brx, &embed_off, &faces_off);
+                let (brx, embed_off, faces_off, art) = (&brx, &embed_off, &faces_off, &art);
                 scope.spawn(move || loop {
                     let Ok((i, bytes)) = lock(brx).recv() else { break };
                     if self.stop.load(Ordering::SeqCst) || self.holding() {
@@ -331,7 +376,7 @@ impl Shared {
                     let w = &batch[i];
                     let e = embedder.as_deref().filter(|_| w.embed && !embed_off.load(Ordering::SeqCst));
                     let f = faces.as_deref().filter(|_| w.faces && !faces_off.load(Ordering::SeqCst));
-                    if tx.send((i, self.process_one(w, bytes, e, f))).is_err() {
+                    if tx.send((i, self.process_one(w, bytes, e, f, art.as_ref().filter(|_| w.art || w.faces)))).is_err() {
                         break;
                     }
                 });
@@ -349,8 +394,17 @@ impl Shared {
                         if let (true, Some(v)) = (w.faces, fv) {
                             let _ = self.db.replace_faces(id, v, &[]);
                         }
+                        if w.art {
+                            let _ = self.db.settle_art(id); // its faces cannot be looked at: not offered again
+                        }
                     }
-                    Outcome::Analysed { vector, faces: found } => {
+                    Outcome::Analysed { vector, faces: found, art: verdicts } => {
+                        if !verdicts.old.is_empty() {
+                            self.new_faces.fetch_add(1, Ordering::SeqCst); // artwork leaves its group at the next regrouping
+                        }
+                        for (face, is_art) in verdicts.old {
+                            let _ = self.db.set_face_art(face, is_art);
+                        }
                         if let (Some(r), Some(v)) = (vector, ev) {
                             match r {
                                 Ok(vec) => {
@@ -383,6 +437,11 @@ impl Shared {
                                     *lock(&self.face_error) = None;
                                     match self.db.replace_faces(id, v, &list) {
                                         Ok(ids) => {
+                                            for (face, is_art) in ids.iter().zip(&verdicts.new) {
+                                                if let Some(a) = is_art {
+                                                    let _ = self.db.set_face_art(*face, *a);
+                                                }
+                                            }
                                             // a face that is clearly a confirmed person's joins them now (to be checked);
                                             // the rest wait to be grouped with the others (`tidy_faces`)
                                             if !ids.is_empty() {
@@ -435,6 +494,7 @@ impl PhotoPipeline {
             embedder: Mutex::new(None),
             faces: Mutex::new(None),
             tag_index: Mutex::new(None),
+            art_index: Mutex::new(None),
             reporters: Mutex::new(Vec::new()),
             embed_error: Mutex::new(None),
             face_error: Mutex::new(None),
@@ -454,6 +514,7 @@ impl PhotoPipeline {
     /// The Auto tags model is loaded: photos still without a vector are picked up.
     pub fn set_embedder(&self, e: Arc<dyn Embedder>) {
         *lock(&self.shared.tag_index) = None;
+        *lock(&self.shared.art_index) = None;
         *lock(&self.shared.embedder) = Some(e);
         self.kick();
     }
@@ -576,7 +637,7 @@ mod tests {
             PhotoPipeline::start(cfg)
         }
         fn hashed_all(&self) -> bool {
-            self.db.photos_needing_work(None, None, 1000).unwrap().is_empty()
+            self.db.photos_needing_work(None, None, false, 1000).unwrap().is_empty()
         }
         fn counts(&self) -> ((i64, i64), (i64, i64)) {
             (self.db.embedding_counts(EV).unwrap(), self.db.face_counts(FV).unwrap())
@@ -590,7 +651,9 @@ mod tests {
             FakeEmbedder.embed_image(img)
         }
         fn embed_text(&self, t: &str) -> Result<Vec<f32>, String> {
-            Ok(if t.contains("reddish") {
+            // (the descriptions of a real person's face, which the artwork check asks about, sit with the red faces the
+            // fake face engine finds, so those faces are people)
+            Ok(if t.contains("reddish") || ["real person", "selfie", "candid", "smiling"].iter().any(|w| t.contains(w)) {
                 vec![1.0, 0.0]
             } else if t.contains("bluish") {
                 vec![0.0, 1.0]
@@ -601,6 +664,47 @@ mod tests {
         fn version(&self) -> &str {
             EV
         }
+    }
+
+    /// Like `Colour`, but the descriptions of artwork sit with the red pictures, so the red faces are paintings.
+    struct Painted;
+    impl Embedder for Painted {
+        fn embed_image(&self, img: &DynamicImage) -> Result<Vec<f32>, String> {
+            FakeEmbedder.embed_image(img)
+        }
+        fn embed_text(&self, t: &str) -> Result<Vec<f32>, String> {
+            let art = ["painting", "drawing", "statue", "sculpture", "cartoon", "toy", "mask", "mural", "mosaic"].iter().any(|w| t.contains(w));
+            Ok(if art { vec![1.0, 0.0] } else { vec![0.0, 1.0] })
+        }
+        fn version(&self) -> &str {
+            EV
+        }
+    }
+
+    #[test]
+    fn faces_found_in_artwork_are_marked_and_kept_out_of_unsure() {
+        let r = Rig::new();
+        r.pngs(&[250, 251, 252]);
+        let p = r.pipeline(2);
+        p.set_embedder(Arc::new(Painted));
+        p.set_face_engine(Arc::new(FakeFaceEngine));
+        assert!(wait_until(5000, || r.counts() == ((3, 3), (3, 3))));
+        assert!(wait_until(5000, || r.db.faces_needing_art(1).unwrap().is_empty() && r.db.face_overview().unwrap().unsorted == 0));
+        p.stop();
+    }
+
+    #[test]
+    fn faces_found_before_the_picture_model_was_ready_are_checked_for_artwork_later() {
+        let r = Rig::new();
+        r.pngs(&[250, 251, 252]);
+        let p = r.pipeline(2);
+        p.set_face_engine(Arc::new(FakeFaceEngine)); // faces first: there is no picture model to ask yet
+        assert!(wait_until(5000, || r.db.face_counts(FV).unwrap() == (3, 3)));
+        assert!(wait_until(5000, || r.db.face_overview().unwrap().groups == 1), "three alike faces in three photos are a group");
+        p.set_embedder(Arc::new(Painted));
+        assert!(wait_until(5000, || r.db.face_overview().unwrap().groups == 0), "the faces already found were looked at: paintings are no group");
+        assert_eq!(r.db.face_overview().unwrap().unsorted, 0, "and are not listed in Unsure either");
+        p.stop();
     }
 
     fn with_models(p: &PhotoPipeline) {
@@ -757,7 +861,7 @@ mod tests {
         let p = r.pipeline(2);
         with_models(&p);
         assert!(wait_until(5000, || r.counts() == ((3, 3), (3, 3))));
-        assert!(r.db.photos_needing_work(Some(EV), Some(FV), 10).unwrap().is_empty(), "nothing is offered again");
+        assert!(r.db.photos_needing_work(Some(EV), Some(FV), false, 10).unwrap().is_empty(), "nothing is offered again");
         assert_eq!(r.db.load_embeddings(EV).unwrap().len(), 1, "only the real picture has a vector");
         p.stop();
     }
@@ -810,9 +914,9 @@ mod tests {
         scanning.store(false, Ordering::SeqCst);
         p.set_paused(true);
         std::thread::sleep(Duration::from_millis(100));
-        let at_pause = r.db.photos_needing_work(Some(EV), Some(FV), 10).unwrap().len();
+        let at_pause = r.db.photos_needing_work(Some(EV), Some(FV), false, 10).unwrap().len();
         std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(r.db.photos_needing_work(Some(EV), Some(FV), 10).unwrap().len(), at_pause);
+        assert_eq!(r.db.photos_needing_work(Some(EV), Some(FV), false, 10).unwrap().len(), at_pause);
         assert!(p.is_paused());
         p.set_paused(false);
         assert!(wait_until(5000, || r.counts() == ((2, 2), (2, 2)) && r.hashed_all()));
