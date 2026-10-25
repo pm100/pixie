@@ -10,4 +10,4 @@ pub mod trips;
 pub use db::{Db, FacetAsk, PhotoStat, WorkItem};
 pub use dupes::DupeService;
 pub use queue::ScanQueue;
-pub use scanner::{scan_folder, scan_folder_with, ScanGate, ScanGuard, ScanMode, ScanProgress, ScanStats};
+pub use scanner::{finish_walk, scan_folder, scan_folder_with, walk_folder, Candidate, LatestItem, ScanGate, ScanGuard, ScanMode, ScanProgress, ScanStats, Walk};

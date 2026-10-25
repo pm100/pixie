@@ -70,6 +70,7 @@ impl Inner {
 
     fn status(&self) -> AnalysisStatus {
         let (done, total) = self.cfg.db.embedding_counts(&self.cfg.version).unwrap_or((0, 0));
+        let total = total + self.cfg.pipeline.pending_photos();
         let s = self.lock();
         AnalysisStatus {
             models: s.models.to_string(),

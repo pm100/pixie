@@ -83,12 +83,27 @@ fn mtime_ms(md: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-struct Candidate {
-    path: String,
-    size: i64,
-    mtime: i64,
-    is_update: bool,
-    kind: MediaKind,
+/// A file a walk found that is new or changed: it still has to be read.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub folder_id: FolderId,
+    pub path: String,
+    pub size: i64,
+    pub mtime: i64,
+    /// The file is already in the library (and changed), not new.
+    pub is_update: bool,
+    pub kind: MediaKind,
+}
+
+/// What a walk of a folder found.
+pub struct Walk {
+    pub folder_id: FolderId,
+    pub root: std::path::PathBuf,
+    /// New or changed files, still to be read.
+    pub candidates: Vec<Candidate>,
+    /// Every media file the walk saw, as paths.
+    pub seen: HashSet<String>,
+    pub stats: ScanStats,
 }
 
 /// Threads used to read photo metadata. First-open latency (OneDrive, antivirus,
@@ -112,19 +127,15 @@ pub fn scan_folder(db: &Db, folder_id: FolderId, cancel: &AtomicBool, on_progres
     scan_folder_with(db, folder_id, ScanMode::Quick, cancel, on_progress)
 }
 
-/// Scan a watched folder. Never touches originals.
-/// If the root is unreachable, returns `NotFound` and changes nothing.
-///
-/// Phase 1 walks the folder and works out which files are new or changed (cheap,
-/// sequential). Phase 2 reads metadata for those files on many threads and writes
-/// the results to the database as they arrive.
-pub fn scan_folder_with(
+/// Walk a watched folder and work out which files are new or changed (cheap, sequential): it reads no file and changes
+/// nothing. If the root is unreachable, returns `NotFound`. A cancelled walk comes back with `stats.cancelled` set.
+pub fn walk_folder(
     db: &Db,
     folder_id: FolderId,
     mode: ScanMode,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(&ScanProgress),
-) -> Result<ScanStats> {
+) -> Result<Walk> {
     // Say right away that this folder has begun: opening a slow or sleeping drive can take a while before anything else.
     on_progress(&ScanProgress { folder_id, seen: 0, indexed: 0, to_index: 0, latest: None });
     let folder = db
@@ -150,7 +161,7 @@ pub fn scan_folder_with(
         };
         if cancel.load(Ordering::Relaxed) {
             stats.cancelled = true;
-            return Ok(stats);
+            return Ok(Walk { folder_id, root: root.to_path_buf(), candidates: Vec::new(), seen, stats });
         }
         if !entry.file_type().is_file() {
             continue;
@@ -167,13 +178,47 @@ pub fn scan_folder_with(
 
         match db.find_photo_stat(&path)? {
             Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
-            existing => todo.push(Candidate { path, size, mtime, is_update: existing.is_some(), kind }),
+            existing => todo.push(Candidate { folder_id, path, size, mtime, is_update: existing.is_some(), kind }),
         }
         if seen.len() % 100 == 0 {
             on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None });
         }
     }
+    Ok(Walk { folder_id, root: root.to_path_buf(), candidates: todo, seen, stats })
+}
 
+/// Close a walk that was not cancelled: files that are no longer there are marked missing, but only after a fully clean walk
+/// (an unreadable subfolder or an unplugged drive must not make its photos disappear).
+pub fn finish_walk(db: &Db, walk: &mut Walk) -> Result<()> {
+    if !walk.root.is_dir() {
+        walk.stats.walk_errors += 1; // root vanished during the scan
+    }
+    if walk.stats.walk_errors == 0 {
+        walk.stats.marked_missing = db.mark_missing_except(walk.folder_id, &walk.seen)?;
+    }
+    Ok(())
+}
+
+/// Scan a watched folder. Never touches originals.
+/// If the root is unreachable, returns `NotFound` and changes nothing.
+///
+/// Phase 1 ([`walk_folder`]) walks the folder and works out which files are new or changed (cheap, sequential). Phase 2
+/// reads metadata for those files on many threads and writes the results to the database as they arrive. (The app does
+/// not use this: it hands the walk's files to the analysis pipeline, which reads each file once for everything.)
+pub fn scan_folder_with(
+    db: &Db,
+    folder_id: FolderId,
+    mode: ScanMode,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(&ScanProgress),
+) -> Result<ScanStats> {
+    let mut walk = walk_folder(db, folder_id, mode, cancel, &mut on_progress)?;
+    if walk.stats.cancelled {
+        return Ok(walk.stats);
+    }
+    let todo = std::mem::take(&mut walk.candidates);
+    let mut stats = std::mem::take(&mut walk.stats);
+    let seen = &walk.seen;
     // Phase 2: read metadata in parallel, store results as they arrive.
     // Say how much there is to read, so the UI can show real progress instead of the finished walk's count.
     on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len(), latest: None });
@@ -238,16 +283,10 @@ pub fn scan_folder_with(
         return Ok(stats);
     }
 
-    if !root.is_dir() {
-        stats.walk_errors += 1; // root vanished during the scan
-    }
-    // Only mark photos missing after a fully clean walk: an unreadable subfolder
-    // or unplugged drive must not make its photos disappear.
-    if stats.walk_errors == 0 {
-        stats.marked_missing = db.mark_missing_except(folder_id, &seen)?;
-    }
-    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo.len(), latest: None });
-    Ok(stats)
+    walk.stats = stats;
+    finish_walk(db, &mut walk)?;
+    on_progress(&ScanProgress { folder_id, seen: walk.seen.len(), indexed, to_index: todo.len(), latest: None });
+    Ok(walk.stats)
 }
 
 /// Make the remaining work items unavailable so worker threads stop.
@@ -332,6 +371,28 @@ mod tests {
         scan(&db, f);
         let p = &db.list_photos(0, 10).unwrap()[0];
         assert_eq!(p.meta.taken_at, Some(1_577_934_245));
+    }
+
+    #[test]
+    fn a_walk_lists_new_and_changed_files_and_reads_and_stores_nothing() {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join("a.jpg"), jpeg(8, 8)).unwrap();
+        fs::write(dir.path().join("b.jpg"), jpeg(8, 8)).unwrap();
+        fs::write(dir.path().join("notes.txt"), b"x").unwrap();
+        let walk = walk_folder(&db, f, ScanMode::Quick, &AtomicBool::new(false), |_| {}).unwrap();
+        let names: Vec<String> = walk.candidates.iter().map(|c| Path::new(&c.path).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["a.jpg", "b.jpg"]);
+        assert!(walk.candidates.iter().all(|c| !c.is_update && c.folder_id == f));
+        assert_eq!(walk.seen.len(), 2);
+        assert_eq!(db.count_photos_in(&Default::default()).unwrap(), 0, "nothing was stored");
+
+        // once a file is stored (as the pipeline will), the next walk lists only what changed
+        let a = &walk.candidates[0];
+        db.upsert_photo(f, &a.path, a.size, a.mtime, &Default::default()).unwrap();
+        fs::write(dir.path().join("b.jpg"), jpeg(9, 9)).unwrap();
+        let again = walk_folder(&db, f, ScanMode::Quick, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(again.candidates.len(), 1, "a.jpg is known and unchanged; b.jpg was never stored");
+        assert_eq!(again.stats.unchanged, 1);
     }
 
     #[test]

@@ -10,6 +10,19 @@ const dups = (o: Partial<DupStatus> = {}): DupStatus => ({ done: 0, total: 0, gr
 const input = (o: Partial<AnalysisInput> = {}): AnalysisInput => ({ tags: status(), faces: status(), dupes: null, people: 0, ...o });
 const counter = (v: ReturnType<typeof analysisView>, key: string) => v.counters.find((c) => c.key === key)!;
 
+describe('a load whose files are still being stored', () => {
+  const load = (o: Partial<LoadProgress> = {}): LoadProgress => ({ photos: 100, shown: 100, hashed: 100, tagged: 100, scanned: 100, faces: 5, pending: 0, pending_videos: 0, duplicates: 0, ...o });
+  const ready = (o: Partial<AnalysisInput>): AnalysisInput => ({ tags: status(), faces: status(), dupes: null, people: 0, ...o });
+  it('counts the photos still to be stored in every total, so the bar and the counters are not done early', () => {
+    const v = analysisView(ready({ load: load({ pending: 100 }) }));
+    expect(v.finished).toBe(false);
+    expect(v.fraction).toBeCloseTo(0.5, 5);
+  });
+  it('is finished once everything is stored and analysed', () => {
+    expect(analysisView(ready({ load: load() })).finished).toBe(true);
+  });
+});
+
 describe('the counters', () => {
   it('list Auto tags and People, then Duplicates once their numbers are known', () => {
     expect(analysisView(input()).counters.map((c) => c.label)).toEqual(['Auto tags', 'People']);
@@ -107,7 +120,7 @@ describe('knowing when the whole library is done', () => {
 });
 
 describe('a load: the photos of the folders just added', () => {
-  const load = (o: Partial<LoadProgress> = {}): LoadProgress => ({ photos: 200, shown: 200, hashed: 200, tagged: 200, scanned: 200, faces: 5, duplicates: 3, ...o });
+  const load = (o: Partial<LoadProgress> = {}): LoadProgress => ({ photos: 200, shown: 200, hashed: 200, tagged: 200, scanned: 200, faces: 5, pending: 0, pending_videos: 0, duplicates: 3, ...o });
   // The statuses describe the whole library, which is no use for a load's counts: these disagree on purpose.
   const library = { tags: status({ done: 13881, total: 13881 }), faces: status({ done: 13881, total: 13881 }), dupes: dups({ done: 99, total: 99999, extra_files: 700 }) };
 

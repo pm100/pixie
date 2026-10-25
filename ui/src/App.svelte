@@ -653,6 +653,13 @@
   let flowStarted: Promise<void> = Promise.resolve(); // scan-done can arrive before scanFolders has answered
   let welcomeSubs: Promise<() => void>[] = [];
   let feed: ReturnType<typeof createStripFeed> | null = null; // decides which loaded picture the strip shows next
+  // The strip goes on through both steps of the loading screen (finding the files, then analysing); it stops when that ends.
+  $effect(() => {
+    if (phase !== 'scanning' && phase !== 'analysing') {
+      feed?.stop();
+      feed = null;
+    }
+  });
   /** Load a thumbnail in the background so the strip can show it the moment it is ready (the browser caches it). */
   const preload = (item: Sample) =>
     new Promise<boolean>((resolve) => {
@@ -729,20 +736,19 @@
   }
 
   /** The scan ended: stopped, nothing found, or on to the analysing step. */
-  async function finishScanPhase() {
-    feed?.stop();
-    feed = null;
+  async function finishScanPhase(found: number) {
     await flowStarted;
     await loadFolderInfos();
-    const mine = folderInfos.filter((f) => flowIds.includes(f.id));
-    const found = mine.reduce((n, f) => n + f.count, 0);
-    flowPhotos = 0;
-    for (const f of mine) flowPhotos += await countPhotos(f.id, 'photo');
+    // The walk only listed the files: the analysis stores each as it reads it, so the photos so far are those stored plus
+    // those still to come.
+    const lp = flowIds.length > 0 ? await loadProgress(flowIds) : null;
+    flowPhotos = lp ? lp.photos + lp.pending : 0;
     const next = phaseAfterScan({ stopped: flowStopped, found, photos: flowPhotos });
     if (next === 'off') {
       phase = 'off';
       refresh(true).catch((e) => (message = String(e)));
     } else if (next === 'allset') {
+      await allStored(); // videos are stored by the same pass: wait for them, so the end screen counts them all
       await buildAllSet(); // the screen is ready before it is shown, so nothing blinks in between
       phase = 'allset';
     } else {
@@ -750,7 +756,17 @@
     }
   }
 
+  /** Wait until every file the walk found has been stored (nothing is left outstanding in the analysis). */
+  async function allStored() {
+    while (flowIds.length > 0) {
+      const lp = await loadProgress(flowIds).catch(() => null);
+      if (lp && lp.pending + lp.pending_videos === 0) return;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+
   async function buildAllSet() {
+    await loadFolderInfos(); // the counts are as of now: the photos are stored as they are analysed, not when the walk ends
     const infos = folderInfos.filter((f) => flowIds.includes(f.id));
     let photos = 0, videos = 0;
     for (const f of infos) {
@@ -798,7 +814,8 @@
   // The step ends when every counter is done (each analysis has counted the photos the scan found, so a stale status cannot
   // end it early). The end screen is prepared first and swapped in only when ready, so it never flashes or blinks.
   $effect(() => {
-    if (phase !== 'analysing' || finishing || !flowView.finished) return;
+    // (and everything the walk found has been stored: videos, which are not analysed, are stored by the same pass)
+    if (phase !== 'analysing' || finishing || !flowView.finished || (flowLoad?.pending_videos ?? 0) > 0 || (flowLoad?.pending ?? 0) > 0) return;
     finishing = true;
     void buildAllSet().then(() => {
       if (phase === 'analysing') phase = 'allset'; // still here: not sent to the background meanwhile
@@ -864,7 +881,13 @@
         flowFolder = f ? folderName(f.path) : flowFolder;
         if (e.payload.latest) feed?.offer(e.payload.latest);
       }),
-      listen('scan-done', () => {
+      // A photo the analysis has just finished goes by on the loading screen's strip; with the library showing, the grid
+      // follows as photos are stored.
+      listen<Sample>('analysis-latest', (e) => {
+        if (phase === 'scanning' || phase === 'analysing') feed?.offer(e.payload);
+        else if (phase === 'off' || phase === 'background') refreshLive();
+      }),
+      listen<{ folders: number; found: number }>('scan-done', (e) => {
         loadTags();
         loadPeople();
         scanning = false;
@@ -874,7 +897,7 @@
         if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
         else refresh().catch((e) => (message = String(e)));
         if (mode === 'map') loadPoints();
-        if (phase === 'scanning') void finishScanPhase();
+        if (phase === 'scanning') void finishScanPhase(e.payload.found);
       }),
       listen(POPOUT_READY, () => sendShow(false)),
       listen(POPOUT_CLOSED, () => { popoutOpen = false; }),

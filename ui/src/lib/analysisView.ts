@@ -26,7 +26,9 @@ export type AnalysisView = {
 };
 
 /** How far the analysis has got for the photos of some folders, counted from those photos (mirrors the Rust `LoadProgress`). */
-export type LoadProgress = { photos: number; shown: number; hashed: number; tagged: number; scanned: number; faces: number; duplicates: number };
+export type LoadProgress = { photos: number; shown: number; hashed: number; tagged: number; scanned: number; faces: number; duplicates: number;
+  /** Photos and videos a walk found that are not stored yet: the load's totals include them. */
+  pending: number; pending_videos: number };
 
 export type AnalysisInput = {
   /** The analyses' states. They say whether a model is on its way, failed or paused; for the whole library
@@ -94,15 +96,15 @@ export function analysisView(o: AnalysisInput): AnalysisView {
   const load = o.load; // undefined: the whole library; null: a load whose counts are not known yet
   const built: Built[] = [];
   if (on('tags')) {
-    const counts: Counts | null = load === undefined ? (o.tags ? { done: o.tags.done, total: o.tags.total } : null) : load && { done: load.tagged, total: load.shown };
+    const counts: Counts | null = load === undefined ? (o.tags ? { done: o.tags.done, total: o.tags.total } : null) : load && { done: load.tagged, total: load.shown + load.pending };
     built.push(modelRow('tags', o.tags, counts, `${n(counts?.done ?? 0)} photos`));
   }
   if (on('faces')) {
-    const counts: Counts | null = load === undefined ? (o.faces ? { done: o.faces.done, total: o.faces.total } : null) : load && { done: load.scanned, total: load.shown };
+    const counts: Counts | null = load === undefined ? (o.faces ? { done: o.faces.done, total: o.faces.total } : null) : load && { done: load.scanned, total: load.shown + load.pending };
     built.push(modelRow('faces', o.faces, counts, `${n(load === undefined ? o.people : load?.faces ?? 0)} found`));
   }
   if (on('dupes') && (o.dupes || load)) {
-    const counts: Counts | null = load === undefined ? (o.dupes ? { done: o.dupes.done, total: o.dupes.total } : null) : load && { done: load.hashed, total: load.photos };
+    const counts: Counts | null = load === undefined ? (o.dupes ? { done: o.dupes.done, total: o.dupes.total } : null) : load && { done: load.hashed, total: load.photos + load.pending };
     built.push(dupesRow(o.dupes?.paused ?? false, counts, `${n(load === undefined ? o.dupes?.extra_files ?? 0 : load?.duplicates ?? 0)} found`)); // listed once its count is known
   }
 

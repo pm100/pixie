@@ -13,7 +13,7 @@ use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::suggest::{known_places, Places, Suggestion};
-use pixie_index::{scan_folder_with, Db, ScanGuard, ScanMode, ScanQueue};
+use pixie_index::{finish_walk, walk_folder, Db, ScanGuard, ScanMode, ScanQueue};
 use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
 use serde::{Deserialize, Serialize};
 use state::AppState;
@@ -203,6 +203,8 @@ fn list_geo_points(
 #[derive(Serialize, Clone)]
 struct ScanDone {
     folders: usize,
+    /// Media files the walks found in all (new or already known).
+    found: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -228,6 +230,7 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
     let cancel = state.cancel_scan.clone();
     let analysis = state.analysis.clone();
     let people = state.people.clone();
+    let pipeline = state.pipeline.clone();
     let queue = state.queue.clone();
     cancel.store(false, Ordering::Relaxed);
     queue.start_job();
@@ -236,16 +239,29 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
         let _end = JobEnd(queue.clone()); // dropped first: a job that dies stops accepting folders
         let mut todo = ids;
         let mut scanned = 0;
+        let mut found = 0;
         loop {
             for id in todo {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
                 let progress_app = app.clone();
-                match scan_folder_with(&db, id, mode, &cancel, |p| {
+                // The walk only lists what is new or changed; the analysis pipeline then reads each file once and does
+                // everything with it, starting with its row in the library.
+                match walk_folder(&db, id, mode, &cancel, |p| {
                     let _ = progress_app.emit("scan-progress", p);
                 }) {
-                    Ok(_) => scanned += 1,
+                    Ok(mut walk) => {
+                        if walk.stats.cancelled {
+                            break;
+                        }
+                        if let Err(e) = finish_walk(&db, &mut walk) {
+                            let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
+                        }
+                        found += walk.seen.len();
+                        pipeline.enqueue(std::mem::take(&mut walk.candidates));
+                        scanned += 1;
+                    }
                     Err(e) => {
                         let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
                     }
@@ -259,7 +275,7 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                 break;
             }
         }
-        let _ = app.emit("scan-done", ScanDone { folders: scanned });
+        let _ = app.emit("scan-done", ScanDone { folders: scanned, found });
         analysis.kick(); // new photos to analyse; the worker waits while this scan job runs
         people.kick();
         prefetch_newest(&db, &thumbs); // queue thumbnails for the newest photos, in the background
@@ -289,8 +305,11 @@ fn start_scan(app: tauri::AppHandle, state: tauri::State<AppState>, folder_id: O
 #[tauri::command]
 async fn load_progress(state: tauri::State<'_, AppState>, folder_ids: Vec<i64>) -> Result<pixie_core::LoadProgress, String> {
     let db = state.db.clone();
+    let pipeline = state.pipeline.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        db.load_progress(&folder_ids, pixie_analysis::clip::MODEL_VERSION, pixie_analysis::faces::FACES_VERSION).map_err(|e| e.to_string())
+        let mut p = db.load_progress(&folder_ids, pixie_analysis::clip::MODEL_VERSION, pixie_analysis::faces::FACES_VERSION).map_err(|e| e.to_string())?;
+        (p.pending, p.pending_videos) = pipeline.pending_in(&folder_ids); // found by the walk, not stored yet
+        Ok(p)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -765,13 +784,23 @@ fn is_debug_build() -> bool {
     cfg!(debug_assertions)
 }
 
+/// Where the library, caches and models live. Debug builds obey `PIXIE_DATA_DIR`, so a test run can use a folder of its own
+/// (Windows ignores a changed `LOCALAPPDATA` for this, so that cannot be used to keep a test run off the real library).
+fn data_dir(path: &tauri::path::PathResolver<tauri::Wry>) -> tauri::Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("PIXIE_DATA_DIR") {
+        return Ok(PathBuf::from(d));
+    }
+    path.app_local_data_dir()
+}
+
 /// Debug builds only: show Pixie's data folder (database, caches, models) in the file manager.
 #[tauri::command]
 fn open_data_folder(app: tauri::AppHandle) -> Result<(), PixieError> {
     if !cfg!(debug_assertions) {
         return Err(PixieError::Unsupported("only available in debug builds".into()));
     }
-    let dir = app.path().app_local_data_dir().map_err(|e| PixieError::Io(e.to_string()))?;
+    let dir = data_dir(app.path()).map_err(|e| PixieError::Io(e.to_string()))?;
     open::that_detached(&dir).map_err(|e| PixieError::Io(e.to_string()))
 }
 
@@ -1195,7 +1224,7 @@ pub fn run() {
         .setup(|app| {
             // The local (not roaming) data folder: a big database and caches do not belong in a roaming profile, and
             // it is where the app window keeps its own storage too.
-            let dir = app.path().app_local_data_dir()?;
+            let dir = data_dir(app.path())?;
             std::fs::create_dir_all(&dir)?;
             let db = Db::open(&dir.join("pixie.db"))?;
             // Leave one core for the UI; decoding is the heavy part.
@@ -1219,6 +1248,11 @@ pub fn run() {
                 dir.join("thumbs"),
                 Arc::new(move || pipeline_gate.is_busy()),
             )));
+            let latest_app = app.handle().clone();
+            // The photo the pipeline just finished, for the loading screen's strip of pictures going by.
+            pipeline.set_latest_listener(Arc::new(move |item| {
+                let _ = latest_app.emit("analysis-latest", item);
+            }));
             let analysis_app = app.handle().clone();
             let analysis = Arc::new(pixie_analysis::service::AnalysisService::start(pixie_analysis::service::Config {
                 db: db.clone(),

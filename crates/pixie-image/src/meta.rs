@@ -25,11 +25,12 @@ fn ascii(e: &exif::Exif, tag: exif::Tag) -> Option<String> {
     }
 }
 
-fn orientation_of(exif: Option<exif::Exif>) -> u16 {
-    exif.and_then(|e| {
-        e.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-            .and_then(|f| f.value.get_uint(0))
-    })
+fn orientation_of(exif: &Option<exif::Exif>) -> u16 {
+    exif.as_ref()
+        .and_then(|e| {
+            e.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+        })
     .map(|v| v as u16)
     .filter(|v| (1..=8).contains(v))
     .unwrap_or(1)
@@ -37,12 +38,16 @@ fn orientation_of(exif: Option<exif::Exif>) -> u16 {
 
 /// EXIF orientation 1..=8; 1 when absent or unreadable.
 pub fn read_orientation(path: &Path) -> u16 {
-    orientation_of(read_exif(path))
+    orientation_of(&read_exif(path))
 }
 
 /// The same, for a file whose bytes are already in memory.
 pub fn read_orientation_bytes(bytes: &[u8]) -> u16 {
-    orientation_of(exif::Reader::new().read_from_container(&mut std::io::Cursor::new(bytes)).ok())
+    orientation_of(&exif_of_bytes(bytes))
+}
+
+fn exif_of_bytes(bytes: &[u8]) -> Option<exif::Exif> {
+    exif::Reader::new().read_from_container(&mut std::io::Cursor::new(bytes)).ok()
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -121,20 +126,17 @@ fn sanitize_gps(lat: Option<f64>, lon: Option<f64>) -> (Option<f64>, Option<f64>
     }
 }
 
-/// Best-effort metadata; never fails. Dimensions are as displayed (after orientation).
-pub fn read_meta(path: &Path) -> PhotoMeta {
+/// Put the pieces together. `heif` and `raw` are the picture's size as stored (HEIC through libheif, anything else from the
+/// file); a HEIC picture is already rotated by libheif, the rest are turned by the EXIF orientation.
+fn assemble(is_heif: bool, heif: Option<(u32, u32)>, raw: Option<(u32, u32)>, exif: Option<exif::Exif>) -> PhotoMeta {
     let mut meta = PhotoMeta::default();
-    let exif = read_exif(path);
-
-    if is_heif(path) {
-        // libheif applies rotation itself; ignore the EXIF orientation tag here.
-        #[cfg(feature = "heic")]
-        if let Some((w, h)) = crate::heic::dimensions(path) {
+    if is_heif {
+        if let Some((w, h)) = heif {
             meta.width = Some(w);
             meta.height = Some(h);
         }
-    } else if let Some((w, h)) = raw_dimensions(path) {
-        let o = read_orientation(path);
+    } else if let Some((w, h)) = raw {
+        let o = orientation_of(&exif);
         let (w, h) = if o >= 5 { (h, w) } else { (w, h) };
         meta.width = Some(w);
         meta.height = Some(h);
@@ -151,6 +153,40 @@ pub fn read_meta(path: &Path) -> PhotoMeta {
         );
     }
     meta
+}
+
+#[cfg(feature = "heic")]
+fn heif_dimensions(path: &Path) -> Option<(u32, u32)> {
+    crate::heic::dimensions(path)
+}
+
+#[cfg(not(feature = "heic"))]
+fn heif_dimensions(_: &Path) -> Option<(u32, u32)> {
+    None
+}
+
+/// Best-effort metadata; never fails. Dimensions are as displayed (after orientation).
+pub fn read_meta(path: &Path) -> PhotoMeta {
+    let heif = is_heif(path);
+    assemble(heif, if heif { heif_dimensions(path) } else { None }, if heif { None } else { raw_dimensions(path) }, read_exif(path))
+}
+
+/// `read_meta` for a picture whose bytes are already in memory, so the file is not opened again just for its details.
+/// (HEIC sizes still come from libheif, which reads the file itself.)
+pub fn read_meta_bytes(path: &Path, bytes: &[u8]) -> PhotoMeta {
+    let heif = is_heif(path);
+    let raw = if heif {
+        None
+    } else if is_jpeg(path) {
+        jpeg_dimensions_from(std::io::Cursor::new(bytes)).or_else(|| bytes_dimensions(bytes))
+    } else {
+        bytes_dimensions(bytes)
+    };
+    assemble(heif, if heif { heif_dimensions(path) } else { None }, raw, exif_of_bytes(bytes))
+}
+
+fn bytes_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
 }
 
 #[cfg(test)]
@@ -186,6 +222,28 @@ mod tests {
         let m = read_meta(&p);
         assert_eq!((m.width, m.height), (Some(20), Some(40))); // swapped for orientation 6
         assert_eq!(m.taken_at, Some(1_717_243_200));
+    }
+
+    #[test]
+    fn meta_from_bytes_is_the_same_as_meta_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("r.jpg", jpeg_with_exif(40, 20, 6, Some("2024:06:01 12:00:00"))),
+            ("plain.jpg", jpeg(40, 20)),
+            ("bad.jpg", b"not a jpeg".to_vec()),
+            ("empty.jpg", Vec::new()),
+        ] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, &bytes).unwrap();
+            assert_eq!(read_meta_bytes(&p, &bytes), read_meta(&p), "{name}");
+        }
+        // a format other than JPEG is sized from its bytes too
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(7, 3)).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let p = dir.path().join("a.png");
+        std::fs::write(&p, &png).unwrap();
+        assert_eq!(read_meta_bytes(&p, &png), read_meta(&p));
+        assert_eq!(read_meta_bytes(&p, &png).width, Some(7));
     }
 
     #[test]

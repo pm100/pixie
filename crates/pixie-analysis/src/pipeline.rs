@@ -16,18 +16,21 @@ use crate::embedder::Embedder;
 use crate::faces::{default_workers, FaceEngine};
 use crate::tags::{vocab, TagIndex, TAGS_VERSION};
 use image::DynamicImage;
-use pixie_core::NewFace;
+use pixie_core::{FolderId, MediaKind, NewFace, Photo, PhotoId, PhotoMeta};
 use pixie_image::decode::decode_scaled_bytes;
+use pixie_image::media::read_media_meta;
+use pixie_image::meta::read_meta_bytes;
 use pixie_image::thumbs::{thumbnail_from_image, ThumbClass};
 use pixie_index::dupes::{full_hash_bytes, quick_key_bytes};
-use pixie_index::{Db, WorkItem};
+use pixie_index::{Candidate, Db, LatestItem, WorkItem};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Faces can be small, so the photo is decoded larger than Auto tags needs (the detector then works at 640 px).
 const DECODE_EDGE: u32 = 1024;
@@ -50,7 +53,12 @@ const ENGINE_FAILURES: usize = 3;
 /// What a file that could not be read gets as its quick key: it is not offered for hashing again until it changes.
 const UNREADABLE: &str = "!unreadable";
 
+/// At most this often a finished photo is named for the "now reading" strip.
+const LATEST_EVERY: Duration = Duration::from_millis(100);
+
 pub type ScanningFn = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Told which photo was just finished (its thumbnail exists), for the strip on the loading screen.
+pub type LatestListener = Arc<dyn Fn(LatestItem) + Send + Sync>;
 /// Called when progress has moved, so a service can tell the window.
 pub type Reporter = Arc<dyn Fn() + Send + Sync>;
 
@@ -93,7 +101,22 @@ struct ArtVerdicts {
 /// The picture model and the descriptions that tell artwork from a person.
 type ArtCheck = (Arc<dyn Embedder>, Arc<ArtIndex>);
 
+/// Files a walk found that are not in the library yet. The pipeline reads each once and does everything with it, starting
+/// with its row, so a photo appears in the library when it has been processed. Nothing is lost if the app quits: the next
+/// walk finds those files again, being still new.
+#[derive(Default)]
+struct Intake {
+    queue: VecDeque<Candidate>,
+    /// Paths in the queue or being worked on (a file offered twice is read once).
+    queued: HashSet<String>,
+    /// Per folder, the (photos, videos) not yet stored.
+    outstanding: HashMap<FolderId, (i64, i64)>,
+}
+
 struct Shared {
+    intake: Mutex<Intake>,
+    latest: Mutex<Option<LatestListener>>,
+    latest_at: Mutex<Instant>,
     db: Db,
     thumbs_dir: PathBuf,
     scanning: ScanningFn,
@@ -194,6 +217,49 @@ impl Shared {
         Some(index)
     }
 
+    /// Name a photo that was just finished for the loading screen's strip (its thumbnail exists), at most every
+    /// `LATEST_EVERY`.
+    fn report_latest(&self, p: &Photo) {
+        let Some(listener) = lock(&self.latest).clone() else { return };
+        {
+            let mut at = lock(&self.latest_at);
+            if at.elapsed() < LATEST_EVERY {
+                return;
+            }
+            *at = Instant::now();
+        }
+        let name = Path::new(&p.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        listener(LatestItem { id: p.id, mtime: p.mtime, size: p.size, name, kind: p.meta.kind });
+    }
+
+    /// A file of the intake has been stored (or could not be): it is no longer outstanding.
+    fn finished_intake(&self, c: &Photo) {
+        let mut i = lock(&self.intake);
+        i.queued.remove(&c.path);
+        if let Some(n) = i.outstanding.get_mut(&c.folder_id) {
+            if c.meta.kind == MediaKind::Video {
+                n.1 = (n.1 - 1).max(0);
+            } else {
+                n.0 = (n.0 - 1).max(0);
+            }
+        }
+    }
+
+    /// Up to `n` files off the front of the intake (still counted as outstanding until they are stored).
+    fn take_intake(&self, n: usize) -> Vec<Candidate> {
+        let mut i = lock(&self.intake);
+        let n = n.min(i.queue.len());
+        i.queue.drain(..n).collect()
+    }
+
+    /// Files taken for a batch that was stopped before they were stored go back to the front, in order.
+    fn requeue(&self, taken: Vec<Candidate>, done: &[bool]) {
+        let mut i = lock(&self.intake);
+        for (c, _) in taken.into_iter().zip(done).filter(|(_, d)| !**d).collect::<Vec<_>>().into_iter().rev() {
+            i.queue.push_front(c);
+        }
+    }
+
     /// The artwork check, once the picture model is loaded (its descriptions are worked out once).
     fn art_check(&self, embedder: &Arc<dyn Embedder>) -> Option<ArtCheck> {
         let mut slot = lock(&self.art_index);
@@ -209,10 +275,48 @@ impl Shared {
         slot.clone().map(|i| (embedder.clone(), i))
     }
 
+    /// One item of a batch, from one read. A file a walk found (`w.new`) first gets its row, made from what is in the
+    /// bytes (a video, which is not read here, from its own header); then the photo is processed. Returns the photo's id,
+    /// which a new file only has now (0: it could not be stored).
+    fn process_one(&self, w: &WorkItem, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>, art: Option<&ArtCheck>) -> (PhotoId, Outcome) {
+        if !w.new {
+            return (w.photo.id, self.process_photo(w, &w.photo, bytes, embedder, faces, art));
+        }
+        let c = &w.photo;
+        let path = Path::new(&c.path);
+        let video = c.meta.kind == MediaKind::Video;
+        let mut meta = if video {
+            read_media_meta(path, MediaKind::Video)
+        } else {
+            match &bytes {
+                Ok(b) => catch_unwind(AssertUnwindSafe(|| read_meta_bytes(path, b))).unwrap_or_default(),
+                Err(_) => PhotoMeta::default(), // unreadable: it is still listed, as before
+            }
+        };
+        meta.kind = c.meta.kind;
+        if meta.taken_at.is_none() {
+            meta.taken_at = Some(c.mtime / 1000);
+        }
+        let stored = self.db.upsert_photo(c.folder_id, &c.path, c.size, c.mtime, &meta);
+        self.finished_intake(c);
+        let id = match stored {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("[analysis] cannot store {}: {e}", c.path);
+                return (0, Outcome::Nothing);
+            }
+        };
+        let photo = Photo { id, meta, ..c.clone() };
+        if video {
+            self.report_latest(&photo);
+            return (id, Outcome::Nothing);
+        }
+        (id, self.process_photo(w, &photo, bytes, embedder, faces, art))
+    }
+
     /// Everything that needs the photo, from one read and one decode. A decoder or model that panics is a failure of
     /// that photo or of the model, never of this thread.
-    fn process_one(&self, w: &WorkItem, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>, art: Option<&ArtCheck>) -> Outcome {
-        let p = &w.photo;
+    fn process_photo(&self, w: &WorkItem, p: &Photo, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>, art: Option<&ArtCheck>) -> Outcome {
         if !w.hash && embedder.is_none() && faces.is_none() && !(w.art && art.is_some()) {
             return Outcome::Nothing;
         }
@@ -240,6 +344,7 @@ impl Shared {
         };
         drop(bytes);
         let _ = thumbnail_from_image(&self.thumbs_dir, ThumbClass::Grid, p.id, p.mtime, p.size, &img);
+        self.report_latest(p);
         let vector = embedder.map(|e| {
             let small = for_clip(&img);
             catch_unwind(AssertUnwindSafe(|| e.embed_image(&small))).unwrap_or_else(|_| Err("the search model crashed".into()))
@@ -295,6 +400,18 @@ impl Shared {
             let index = embedder.as_ref().and_then(|e| self.tag_pass(e));
             let art = embedder.as_ref().and_then(|e| self.art_check(e));
             let (ev, fv) = (embedder.as_ref().map(|e| e.version().to_string()), faces.as_ref().map(|f| f.version().to_string()));
+            let taken = self.take_intake(BATCH as usize);
+            if !taken.is_empty() {
+                let items: Vec<WorkItem> = taken.iter().map(|c| intake_item(c, ev.is_some(), fv.is_some(), art.is_some())).collect();
+                let r = self.batch(&items, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+                self.requeue(taken, &r.done);
+                self.tidy_faces(false);
+                self.report();
+                if r.down {
+                    self.wait(self.poll * 10);
+                }
+                continue;
+            }
             let batch = match self.db.photos_needing_work(ev.as_deref(), fv.as_deref(), art.is_some(), BATCH) {
                 Ok(b) => b,
                 Err(e) => {
@@ -309,7 +426,7 @@ impl Shared {
                 self.wait(IDLE_WAIT);
                 continue;
             }
-            let down = self.batch(&batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+            let down = self.batch(&batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures)).down;
             self.tidy_faces(false);
             self.report();
             if down {
@@ -328,13 +445,14 @@ impl Shared {
         art: Option<ArtCheck>,
         (ev, fv): (Option<&str>, Option<&str>),
         (embed_failures, face_failures): (&mut usize, &mut usize),
-    ) -> bool {
+    ) -> BatchEnd {
         let next_read = AtomicUsize::new(0);
         let (embed_off, faces_off) = (AtomicBool::new(false), AtomicBool::new(false));
         // Files read ahead (bounded, so reading cannot run far in front of the work) and results coming back.
         let (btx, brx) = mpsc::sync_channel::<(usize, std::io::Result<Vec<u8>>)>(self.workers * 2);
         let brx = Mutex::new(brx);
-        let (tx, rx) = mpsc::channel::<(usize, Outcome)>();
+        let (tx, rx) = mpsc::channel::<(usize, PhotoId, Outcome)>();
+        let mut done = vec![false; batch.len()];
         let mut handled = 0usize;
         let mut down = false;
         std::thread::scope(|scope| {
@@ -376,15 +494,16 @@ impl Shared {
                     let w = &batch[i];
                     let e = embedder.as_deref().filter(|_| w.embed && !embed_off.load(Ordering::SeqCst));
                     let f = faces.as_deref().filter(|_| w.faces && !faces_off.load(Ordering::SeqCst));
-                    if tx.send((i, self.process_one(w, bytes, e, f, art.as_ref().filter(|_| w.art || w.faces)))).is_err() {
+                    let (id, outcome) = self.process_one(w, bytes, e, f, art.as_ref().filter(|_| w.art || w.faces || w.new));
+                    if tx.send((i, id, outcome)).is_err() {
                         break;
                     }
                 });
             }
             drop(tx);
-            for (i, outcome) in rx {
+            for (i, id, outcome) in rx {
+                done[i] = true;
                 let w = &batch[i];
-                let id = w.photo.id;
                 match outcome {
                     Outcome::Nothing | Outcome::Duplicate => {}
                     Outcome::Unusable => {
@@ -472,7 +591,26 @@ impl Shared {
                 }
             }
         });
-        down
+        BatchEnd { down, done }
+    }
+}
+
+/// How a batch ended: whether a model kept failing, and which of its items were handled (the rest were cut short).
+struct BatchEnd {
+    down: bool,
+    done: Vec<bool>,
+}
+
+/// The work for a file a walk found: everything that can be done now (the models that are loaded), and the row to make.
+fn intake_item(c: &Candidate, embed: bool, faces: bool, art: bool) -> WorkItem {
+    let photo = c.kind == MediaKind::Photo;
+    WorkItem {
+        photo: Photo { id: 0, folder_id: c.folder_id, path: c.path.clone(), size: c.size, mtime: c.mtime, meta: PhotoMeta { kind: c.kind, ..Default::default() }, missing: false },
+        hash: photo,
+        embed: photo && embed,
+        faces: photo && faces,
+        art: photo && art,
+        new: true,
     }
 }
 
@@ -485,6 +623,9 @@ pub struct PhotoPipeline {
 impl PhotoPipeline {
     pub fn start(cfg: PipelineConfig) -> PhotoPipeline {
         let shared = Arc::new(Shared {
+            intake: Mutex::new(Intake::default()),
+            latest: Mutex::new(None),
+            latest_at: Mutex::new(Instant::now() - LATEST_EVERY),
             db: cfg.db,
             thumbs_dir: cfg.thumbs_dir,
             scanning: cfg.scanning,
@@ -523,6 +664,45 @@ impl PhotoPipeline {
     pub fn set_face_engine(&self, e: Arc<dyn FaceEngine>) {
         *lock(&self.shared.faces) = Some(e);
         self.kick();
+    }
+
+    /// Files a walk found: the pipeline reads each once and does everything with it, starting with its row in the library.
+    /// Newest first, so the newest photos appear first.
+    pub fn enqueue(&self, mut files: Vec<Candidate>) {
+        files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        {
+            let mut i = lock(&self.shared.intake);
+            for c in files {
+                if !i.queued.insert(c.path.clone()) {
+                    continue;
+                }
+                let n = i.outstanding.entry(c.folder_id).or_default();
+                if c.kind == MediaKind::Video {
+                    n.1 += 1;
+                } else {
+                    n.0 += 1;
+                }
+                i.queue.push_back(c);
+            }
+        }
+        self.kick();
+    }
+
+    /// The photos a walk found (in any folder) that are not stored yet: the analyses' totals include them, so a library
+    /// that is still filling in does not look nearly done.
+    pub fn pending_photos(&self) -> i64 {
+        lock(&self.shared.intake).outstanding.values().map(|n| n.0).sum()
+    }
+
+    /// The (photos, videos) in these folders that a walk found and the pipeline has not stored yet.
+    pub fn pending_in(&self, folders: &[FolderId]) -> (i64, i64) {
+        let i = lock(&self.shared.intake);
+        folders.iter().filter_map(|f| i.outstanding.get(f)).fold((0, 0), |a, n| (a.0 + n.0, a.1 + n.1))
+    }
+
+    /// Told which photo was just finished (its thumbnail exists), a few times a second at most: for the strip.
+    pub fn set_latest_listener(&self, f: LatestListener) {
+        *lock(&self.shared.latest) = Some(f);
     }
 
     /// `f` runs whenever progress has moved (a service uses it to tell the window).
@@ -621,6 +801,14 @@ mod tests {
         fn pngs(&self, reds: &[u8]) -> Vec<i64> {
             reds.iter().enumerate().map(|(i, r)| self.png(&format!("p{i}.png"), *r, i as u8)).collect()
         }
+        /// A PNG file only (no row in the library): what a walk would find.
+        fn file(&self, name: &str, red: u8, tag: u8) {
+            RgbImage::from_pixel(16, 16, Rgb([red, tag, 0])).save(self.dir.path().join(name)).unwrap();
+        }
+        /// What a walk of the folder finds.
+        fn walk(&self) -> Vec<Candidate> {
+            pixie_index::walk_folder(&self.db, self.folder, pixie_index::ScanMode::Quick, &AtomicBool::new(false), |_| {}).unwrap().candidates
+        }
         fn junk(&self, name: &str) -> i64 {
             let path = self.dir.path().join(name);
             std::fs::write(&path, b"<!DOCTYPE HTML><html>not a picture</html>").unwrap();
@@ -679,6 +867,91 @@ mod tests {
         fn version(&self) -> &str {
             EV
         }
+    }
+
+    #[test]
+    fn files_from_a_walk_are_stored_hashed_thumbnailed_and_analysed_in_one_pass() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 250, 2);
+        r.file("c.png", 5, 3);
+        let found = r.walk();
+        assert_eq!(found.len(), 3);
+        assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 0, "the walk stored nothing");
+        let p = r.pipeline(2);
+        with_models(&p);
+        p.enqueue(found);
+        assert!(wait_until(5000, || r.counts() == ((3, 3), (3, 3))));
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0)));
+        assert!(r.hashed_all());
+        let photos = r.db.list_photos_in(&Default::default(), 0, 10).unwrap();
+        assert_eq!(photos.len(), 3);
+        for ph in photos {
+            assert_eq!((ph.meta.width, ph.meta.height), (Some(16), Some(16)), "read from the file's own bytes");
+            assert_eq!(ph.meta.taken_at, Some(ph.mtime / 1000), "no EXIF date: the file's time");
+            assert!(thumb_path(&r.thumbs(), ThumbClass::Grid, ph.id, ph.mtime, ph.size).exists(), "grid thumbnail of {}", ph.id);
+        }
+        p.stop();
+    }
+
+    #[test]
+    fn a_file_offered_twice_is_read_once_and_a_held_pipeline_keeps_what_it_was_given() {
+        let r = Rig::new();
+        for i in 0..4u8 {
+            r.file(&format!("p{i}.png"), 250, i);
+        }
+        let hold = Arc::new(AtomicBool::new(true)); // a scan job is running: the pipeline waits
+        let p = r.pipeline_with(2, hold.clone());
+        with_models(&p);
+        p.enqueue(r.walk());
+        p.enqueue(r.walk()); // the same files again (a second scan found them too)
+        assert_eq!(p.pending_in(&[r.folder]), (4, 0), "each file counts once");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 0, "nothing was read while held");
+        hold.store(false, Ordering::SeqCst);
+        p.kick();
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((4, 4), (4, 4))));
+        assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 4);
+        p.stop();
+    }
+
+    #[test]
+    fn the_pipeline_names_finished_photos_for_the_strip_and_their_thumbnails_exist() {
+        let r = Rig::new();
+        for i in 0..6u8 {
+            r.file(&format!("p{i}.png"), 250, i);
+        }
+        let p = r.pipeline(2);
+        let seen: Arc<Mutex<Vec<LatestItem>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        p.set_latest_listener(Arc::new(move |item| sink.lock().unwrap().push(item)));
+        with_models(&p);
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || !seen.lock().unwrap().is_empty()));
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0)));
+        let items = seen.lock().unwrap().clone();
+        assert!(items.len() <= 6);
+        for it in items {
+            assert!(thumb_path(&r.thumbs(), ThumbClass::Grid, it.id, it.mtime, it.size).exists(), "the picture shown has its thumbnail");
+        }
+        p.stop();
+    }
+
+    #[test]
+    fn an_unreadable_picture_and_a_video_found_by_a_walk_are_still_listed() {
+        let r = Rig::new();
+        std::fs::write(r.dir.path().join("broken.jpg"), b"<!DOCTYPE HTML><html>not a picture</html>").unwrap();
+        std::fs::write(r.dir.path().join("clip.mp4"), b"not a video either").unwrap();
+        r.file("ok.png", 250, 1);
+        let p = r.pipeline(2);
+        with_models(&p);
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0)));
+        let all = r.db.list_photos_in(&Default::default(), 0, 10).unwrap();
+        assert_eq!(all.len(), 3, "listed even though two cannot be read");
+        assert_eq!(all.iter().filter(|x| x.meta.kind == MediaKind::Video).count(), 1);
+        assert!(wait_until(5000, || r.hashed_all()), "and nothing is offered again");
+        p.stop();
     }
 
     #[test]

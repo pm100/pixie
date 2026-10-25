@@ -246,6 +246,8 @@ pub struct WorkItem {
     pub faces: bool,
     /// Some of the photo's faces have not been checked for being artwork.
     pub art: bool,
+    /// The file was found by a walk and is not in the library yet (`photo.id` is 0): reading it creates its row.
+    pub new: bool,
 }
 
 #[derive(Clone)]
@@ -626,6 +628,7 @@ impl Db {
                     embed: r.get::<_, i64>(15)? != 0,
                     faces: r.get::<_, i64>(16)? != 0,
                     art: r.get::<_, i64>(17)? != 0,
+                    new: false,
                 })
             })
             .map_err(db_err)?
@@ -692,7 +695,7 @@ impl Db {
     /// `face_version` say which model versions count as done. The window asks for this every second while a load is
     /// on screen, so it is a few short statements (the database is free in between), not one long one.
     pub fn load_progress(&self, folders: &[FolderId], embed_version: &str, face_version: &str) -> Result<LoadProgress> {
-        let mut out = LoadProgress { photos: 0, shown: 0, hashed: 0, tagged: 0, scanned: 0, faces: 0, duplicates: 0 };
+        let mut out = LoadProgress { photos: 0, shown: 0, hashed: 0, tagged: 0, scanned: 0, faces: 0, duplicates: 0, pending: 0, pending_videos: 0 };
         if folders.is_empty() {
             return Ok(out);
         }

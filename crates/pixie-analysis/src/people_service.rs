@@ -63,6 +63,7 @@ impl Inner {
 
     fn status(&self) -> PeopleStatus {
         let (done, total) = self.cfg.db.face_counts(&self.cfg.version).unwrap_or((0, 0));
+        let total = total + self.cfg.pipeline.pending_photos();
         let s = self.lock();
         PeopleStatus {
             models: s.models.to_string(),

@@ -493,6 +493,12 @@ pub struct LoadProgress {
     pub faces: i64,
     /// Extra copies in the sets of identical files that include one of these photos.
     pub duplicates: i64,
+    /// Photos a walk found in the folders that the analysis has not stored yet (they are not in `photos` until it has).
+    #[serde(default)]
+    pub pending: i64,
+    /// The same for videos.
+    #[serde(default)]
+    pub pending_videos: i64,
 }
 
 /// What the left-hand tree shows beside its entries under the filters in force. Each section is counted with every

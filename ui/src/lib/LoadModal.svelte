@@ -30,31 +30,33 @@
   const hide = (id: number) => (broken = new Set([...broken, id]));
 </script>
 
-<FlowStage label={phase === 'scanning' ? 'Getting to know your photos' : 'Pictures loaded, now analysing'}>
+<FlowStage label="Getting to know your photos">
+  <h1>Getting to know your photos…</h1>
   {#if phase === 'scanning'}
-    <h1>Getting to know your photos…</h1>
     <p class="sub">{scanText(scan)}{folder ? ` · ${folder}` : ''}</p>
-    {#if notice}<p class="err" role="alert">{notice}</p>{/if}
+  {:else}
+    <p class="sub">Pixie is looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
+  {/if}
+  {#if notice}<p class="err" role="alert">{notice}</p>{/if}
+  <!-- The pictures go by the whole time: first as the files are found, then as each is looked at. -->
+  <div class="strip" aria-hidden="true">
+    {#each slots as s (s.rank)}
+      <div class="slot r{s.rank}">
+        {#if s.item && s.item.kind === 'video'}
+          <!-- A video has no thumbnail: a film tile stands in for it. -->
+          <div class="video"><svg viewBox="0 0 24 24" width="40%" height="40%" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg></div>
+        {:else if s.item && !broken.has(s.item.id)}
+          <img alt="" src={thumbUrl('grid', s.item.id, s.item.mtime, s.item.size)} onerror={() => hide(s.item!.id)} />
+        {/if}
+      </div>
+    {/each}
+  </div>
+  <p class="name">{newest?.name ?? ' '}</p>
+  {#if phase === 'scanning'}
     <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={fraction === null ? undefined : Math.round(fraction * 100)}>
       <div style="width: {fraction === null ? 4 : Math.round(fraction * 100)}%"></div>
     </div>
-    <div class="strip" aria-hidden="true">
-      {#each slots as s (s.rank)}
-        <div class="slot r{s.rank}">
-          {#if s.item && s.item.kind === 'video'}
-            <!-- A video has no thumbnail yet while it is scanned: a film tile stands in for it. -->
-            <div class="video"><svg viewBox="0 0 24 24" width="40%" height="40%" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg></div>
-          {:else if s.item && !broken.has(s.item.id)}
-            <img alt="" src={thumbUrl('grid', s.item.id, s.item.mtime, s.item.size)} onerror={() => hide(s.item!.id)} />
-          {/if}
-        </div>
-      {/each}
-    </div>
-    <p class="name">{newest?.name ?? ' '}</p>
   {:else}
-    <h1>Pictures loaded — now analysing</h1>
-    <p class="sub">Pixie is now looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
-    {#if notice}<p class="err" role="alert">{notice}</p>{/if}
     <div class="overall">
       <div class="head"><b>{view.headline}</b></div>
       {#if view.fraction !== null}
