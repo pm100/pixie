@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import {
     assignGroup, facesOfPerson, faceOverview, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
     hidePerson, ignoredFaces, ignoreFaces, unignoreFaces, suggestForFaces, suggestForGroup, unhidePerson, unsortedFaces,
@@ -45,6 +45,11 @@
   let picked = $state<ReadonlySet<number>>(new Set());
   let anchor = $state<number | null>(null);
   let viewing = $state<number | null>(null);
+  /** The faces being walked through in the whole-photo view: a copy taken when it was opened, so naming a face (which can
+   *  empty the group it was in) does not change what is being walked through. */
+  let walk = $state<FaceTile[]>([]);
+  /** The opened card went away while the photo view was open (its faces all found a person): go back when that closes. */
+  let pendingBack = false;
   let loaded = $state(false);
   let loadedRev = $state<number | null>(null);
   let error = $state<string | null>(null);
@@ -89,17 +94,17 @@
       ignored = gone1;
       // the person was given away (their group joined someone, or every face was moved): back to the list, not an empty screen
       const gone = sel !== null && ![...list, ...named].some((c) => c.id === sel);
-      if (gone) {
-        selected = null;
-        shown = PAGE;
-        picked = new Set();
-      }
       tiles = gone ? [] : faces;
       loaded = true;
       loadedRev = ov.rev;
       // what was picked may have moved on
       const here = new Set(faces.map((t) => t.id).concat(loose.map((u) => u.tile.id)));
       picked = new Set([...picked].filter((id) => here.has(id)));
+      if (gone) {
+        // the person was given away: back to the list where it was, not an empty screen (once the photo view, if open, closes)
+        if (viewing === null) back();
+        else pendingBack = true;
+      }
     } catch (e) {
       if (latest.isCurrent(token)) error = String(e);
     }
@@ -136,7 +141,13 @@
     picked = new Set();
     load();
   }
+  /** Where the list was (its section, scroll position and how much of it was showing) when a card was opened, so coming
+   *  back puts the user in the same place. */
+  let listPos: { section: Section; top: number; shown: number } | null = null;
+  let scrollEl: HTMLElement | null = null;
+
   function open(id: number, mode: FaceOrder = 'doubtful') {
+    if (selected === null && section) listPos = { section, top: scrollEl?.scrollTop ?? 0, shown };
     selected = id;
     order = mode;
     tiles = [];
@@ -145,13 +156,25 @@
     anchor = null;
     load();
   }
-  const back = () => {
+  /** Back to the list from an opened card: the same section, with as much showing as before, scrolled to where it was. */
+  async function back() {
+    const pos = listPos?.section === section ? listPos : null;
     selected = null;
     tiles = [];
-    shown = PAGE;
+    shown = pos?.shown ?? PAGE;
     picked = new Set();
-    load();
-  };
+    await load();
+    if (pos) {
+      await tick();
+      if (scrollEl) scrollEl.scrollTop = pos.top;
+    }
+  }
+  /** Escape goes back from an opened card (not while the whole-photo view or a name box has it: they handle their own). */
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || e.defaultPrevented || !active || selected === null || viewing !== null) return;
+    e.preventDefault();
+    back();
+  }
   const setOrder = (o: FaceOrder) => { order = o; shown = PAGE; picked = new Set(); load(); };
   const showMore = () => { shown += 120; load(); };
 
@@ -181,25 +204,37 @@
   const giveNew = (faceIds: number[], text: string) => act(() => newPersonFromFaces(faceIds, text));
   const notThem = (faceIds: number[]) => act(() => rejectFaces(faceIds));
 
+  /** Open the whole-photo view on face `i` of the faces on screen. */
+  function view(i: number) {
+    walk = faceList.slice();
+    viewing = i;
+  }
+  function closeView() {
+    viewing = null;
+    if (pendingBack) {
+      pendingBack = false;
+      back();
+    }
+  }
   function step(by: number) {
-    if (viewing === null || faceList.length === 0) return;
+    if (viewing === null || walk.length === 0) return;
     const to = viewing + by;
-    if (to < 0 || to >= faceList.length) return; // like the photo viewer: no wrapping round
+    if (to < 0 || to >= walk.length) return; // like the photo viewer: no wrapping round
     (document.activeElement as HTMLElement | null)?.blur();
     viewing = to;
   }
-  // After a face leaves the list the one that took its place is shown; past the end, the last; none left, close.
-  $effect(() => {
-    if (viewing !== null && viewing >= faceList.length) viewing = faceList.length > 0 ? faceList.length - 1 : null;
-  });
+  /** After something was done with the face on screen, stay in the walk-through: on to the next face. */
+  const advance = () => { if (viewing !== null && viewing < walk.length - 1) viewing += 1; };
 
   /** Opened an unnamed group: with nothing selected, "This is…" names the whole group. */
   const wholeGroup = $derived(selected !== null && current !== null && current.name === null);
   const sections: Section[] = ['people', 'groups', 'hidden'];
 </script>
 
+<svelte:window {onkeydown} />
+
 {#snippet lightActions(t: FaceTile)}
-  <ThisIs people={pickers} small alignRight onpick={(p) => give([t.id], p)} onnew={(n) => giveNew([t.id], n)} onignore={inIgnored ? undefined : () => act(() => ignoreFaces([t.id]))}
+  <ThisIs people={pickers} small alignRight onpick={(p) => give([t.id], p).then(advance)} onnew={(n) => giveNew([t.id], n).then(advance)} onignore={inIgnored ? undefined : () => act(() => ignoreFaces([t.id])).then(advance)}
           candidates={() => suggestForFaces([t.id]).then(toCandidates)} />
 {/snippet}
 
@@ -285,7 +320,7 @@
     {/if}
   </div>
 
-  <div class="scroll">
+  <div class="scroll" bind:this={scrollEl}>
     {#if !loaded}
       <p class="hint">Loading…</p>
     {:else if selected === null}
@@ -313,7 +348,7 @@
             {/each}
             {#if section === 'groups'}
               {#each unsorted as u, i (u.tile.id)}
-                <LooseCard tile={u.tile} people={pickable(named, null)} onopen={() => (viewing = i)} onassign={(pid) => give([u.tile.id], pid)}
+                <LooseCard tile={u.tile} people={pickable(named, null)} onopen={() => view(i)} onassign={(pid) => give([u.tile.id], pid)}
                            onname={(text) => giveNew([u.tile.id], text)} onignore={() => act(() => ignoreFaces([u.tile.id]))} />
               {/each}
             {/if}
@@ -321,7 +356,7 @@
           {#if section === 'groups' && unsorted.length < total}<p><button onclick={showMore}>Show more</button></p>{/if}
         {/if}
         {#if inIgnored && ignored.length > 0}
-          <FaceGrid tiles={ignored} {picked} onclick={click} onzoom={(i) => (viewing = i)} />
+          <FaceGrid tiles={ignored} {picked} onclick={click} onzoom={view} />
           {#if ignored.length >= shown}<p><button onclick={showMore}>Show more faces</button></p>{/if}
         {/if}
       {/if}
@@ -329,7 +364,7 @@
       {#if tiles.length === 0}
         <p class="hint">No faces here.</p>
       {:else}
-        <FaceGrid tiles={faceList} {picked} onclick={click} onzoom={(i) => (viewing = i)} />
+        <FaceGrid tiles={faceList} {picked} onclick={click} onzoom={view} />
         {#if tiles.length < total}<p><button onclick={showMore}>Show more faces</button></p>{/if}
       {/if}
     {/if}
@@ -337,7 +372,7 @@
 </div>
 
 {#if viewing !== null}
-  <FaceLightbox tiles={faceList} index={viewing} title={current ? personLabel(current) : undefined} onclose={() => (viewing = null)} onstep={step} actions={lightActions} />
+  <FaceLightbox tiles={walk} index={viewing} title={current ? personLabel(current) : undefined} onclose={closeView} onstep={step} actions={lightActions} />
 {/if}
 
 <style>
