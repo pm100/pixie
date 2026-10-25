@@ -124,9 +124,23 @@ pub fn run_sniff(
     b: &Budgets,
     emit: &mut dyn FnMut(SniffEvent),
 ) {
+    run_sniff_with(true, known, home, drives, label, b, emit)
+}
+
+/// `run_sniff`, with the choice of whether to count what is in the known places (the look-around still needs them, to
+/// leave them out of what it finds). Counting is skipped when they were counted already.
+pub fn run_sniff_with(
+    count_known: bool,
+    known: Vec<Suggestion>,
+    home: Option<PathBuf>,
+    drives: Vec<DriveRoot>,
+    label: fn(&Path) -> Option<String>,
+    b: &Budgets,
+    emit: &mut dyn FnMut(SniffEvent),
+) {
     let (tx, rx) = mpsc::channel::<SniffEvent>();
     std::thread::scope(|scope| {
-        {
+        if count_known {
             let (tx, known) = (tx.clone(), &known);
             scope.spawn(move || {
                 for s in known {
@@ -183,6 +197,20 @@ mod tests {
 
     fn known(path: &std::path::Path, name: &str) -> Suggestion {
         Suggestion { path: path.to_string_lossy().into_owned(), name: name.into(), kind: SuggestionKind::Known, ticked: true, note: None, included_in: None }
+    }
+
+    #[test]
+    fn the_known_places_can_be_left_uncounted_and_the_search_still_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        jpgs(&dir.path().join("Pictures"), 3);
+        let k = known(&dir.path().join("Pictures"), "Pictures");
+        let mut events = Vec::new();
+        run_sniff_with(false, vec![k.clone()], None, Vec::new(), |_| None, &quick(), &mut |e| events.push(e));
+        assert!(events.iter().all(|e| !matches!(e, SniffEvent::Count { .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(SniffEvent::Done)));
+        let mut counted = Vec::new();
+        run_sniff_with(true, vec![k], None, Vec::new(), |_| None, &quick(), &mut |e| counted.push(e));
+        assert!(counted.iter().any(|e| matches!(e, SniffEvent::Count { n: 3, .. })));
     }
 
     fn run(known_places: Vec<Suggestion>, home: Option<std::path::PathBuf>, drives: Vec<DriveRoot>) -> Vec<SniffEvent> {
@@ -281,7 +309,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
             fs::rename(&staged, &r2).unwrap();
         });
-        let events = run(vec![], None, vec![DriveRoot { root: r3, network: true }]);
+        // (plenty of retries, so a busy machine that runs the first attempt late cannot make the test fail)
+        let mut events = Vec::new();
+        run_sniff(Vec::new(), None, vec![DriveRoot { root: r3, network: true }], |_| None, &Budgets { retries: 12, ..quick() }, &mut |e| events.push(e));
         creator.join().unwrap();
         let f = found(&events);
         assert_eq!(f.len(), 1, "{events:?}");

@@ -40,3 +40,8 @@ export function allSetSummary(o: {
 export function startLabel(ticked: number): { label: string; disabled: boolean } {
   return { label: 'Start', disabled: ticked === 0 };
 }
+
+/** The button of the same screen when it is used to add folders later: "Add", or how many, off while nothing is ticked. */
+export function addLabel(ticked: number): { label: string; disabled: boolean } {
+  return { label: ticked === 0 ? 'Add' : `Add ${plural(ticked, 'folder')}`, disabled: ticked === 0 };
+}

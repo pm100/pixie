@@ -36,6 +36,8 @@ export const removeFolder = (id: number) => invoke<void>('remove_folder', { id }
 export const addFolder = (path: string) => invoke<number>('add_folder', { path });
 /** `full` re-reads every file of the folder instead of only new and changed ones. */
 export const startScan = (folderId: number | null, full = false) => invoke<void>('start_scan', { folderId, full });
+/** Scan the folders on the network every `minutes` (null: never). Folders on this computer are watched, so need no setting. */
+export const setNetworkRescan = (minutes: number | null) => invoke<void>('set_network_rescan', { minutes });
 export const cancelScan = () => invoke<void>('cancel_scan');
 export const listPhotos = (
   offset: number, limit: number, order: SortOrder = 'newest', folderId: number | null = null,
@@ -135,7 +137,10 @@ export const onSuggestionsDone = (f: () => void) => listen('suggestions-done', (
 /** What the look-around is sniffing now ("your home folder", "your other drives"), for the spinner. */
 export const onSuggestionLooking = (f: (what: string) => void) => listen<string>('suggestion-looking', (e) => f(e.payload));
 /** The well-known photo places that exist; counts and further candidates then arrive as events (subscribe first). */
-export const suggestFolders = () => invoke<Suggestion[]>('suggest_folders');
+/** `deep` false: only the usual places are counted (adding a folder later); `suggestMore` then searches the rest on request. */
+export const suggestFolders = (deep = true) => invoke<Suggestion[]>('suggest_folders', { deep });
+/** The wider search, on request: other folders with pictures in them. The same events as `suggestFolders`. */
+export const suggestMore = () => invoke<void>('suggest_more');
 
 /** What `scanFolders` did: the folders' ids, and whether they joined a scan that was already running. */
 export type ScanStart = { folder_ids: number[]; queued: boolean };

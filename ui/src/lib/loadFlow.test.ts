@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allSetSummary, phaseAfterScan, startLabel } from './loadFlow';
+import { addLabel, allSetSummary, phaseAfterScan, startLabel } from './loadFlow';
 
 describe('phaseAfterScan', () => {
   it('a stopped scan ends the flow and Browse opens with what was found', () => {
@@ -59,5 +59,13 @@ describe('startLabel', () => {
     expect(startLabel(0)).toEqual({ label: 'Start', disabled: true });
     expect(startLabel(1)).toEqual({ label: 'Start', disabled: false });
     expect(startLabel(4)).toEqual({ label: 'Start', disabled: false });
+  });
+});
+
+describe('addLabel', () => {
+  it('says Add until something is ticked, then how many folders', () => {
+    expect(addLabel(0)).toEqual({ label: 'Add', disabled: true });
+    expect(addLabel(1)).toEqual({ label: 'Add 1 folder', disabled: false });
+    expect(addLabel(3)).toEqual({ label: 'Add 3 folders', disabled: false });
   });
 });

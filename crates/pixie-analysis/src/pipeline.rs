@@ -465,7 +465,7 @@ impl Shared {
                     }
                     let i = next_read.fetch_add(1, Ordering::SeqCst);
                     let Some(w) = batch.get(i) else { break };
-                    let wanted = w.hash || w.embed || w.faces || w.art;
+                    let wanted = w.hash || w.embed || w.faces || w.art || (w.new && w.photo.meta.kind == MediaKind::Photo); // (a row to refresh needs the file's bytes too)
                     let mut msg = (i, if wanted { std::fs::read(&w.photo.path) } else { Ok(Vec::new()) });
                     loop {
                         match btx.try_send(msg) {
@@ -601,15 +601,19 @@ struct BatchEnd {
     done: Vec<bool>,
 }
 
-/// The work for a file a walk found: everything that can be done now (the models that are loaded), and the row to make.
+/// The work for a file a walk found. A new file gets everything that can be done now (the models that are loaded). A file
+/// already in the library (it changed, or a Reload reads everything again) only has its row refreshed from the file: what
+/// is already known about it (faces, and the names given to them, tags, hash) is kept, and anything its change made
+/// stale is picked up by the database-driven pass that follows.
 fn intake_item(c: &Candidate, embed: bool, faces: bool, art: bool) -> WorkItem {
     let photo = c.kind == MediaKind::Photo;
+    let fresh = photo && !c.is_update;
     WorkItem {
         photo: Photo { id: 0, folder_id: c.folder_id, path: c.path.clone(), size: c.size, mtime: c.mtime, meta: PhotoMeta { kind: c.kind, ..Default::default() }, missing: false },
-        hash: photo,
-        embed: photo && embed,
-        faces: photo && faces,
-        art: photo && art,
+        hash: fresh,
+        embed: fresh && embed,
+        faces: fresh && faces,
+        art: fresh && art,
         new: true,
     }
 }
@@ -891,6 +895,39 @@ mod tests {
             assert_eq!(ph.meta.taken_at, Some(ph.mtime / 1000), "no EXIF date: the file's time");
             assert!(thumb_path(&r.thumbs(), ThumbClass::Grid, ph.id, ph.mtime, ph.size).exists(), "grid thumbnail of {}", ph.id);
         }
+        p.stop();
+    }
+
+    #[test]
+    fn reloading_a_folder_refreshes_its_rows_but_keeps_faces_and_what_is_known() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 250, 2);
+        let p = r.pipeline(2);
+        with_models(&p);
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((2, 2), (2, 2))));
+        let photos = r.db.list_photos_in(&Default::default(), 0, 10).unwrap();
+        let faces_before: Vec<Vec<i64>> = photos.iter().map(|ph| r.db.faces_of(ph.id).unwrap().iter().map(|f| f.id).collect()).collect();
+        assert!(faces_before.iter().all(|f| f.len() == 1), "the fake engine finds a face in each red picture");
+        let first = &photos[0];
+        // make the stored details wrong, as if they had been read badly (same size and time, so nothing else is cleared)
+        r.db.upsert_photo(first.folder_id, &first.path, first.size, first.mtime, &PhotoMeta { camera: Some("stale".into()), ..Default::default() }).unwrap();
+
+        // a Reload: a Full walk lists every file, changed or not
+        let mut all = pixie_index::walk_folder(&r.db, r.folder, pixie_index::ScanMode::Full, &AtomicBool::new(false), |_| {}).unwrap().candidates;
+        all.retain(|c| !c.path.contains("thumbs")); // (the rig keeps its thumbnail cache inside the folder)
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|c| c.is_update));
+        p.enqueue(all);
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0)));
+        std::thread::sleep(Duration::from_millis(300));
+        let again = r.db.get_photo(first.id).unwrap().unwrap();
+        assert_eq!(again.meta.width, Some(16), "the row was read from the file again");
+        assert_eq!(again.meta.camera, None);
+        let faces_after: Vec<Vec<i64>> = photos.iter().map(|ph| r.db.faces_of(ph.id).unwrap().iter().map(|f| f.id).collect()).collect();
+        assert_eq!(faces_after, faces_before, "the same faces, not found again: the names given to them survive a Reload");
+        assert_eq!(r.counts(), ((2, 2), (2, 2)));
         p.stop();
     }
 

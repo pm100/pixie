@@ -1,24 +1,26 @@
 <script lang="ts">
   import type { FolderInfo } from './api';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
   import { readFraction, scanText, type ScanState } from './scanProgress';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, onrescan }: {
+  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
     /** The folder the running scan is on, and what it has reported so far. */
     scanFolder: number | null; scan: ScanState; onstop: () => void;
-    onremove: (id: number) => Promise<void>; onrescan: (id: number, full: boolean) => void;
+    onremove: (id: number) => Promise<void>;
+    /** Whether, and how often, folders on the network are scanned again. */
+    networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void;
   } = $props();
 
-  // The question being asked in the popup, if any.
-  let ask = $state<{ kind: 'reload' | 'remove'; folder: FolderInfo } | null>(null);
+  // The folder being asked about in the popup (to remove), if any.
+  let ask = $state<{ kind: 'remove'; folder: FolderInfo } | null>(null);
   let error = $state('');
 
   async function confirmAsk() {
     const a = ask;
     ask = null;
     if (!a) return;
-    if (a.kind === 'reload') { onrescan(a.folder.id, true); return; }
     error = '';
     try { await onremove(a.folder.id); } catch (e) { error = String(e); }
   }
@@ -45,26 +47,28 @@
       {/if}
       {#if busy}
         <button onclick={onstop} title="Stop this scan; what was read so far is kept">Stop</button>
-      {:else}
-        <button disabled={scanning} title="Look for new and changed files only" onclick={() => onrescan(f.id, false)}>Rescan</button>
-        <button disabled={scanning} title="Read every file in this folder again, not just new and changed ones" onclick={() => (ask = { kind: 'reload', folder: f })}>Reload</button>
       {/if}
       <button disabled={scanning} title={scanning ? 'Wait for the scan to finish' : ''} onclick={() => (ask = { kind: 'remove', folder: f })}>Remove</button>
     </li>
   {/each}
 </ul>
 {#if error}<p class="err">{error}</p>{/if}
-<button class="add" onclick={onadd}>Add folder…</button>
+<button onclick={onadd}>Add folder…</button>
+
+<h3>Keeping up to date</h3>
+<p class="hint">Pixie automatically detects new or changed local files. How often should Pixie check network files?</p>
+<label class="opt">
+  <input type="checkbox" checked={networkRescan.on} onchange={(e) => onnetworkrescan({ ...networkRescan, on: e.currentTarget.checked })} />
+  Check folders on the network every
+  <select value={networkRescan.minutes} disabled={!networkRescan.on} aria-label="How often to check folders on the network"
+          onchange={(e) => onnetworkrescan({ ...networkRescan, minutes: Number(e.currentTarget.value) })}>
+    {#each NETWORK_MINUTES as m (m)}<option value={m}>{m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}</option>{/each}
+  </select>
+</label>
 {#if ask}
-  {#if ask.kind === 'reload'}
-    <ConfirmDialog title="Reload this folder?" confirmLabel="Reload"
-      message={`Pixie will read all ${ask.folder.count.toLocaleString()} items in ${ask.folder.path} again. This can take a long time for a large folder or a network drive. You can keep using Pixie while it runs, and stop it at any time.`}
-      onconfirm={confirmAsk} oncancel={() => (ask = null)} />
-  {:else}
-    <ConfirmDialog title="Remove this folder?" confirmLabel="Remove" danger
-      message={`Pixie will stop showing the photos and videos in ${ask.folder.path}. Your files are not deleted.`}
-      onconfirm={confirmAsk} oncancel={() => (ask = null)} />
-  {/if}
+  <ConfirmDialog title="Remove this folder?" confirmLabel="Remove" danger
+    message={`Pixie will stop showing the photos and videos in ${ask.folder.path}. Your files are not deleted.`}
+    onconfirm={confirmAsk} oncancel={() => (ask = null)} />
 {/if}
 
 <style>
@@ -79,5 +83,4 @@
   .prog progress { width: 100%; height: 6px; }
   .none { color: #777; }
   .err { color: #b00020; }
-  .add { background: #2f6fed; color: #fff; border-color: #2f6fed; }
 </style>

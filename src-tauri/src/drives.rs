@@ -80,6 +80,66 @@ pub fn volume_label(root: &Path) -> Option<String> {
     (!label.trim().is_empty()).then_some(label)
 }
 
+/// What a path's form alone says about where it is: a UNC path (`\\server\share`) is on the network, a path that starts
+/// with a drive letter needs the system's say-so (None), anything else is not a Windows network path.
+fn network_by_form(path: &str) -> Option<bool> {
+    let p = path.strip_prefix(r"\\?\").unwrap_or(path);
+    if p.to_ascii_uppercase().starts_with("UNC\\") {
+        return Some(true);
+    }
+    if path.starts_with(r"\\") && !path.starts_with(r"\\?\") {
+        return Some(true);
+    }
+    let mut chars = p.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), Some(':')) if c.is_ascii_alphabetic() => None,
+        _ => Some(false),
+    }
+}
+
+/// Is this folder on a network share (a mapped drive or a UNC path)? Such a folder can be slow or unreachable and cannot be
+/// watched for changes reliably. Asking does not touch the network.
+#[cfg(windows)]
+pub fn is_network_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    match network_by_form(&s) {
+        Some(answer) => answer,
+        None => {
+            let p = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            let letter = p.chars().next().unwrap_or('C');
+            // SAFETY: takes no arguments and only returns a bit mask.
+            let mask = unsafe { GetLogicalDrives() };
+            drive_kind(letter, mask).is_some_and(is_network)
+        }
+    }
+}
+
+/// The names macOS gives the file systems of network shares.
+fn network_fs_name(name: &str) -> bool {
+    matches!(name, "smbfs" | "nfs" | "afpfs" | "webdav" | "cifs" | "ftp")
+}
+
+#[cfg(target_os = "macos")]
+pub fn is_network_path(path: &Path) -> bool {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: `c` is a NUL-terminated path that outlives the call, and `st` is a zeroed `statfs` the call fills in.
+    unsafe {
+        let mut st: libc::statfs = std::mem::zeroed();
+        if libc::statfs(c.as_ptr(), &mut st) != 0 {
+            return false;
+        }
+        network_fs_name(&CStr::from_ptr(st.f_fstypename.as_ptr()).to_string_lossy())
+    }
+}
+
+/// Other systems: every folder is treated as local.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn is_network_path(_path: &Path) -> bool {
+    false
+}
+
 /// Other systems: no extra roots (macOS volumes cannot yet be told from network shares).
 #[cfg(not(windows))]
 pub fn drive_roots() -> Vec<DriveRoot> {
@@ -141,6 +201,33 @@ mod tests {
             .collect();
         let start = std::time::Instant::now();
         probe_all_with(probes, std::time::Duration::from_secs(15), &mut |r| eprintln!("{:>5.1}s  {}  ->  {:?}", start.elapsed().as_secs_f32(), r.name, r.outcome));
+    }
+
+    #[test]
+    fn a_unc_path_is_on_the_network_and_a_drive_letter_needs_asking() {
+        assert_eq!(network_by_form(r"\\nas\photos\2019"), Some(true));
+        assert_eq!(network_by_form(r"\\?\UNC\nas\photos"), Some(true));
+        assert_eq!(network_by_form(r"\\?\C:\Users\me"), None);
+        assert_eq!(network_by_form(r"P:\Photos"), None);
+        assert_eq!(network_by_form("/Users/me/Pictures"), Some(false));
+    }
+
+    #[test]
+    fn network_file_systems_are_told_by_name() {
+        for n in ["smbfs", "nfs", "afpfs", "webdav"] {
+            assert!(network_fs_name(n), "{n}");
+        }
+        for n in ["apfs", "hfs", "exfat", "msdos", "ntfs"] {
+            assert!(!network_fs_name(n), "{n}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_system_drive_is_not_a_network_path() {
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        assert!(!is_network_path(Path::new(&format!("{system}\\Users"))));
+        assert!(is_network_path(Path::new(r"\\no-such-server\share")));
     }
 
     #[cfg(not(windows))]

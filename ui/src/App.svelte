@@ -4,9 +4,9 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, setTagFilter, startScan, listTrips, renameTrip, tripRoute, placeFor,
+    listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
-    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders,
+    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
@@ -27,6 +27,7 @@
   import { periodLabel, periodRange } from './lib/periods';
   import { clearAllTitle, filterNames, offerClearAll } from './lib/filterSummary';
   import { parseRecentDays, recentLabel, recentSince } from './lib/recent';
+  import { parseNetworkRescan, rescanMinutes, type NetworkRescan } from './lib/networkRescan';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { scanText } from './lib/scanProgress';
@@ -42,7 +43,7 @@
   import { indexFacets, type Facets } from './lib/facets';
   import { createStripFeed, type StripItem } from './lib/stripFeed';
   import { thumbUrl } from './lib/url';
-  import { addFound, applyCount, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
+  import { addFound, applyCount, notInLibrary, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
   import { click, emptySelection, single } from './lib/selection';
   import SelectionBar from './lib/SelectionBar.svelte';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
@@ -123,6 +124,16 @@
   let tab = $state<TabId>('browse');
   let viewerMode = $state<ViewerMode>(parseViewerMode(loadPref<unknown>('viewerMode', null)));
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
+  // Whether, and how often, folders on the network are scanned again (folders on this computer are watched, so need no
+  // setting). The backend keeps the timer; it is told at start and whenever this changes.
+  let networkRescan = $state<NetworkRescan>(parseNetworkRescan(loadPref<unknown>('networkRescan', null)));
+  function setNetworkRescanPref(r: NetworkRescan) {
+    networkRescan = r;
+    savePref('networkRescan', r);
+  }
+  $effect(() => {
+    setNetworkRescan(rescanMinutes(networkRescan)).catch(() => {});
+  });
   // How many days "recent" means. Changing it while the Recent filter is on re-applies the filter.
   let recentDays = $state(parseRecentDays(loadPref<unknown>('recentDays', null)));
   function setRecentDays(n: number) {
@@ -605,22 +616,16 @@
     refresh(true).catch((e) => (message = String(e)));
   }
 
-  /** Start a scan of one folder (or all, with null) and show progress. */
-  async function runScan(id: number | null, full = false) {
-    message = '';
-    scanning = true; seen = 0; indexed = 0; toIndex = 0; scanFolder = id; // before the call, so a fast scan-done cannot be overwritten
-    try {
-      await startScan(id, full);
-    } catch (e) {
-      message = String(e);
-      if (!/already running/.test(message)) scanning = false; // busy => the other scan is still going
-    }
-  }
-
   // ---- First run and adding folders: welcome, modal scan, analysing, all set ----
   type Sample = StripItem;
   let phase = $state<Phase>('off');
   let rows = $state<Row[]>([]);
+  /** The folder picker is being used to add folders later (from Settings), not as the first-run welcome. */
+  let addMode = $state(false);
+  /** (adding) The wider search of the computer has been asked for. */
+  let searchedMore = $state(false);
+  /** The picker's rows: when adding, without folders the library already has. */
+  const pickerRows = $derived(addMode ? notInLibrary(rows, folders.map((f) => f.path)) : rows);
   let sniffing = $state(false); // still sniffing for photo folders
   let looking = $state<string | null>(null);
   let strip = $state<Sample[]>([]); // the photos read most recently, oldest first
@@ -675,8 +680,13 @@
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
-  /** Suggest where the photos probably are. Counts and further candidates arrive as events, possibly before the list. */
-  async function openWelcome() {
+  /** Suggest where the photos probably are. Counts and further candidates arrive as events, possibly before the list.
+   *  `adding`: the same screen, used later to add folders: only the usual places are looked at (the rest of the computer
+   *  on request), and nothing is ticked to begin with. */
+  const openWelcome = () => openPicker(false);
+  async function openPicker(adding: boolean) {
+    addMode = adding;
+    searchedMore = false;
     rows = [];
     sniffing = true;
     looking = null;
@@ -690,9 +700,26 @@
       onSuggestionLooking((what) => (looking = what)),
       onSuggestionsDone(() => (sniffing = false)),
     ];
-    try { rows = toRows(await suggestFolders()); } catch (e) { message = String(e); sniffing = false; }
+    try {
+      const list = toRows(await suggestFolders(!adding));
+      rows = adding ? list.map((r) => ({ ...r, ticked: false })) : list;
+    } catch (e) { message = String(e); sniffing = false; }
     ready = true;
     early.forEach((f) => f());
+  }
+
+  /** (adding) Search the rest of the computer, as the first-run welcome does. */
+  function searchMore() {
+    searchedMore = true;
+    sniffing = true;
+    looking = null;
+    suggestMore().catch((e) => { message = String(e); sniffing = false; });
+  }
+
+  function cancelAdd() {
+    stopWelcomeSubs();
+    addMode = false;
+    phase = 'off';
   }
 
   async function welcomeAdd() {
@@ -704,6 +731,7 @@
   /** Add these folders and scan them with the modal screens. A folder added while another scan runs joins that scan. */
   async function beginLoad(paths: string[]) {
     stopWelcomeSubs();
+    addMode = false;
     message = '';
     flowLoad = null;
     flowStopped = false; flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
@@ -727,13 +755,10 @@
     await flowStarted;
   }
 
-  const welcomeStart = () => beginLoad(tickedPaths(rows));
+  const welcomeStart = () => beginLoad(tickedPaths(pickerRows));
 
-  async function chooseFolder() {
-    const dir = await open({ directory: true, multiple: false });
-    if (typeof dir !== 'string') return;
-    await beginLoad([dir]); // folders already exist when this is used: no welcome
-  }
+  /** Add folders: the same folder picker as the welcome screen (see `openPicker`). */
+  const chooseFolder = () => openPicker(true);
 
   /** The scan ended: stopped, nothing found, or on to the analysing step. */
   async function finishScanPhase(found: number) {
@@ -876,6 +901,7 @@
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number; latest: Sample | null }>('scan-progress', (e) => {
         seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
+        scanning = true; // a scan the app started by itself (a watched folder changed, the timer) shows too, and can be stopped
         if (phase !== 'scanning') { if (phase === 'off' || phase === 'background') refreshLive(); return; }
         const f = folders.find((x) => x.id === e.payload.folder_id);
         flowFolder = f ? folderName(f.path) : flowFolder;
@@ -1040,7 +1066,7 @@
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
-                  onrescan={(id, full) => runScan(id, full)}
+                  {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
@@ -1053,8 +1079,9 @@
 </main>
 
 {#if phase === 'welcome'}
-  <Welcome {rows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
-           onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeStart} />
+  <Welcome rows={pickerRows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
+           onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeStart}
+           adding={addMode} canSearchMore={!searchedMore} onsearch={searchMore} oncancel={cancelAdd} />
 {:else if phase === 'scanning' || phase === 'analysing'}
   <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowView} notice={message}
              onstop={() => { flowStopped = true; cancelScan(); }} onbackground={carryOnInBackground}

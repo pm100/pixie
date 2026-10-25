@@ -26,6 +26,11 @@ export const toggle = (rows: Row[], path: string): Row[] => rows.map((r) => (r.p
 export const listedRows = (rows: Row[]): Row[] =>
   rows.filter((r) => r.included_in === null && !(r.count !== null && r.count.n === 0 && !r.count.capped));
 
+/** Leave out what the library already has: a folder it holds, one inside a folder it holds, or one that holds one of its
+ *  folders (adding either would list the same photos twice). */
+export const notInLibrary = (rows: Row[], library: string[]): Row[] =>
+  rows.filter((r) => !library.some((f) => norm(f) === norm(r.path) || inside(r.path, f) || inside(f, r.path)));
+
 /** The folders to add: the ticked ones among the rows shown. */
 export const tickedPaths = (rows: Row[]): string[] => listedRows(rows).filter((r) => r.ticked).map((r) => r.path);
 

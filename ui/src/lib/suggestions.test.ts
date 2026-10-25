@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { addFound, applyCount, countText, listedRows, lookingText, tickedPaths, toRows, toggle } from './suggestions';
+import { addFound, applyCount, countText, listedRows, lookingText, notInLibrary, tickedPaths, toRows, toggle, type Row } from './suggestions';
 import type { Suggestion } from './api';
 
 const s = (path: string, o: Partial<Suggestion> = {}): Suggestion => ({
   path, name: path.split(/[\\/]/).pop()!, kind: 'known', ticked: true, note: null, included_in: null, ...o,
+});
+
+describe('notInLibrary', () => {
+  const row = (path: string): Row => ({ path, name: path, kind: 'known', ticked: false, note: null, included_in: null, count: null });
+  const rows = [row('C:\\Users\\me\\Pictures'), row('C:\\Users\\me\\Videos'), row('C:\\Users\\me\\Pictures\\Trip'), row('D:\\Photos')];
+  it('drops a folder the library already holds, ignoring case, slashes and a trailing slash', () => {
+    expect(notInLibrary(rows, ['c:/users/me/videos/']).map((r) => r.path)).not.toContain('C:\\Users\\me\\Videos');
+  });
+  it('drops one inside a library folder, and one that holds a library folder', () => {
+    expect(notInLibrary(rows, ['C:\\Users\\me\\Pictures']).map((r) => r.path)).toEqual(['C:\\Users\\me\\Videos', 'D:\\Photos']);
+    expect(notInLibrary(rows, ['C:\\Users\\me\\Pictures\\Trip\\Day1']).map((r) => r.path)).toEqual(['C:\\Users\\me\\Videos', 'D:\\Photos']);
+  });
+  it('keeps everything when the library is empty, and is not fooled by a folder whose name only starts the same', () => {
+    expect(notInLibrary(rows, [])).toHaveLength(4);
+    expect(notInLibrary(rows, ['C:\\Users\\me\\Pic']).map((r) => r.path)).toHaveLength(4);
+  });
 });
 
 describe('toRows', () => {

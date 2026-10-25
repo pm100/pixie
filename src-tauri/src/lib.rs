@@ -1,3 +1,4 @@
+mod autoscan;
 mod drives;
 mod placement;
 mod sniff;
@@ -43,8 +44,31 @@ struct SuggestionCount {
 /// Subscribe to the events before calling. The look-around covers the home folder, then every other built-in drive and
 /// mapped network drive: each is checked for pictures on a thread of its own, at the same time, with a deadline, so
 /// an unreachable network share costs only its own row ("not reachable right now") and never freezes anything.
+/// With `deep` false (adding a folder later) only the usual places are counted: the wider search is left to
+/// `suggest_more`, when asked for.
 #[tauri::command]
-async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, PixieError> {
+async fn suggest_folders(app: tauri::AppHandle, deep: Option<bool>) -> Result<Vec<Suggestion>, PixieError> {
+    let (places, list) = known_places_of(&app);
+    let deep = deep.unwrap_or(true);
+    let (events, known, home) = (app.clone(), list.clone(), places.home.clone());
+    std::thread::spawn(move || {
+        let (home, others) = if deep { (home, other_drives()) } else { (None, Vec::new()) };
+        sniff_and_emit(&events, true, known, home, others);
+    });
+    Ok(list)
+}
+
+/// The wider search, on request: the home folder and every other drive, for folders with pictures in them that are not
+/// among the usual places. Emits the same events as `suggest_folders` (without counting the usual places again).
+#[tauri::command]
+async fn suggest_more(app: tauri::AppHandle) -> Result<(), PixieError> {
+    let (places, list) = known_places_of(&app);
+    std::thread::spawn(move || sniff_and_emit(&app, false, list, places.home.clone(), other_drives()));
+    Ok(())
+}
+
+/// The well-known places on this computer, and those that exist as suggestions.
+fn known_places_of(app: &tauri::AppHandle) -> (Places, Vec<Suggestion>) {
     let path = app.path();
     let mut onedrive: Vec<PathBuf> = Vec::new();
     for key in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
@@ -64,24 +88,28 @@ async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, Pixie
         onedrive,
     };
     let list = known_places(&places);
-    let (events, known, home) = (app.clone(), list.clone(), places.home.clone());
-    std::thread::spawn(move || {
-        // The system drive is covered by the home folder; every other built-in and network drive is sniffed as a whole.
-        let system = std::env::var("SystemDrive").unwrap_or_default().to_uppercase();
-        let others: Vec<drives::DriveRoot> = drives::drive_roots()
-            .into_iter()
-            .filter(|d| system.is_empty() || !d.root.to_string_lossy().to_uppercase().starts_with(&system))
-            .collect();
-        sniff::run_sniff(known, home, others, drives::volume_label, &sniff::Budgets::app(), &mut |event| {
-            let _ = match event {
-                sniff::SniffEvent::Looking(what) => events.emit("suggestion-looking", what),
-                sniff::SniffEvent::Count { path, n, capped } => events.emit("suggestion-count", SuggestionCount { path, n, capped }),
-                sniff::SniffEvent::Found(s) => events.emit("suggestion-found", s),
-                sniff::SniffEvent::Done => events.emit("suggestions-done", ()),
-            };
-        });
+    (places, list)
+}
+
+/// Every built-in and network drive except the system drive (the home folder covers that one), each sniffed as a whole.
+fn other_drives() -> Vec<drives::DriveRoot> {
+    let system = std::env::var("SystemDrive").unwrap_or_default().to_uppercase();
+    drives::drive_roots()
+        .into_iter()
+        .filter(|d| system.is_empty() || !d.root.to_string_lossy().to_uppercase().starts_with(&system))
+        .collect()
+}
+
+/// Run the look-around and tell the window as it goes (see `suggest_folders` for the events).
+fn sniff_and_emit(events: &tauri::AppHandle, count_known: bool, known: Vec<Suggestion>, home: Option<PathBuf>, others: Vec<drives::DriveRoot>) {
+    sniff::run_sniff_with(count_known, known, home, others, drives::volume_label, &sniff::Budgets::app(), &mut |event| {
+        let _ = match event {
+            sniff::SniffEvent::Looking(what) => events.emit("suggestion-looking", what),
+            sniff::SniffEvent::Count { path, n, capped } => events.emit("suggestion-count", SuggestionCount { path, n, capped }),
+            sniff::SniffEvent::Found(s) => events.emit("suggestion-found", s),
+            sniff::SniffEvent::Done => events.emit("suggestions-done", ()),
+        };
     });
-    Ok(list)
 }
 
 #[tauri::command]
@@ -353,25 +381,19 @@ struct ScanStart {
     queued: bool,
 }
 
-/// Add folders and scan them. When a scan job is already running (a launch rescan, say) they join it, so a folder
-/// added at the wrong moment is never left unscanned; otherwise a new job starts over them all.
-#[tauri::command]
-fn scan_folders(app: tauri::AppHandle, state: tauri::State<AppState>, paths: Vec<String>) -> Result<ScanStart, PixieError> {
-    let mut ids: Vec<i64> = Vec::new();
-    for p in &paths {
-        let id = state.db.add_folder(p)?;
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
+/// Ask for a scan of these folders. When a scan job is already running (a launch rescan, say) they join it, so a folder
+/// added at the wrong moment is never left unscanned; otherwise a new job starts over them all. Returns whether they were
+/// queued behind a running job.
+fn request_scan(app: &tauri::AppHandle, state: &AppState, ids: &[i64]) -> bool {
     let app_job = app.clone();
-    let mut placed = placement::place_folders(&ids, &state.gate, &state.queue, 200, Duration::from_millis(10), &mut |rest, guard| {
-        spawn_scan_job(app_job.clone(), state.inner(), guard, rest, ScanMode::Quick);
+    let mut placed = placement::place_folders(ids, &state.gate, &state.queue, 200, Duration::from_millis(10), &mut |rest, guard| {
+        spawn_scan_job(app_job.clone(), state, guard, rest, ScanMode::Quick);
     });
     if let placement::Outcome::Waiting(rest) = std::mem::replace(&mut placed.outcome, placement::Outcome::Queued) {
         // A job is finishing (closing steps after its last folder) and neither takes folders nor has freed the gate yet.
         // The folders are already saved: start their scan the moment the gate frees, however long that takes.
-        let shared = state.inner().clone();
+        let shared = state.clone();
+        let app = app.clone();
         std::thread::spawn(move || loop {
             if let Some(guard) = shared.gate.try_start() {
                 spawn_scan_job(app, &shared, guard, rest, ScanMode::Quick);
@@ -381,7 +403,28 @@ fn scan_folders(app: tauri::AppHandle, state: tauri::State<AppState>, paths: Vec
         });
         placed.queued = true; // it will be scanned after the running job, which is what "queued" tells the caller
     }
-    Ok(ScanStart { folder_ids: ids, queued: placed.queued })
+    placed.queued
+}
+
+/// Add folders and scan them (see `request_scan`).
+#[tauri::command]
+fn scan_folders(app: tauri::AppHandle, state: tauri::State<AppState>, paths: Vec<String>) -> Result<ScanStart, PixieError> {
+    let mut ids: Vec<i64> = Vec::new();
+    for p in &paths {
+        let id = state.db.add_folder(p)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let queued = request_scan(&app, state.inner(), &ids);
+    Ok(ScanStart { folder_ids: ids, queued })
+}
+
+/// Scan the folders on the network every `minutes` (none: never). Folders on this computer need no setting: they are
+/// watched, and scanned shortly after something in them changes.
+#[tauri::command]
+fn set_network_rescan(auto: tauri::State<autoscan::AutoScan>, minutes: Option<u32>) {
+    auto.set_network_rescan(minutes.filter(|m| *m > 0).map(|m| Duration::from_secs(m as u64 * 60)));
 }
 
 #[tauri::command]
@@ -1292,6 +1335,7 @@ pub fn run() {
                     let _ = dupes_app.emit("duplicate-status", s);
                 }),
             ));
+            let watch_db = db.clone();
             app.manage(AppState {
                 db,
                 thumbs,
@@ -1309,10 +1353,22 @@ pub fn run() {
                 dupes,
                 pipeline,
             });
+            // Keeps the library up to date: folders on this computer are watched, network ones are scanned on a timer (the
+            // window turns that on and says how often).
+            let auto_app = app.handle().clone();
+            app.manage(autoscan::AutoScan::start(
+                watch_db,
+                Arc::new(|p| drives::is_network_path(p)),
+                Arc::new(move |ids| {
+                    let state = auto_app.state::<AppState>();
+                    request_scan(&auto_app, state.inner(), &ids);
+                }),
+                autoscan::Timing::APP,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
