@@ -37,5 +37,5 @@ win-build:
 # because Homebrew's libheif drags in x265 (GPL).
 mac-build:
     ssh mac 'export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH PKG_CONFIG_PATH=$HOME/work/vcpkg-pixie/installed/arm64-osx-dynamic/lib/pkgconfig VCPKG_ROOT=$HOME/work/vcpkg-pixie VCPKGRS_TRIPLET=arm64-osx-dynamic; cd ~/work/pixie && git pull --ff-only && npm install && npm --prefix ui install && npm run tauri build'
-    scp "mac:work/pixie/target/release/bundle/dmg/*.dmg" target/
+    scp -o ServerAliveInterval=10 -o ServerAliveCountMax=3 "mac:work/pixie/target/release/bundle/dmg/*.dmg" target/
     Get-ChildItem target/*.dmg | ForEach-Object { Write-Host ("Disk image: " + $_.FullName + "  (" + [math]::Round($_.Length / 1MB, 1) + " MB)  SHA256 " + (Get-FileHash $_.FullName -Algorithm SHA256).Hash) }

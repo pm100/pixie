@@ -4,7 +4,7 @@
 
 A desktop photo manager for everyday users, not professionals. Point it at the folders where your photos already live and browse them by date, folder and place. Pixie never moves or changes your originals.
 
-Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build is untried and unsigned.
+Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build runs on Apple silicon but is unsigned.
 
 > **Status: early development.** Browsing, maps, trips, Auto tags, people and duplicate finding work. Slideshow, print, editing and collages are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
 
@@ -59,7 +59,15 @@ Pixie works offline, and your photos never leave your computer. There are two us
     setx PATH "%PATH%;C:\vcpkg\installed\x64-windows\bin"
     ```
     Open a new shell afterwards. libheif and libde265 are LGPL, so they are linked as DLLs (`heif.dll`, `libde265.dll`); the build copies them next to the program and into the installer. The `PATH` entry lets `cargo test` find them.
-  - **macOS:** `brew install libheif pkg-config` (not yet tested by the author).
+  - **macOS** (vcpkg, so libheif is built without the GPL x265 encoder; Homebrew's libheif includes x265):
+    ```sh
+    git clone https://github.com/microsoft/vcpkg ~/work/vcpkg-pixie
+    ~/work/vcpkg-pixie/bootstrap-vcpkg.sh
+    ~/work/vcpkg-pixie/vcpkg install "libheif[core,libde265]:arm64-osx-dynamic"
+    export VCPKG_ROOT=~/work/vcpkg-pixie VCPKGRS_TRIPLET=arm64-osx-dynamic
+    export PKG_CONFIG_PATH=$VCPKG_ROOT/installed/$VCPKGRS_TRIPLET/lib/pkgconfig
+    ```
+    (`libde265` must be named: on current vcpkg it is no longer part of `[core]`.) For a quick dev run, `brew install libheif pkg-config` also works, but do not ship a build made that way.
   - To build without HEIC support, pass `--no-default-features` to cargo.
 
 ### Run
@@ -90,7 +98,9 @@ CI runs all of these on Windows.
 npm run tauri build
 ```
 
-On Windows this produces a per-user NSIS installer (`just win-build` does the same with the vcpkg paths preset). Code signing, a macOS bundle and Store submission are not set up yet.
+On Windows this produces a per-user NSIS installer (`just win-build` does the same with the vcpkg paths preset).
+
+On a Mac it produces `Pixie.app` and a `.dmg` (Apple silicon only for now), with libheif and libde265 bundled inside the app. `just mac-build` runs that build on a Mac reachable as `ssh mac` (from what is pushed to origin), copies the `.dmg` to `target/` and prints its checksum. The build is **not signed or notarized**, so Gatekeeper blocks a first launch: right-click the app and choose Open, or run `xattr -cr /Applications/Pixie.app`. Proper signing needs an Apple Developer ID. Windows code signing and Store submission are not set up yet.
 
 ## Project layout
 
@@ -115,7 +125,7 @@ Settings, Photo folders, uses the same scan without the welcome. Launch rescans 
 
 ## Data and caches
 
-Pixie keeps its database, thumbnails, map tiles and place cache in its app data folder (on Windows, `%LOCALAPPDATA%\app.pixie.desktop`). Deleting that folder resets Pixie; your photos are untouched.
+Pixie keeps its database, thumbnails, map tiles and place cache in its app data folder (on Windows, `%LOCALAPPDATA%\app.pixie.desktop`; on a Mac, `~/Library/Application Support/app.pixie.desktop`). Deleting that folder resets Pixie; your photos are untouched.
 
 ## Contributing
 
