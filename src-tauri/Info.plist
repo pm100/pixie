@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Emailing a photo makes the message in the Mac's mail app (Mail or Outlook) with AppleScript; macOS asks the person
+       once, showing this text. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Pixie opens a new email in your mail app with the photo attached.</string>
+</dict>
+</plist>

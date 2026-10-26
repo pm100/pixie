@@ -1044,6 +1044,8 @@ async fn email_photo(app: tauri::AppHandle, state: tauri::State<'_, AppState>, i
         outlook::email_file(&app, std::path::Path::new(&photo.path), &subject).map(|r| match r {
             outlook::Route::ClassicOutlook => "outlook".to_string(),
             outlook::Route::NewOutlook => "newoutlook".to_string(),
+            outlook::Route::MacOutlook => "outlook".to_string(),
+            outlook::Route::AppleMail => "mail".to_string(),
             outlook::Route::ShareSheet => "share".to_string(),
         })
     })

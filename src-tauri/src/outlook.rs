@@ -6,11 +6,16 @@ use base64::Engine;
 
 /// How the photo was handed over, for the app to say.
 #[derive(Debug, PartialEq, Eq)]
+#[allow(dead_code)] // (each system uses its own)
 pub enum Route {
     /// A new message with the photo attached is open in classic Outlook.
     ClassicOutlook,
     /// A new message with the photo attached is open in new Outlook.
     NewOutlook,
+    /// (Mac) A new message with the photo attached is open in Outlook.
+    MacOutlook,
+    /// (Mac) A new message with the photo attached is open in Apple Mail.
+    AppleMail,
     /// The Windows Share sheet is open.
     ShareSheet,
 }
@@ -20,11 +25,13 @@ pub enum Route {
 #[cfg(windows)]
 const EML_LIMIT: u64 = 60 * 1024 * 1024;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_plain_header(s: &str) -> bool {
     s.bytes().all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\')
 }
 
 /// A header value that may hold any characters (an RFC 2047 encoded word when it is not plain).
+#[cfg_attr(not(windows), allow(dead_code))]
 fn header_text(s: &str) -> String {
     if is_plain_header(s) {
         s.to_string()
@@ -33,6 +40,7 @@ fn header_text(s: &str) -> String {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
         Some("jpg" | "jpeg" | "jpe") => "image/jpeg",
@@ -53,6 +61,7 @@ fn content_type(name: &str) -> &'static str {
 }
 
 /// An unsent message (`X-Unsent: 1`: a mail program opens it as a draft to finish and send) with the file attached.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn build_eml(name: &str, subject: &str, bytes: &[u8]) -> Vec<u8> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     let shown = header_text(name);
@@ -227,9 +236,104 @@ pub fn email_file(app: &tauri::AppHandle, path: &std::path::Path, subject: &str)
     Ok(Route::ShareSheet)
 }
 
-#[cfg(not(windows))]
+/// The mail app registered for `mailto:` links, as a lower-case bundle id, from the macOS Launch Services settings (as
+/// JSON). None: none was ever chosen (Apple Mail then).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mailto_handler(settings: &serde_json::Value) -> Option<String> {
+    settings
+        .get("LSHandlers")?
+        .as_array()?
+        .iter()
+        .find(|h| h.get("LSHandlerURLScheme").and_then(|s| s.as_str()) == Some("mailto"))
+        .and_then(|h| h.get("LSHandlerRoleAll").and_then(|s| s.as_str()))
+        .map(str::to_lowercase)
+}
+
+/// Make a message in Apple Mail with the file attached and open its window.
+#[cfg(target_os = "macos")]
+const MAIL_SCRIPT: &str = r#"
+on run argv
+  set theFile to POSIX file (item 1 of argv)
+  set theSubject to item 2 of argv
+  tell application "Mail"
+    set m to make new outgoing message with properties {subject:theSubject, visible:true}
+    tell content of m to make new attachment with properties {file name:theFile} at after the last paragraph
+    activate
+  end tell
+end run
+"#;
+
+/// The same in Microsoft Outlook.
+#[cfg(target_os = "macos")]
+const OUTLOOK_SCRIPT: &str = r#"
+on run argv
+  set theFile to POSIX file (item 1 of argv)
+  set theSubject to item 2 of argv
+  tell application "Microsoft Outlook"
+    set m to make new outgoing message with properties {subject:theSubject}
+    make new attachment at m with properties {file:theFile}
+    open m
+    activate
+  end tell
+end run
+"#;
+
+/// Run an AppleScript with the file and the subject as its arguments (never spliced into the script).
+#[cfg(target_os = "macos")]
+fn run_script(script: &str, app: &str, path: &std::path::Path, subject: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("osascript")
+        .arg("-")
+        .arg(path)
+        .arg(subject)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("no input for osascript")?.write_all(script.as_bytes()).map_err(|e| e.to_string())?;
+    // The mail app starting up can take a while; a hung one must not hang the button for ever.
+    let began = std::time::Instant::now();
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if began.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = child.kill();
+            return Err(format!("{app} did not answer."));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let why = String::from_utf8_lossy(&out.stderr);
+    if why.contains("-1743") {
+        return Err(format!("Pixie is not allowed to control {app}. Allow it in System Settings \u{2192} Privacy & Security \u{2192} Automation."));
+    }
+    Err(format!("{app} could not make the message: {}", why.trim()))
+}
+
+/// Open a new email with the file attached and `subject` as its subject, in the Mac's mail app (Outlook if that is what
+/// `mailto:` links open, otherwise Apple Mail).
+#[cfg(target_os = "macos")]
+pub fn email_file(_app: &tauri::AppHandle, path: &std::path::Path, subject: &str) -> Result<Route, String> {
+    if !path.is_file() {
+        return Err("The file is not there any more.".into());
+    }
+    let settings = std::env::var_os("HOME")
+        .map(|h| std::path::Path::new(&h).join("Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist"))
+        .and_then(|p| std::process::Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(p).output().ok())
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok());
+    if settings.as_ref().and_then(mailto_handler).is_some_and(|b| b.contains("outlook")) {
+        run_script(OUTLOOK_SCRIPT, "Outlook", path, subject)?;
+        return Ok(Route::MacOutlook);
+    }
+    run_script(MAIL_SCRIPT, "Mail", path, subject)?;
+    Ok(Route::AppleMail)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn email_file(_app: &tauri::AppHandle, _path: &std::path::Path, _subject: &str) -> Result<Route, String> {
-    Err("Emailing a photo is only set up for Windows so far.".into())
+    Err("Emailing a photo is only set up for Windows and Mac so far.".into())
 }
 
 #[cfg(test)]
@@ -261,6 +365,17 @@ mod tests {
         assert!(body.iter().all(|l| l.len() <= 76));
         assert_eq!(base64::engine::general_purpose::STANDARD.decode(body.concat()).unwrap(), data);
         assert!(eml.contains("application/octet-stream"));
+    }
+
+    #[test]
+    fn the_mailto_handler_is_found_in_the_launch_services_settings() {
+        let s: serde_json::Value = serde_json::from_str(
+            r#"{"LSHandlers":[{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.google.chrome"},{"LSHandlerURLScheme":"mailto","LSHandlerRoleAll":"com.microsoft.Outlook"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(mailto_handler(&s).as_deref(), Some("com.microsoft.outlook"));
+        assert_eq!(mailto_handler(&serde_json::json!({"LSHandlers": []})), None);
+        assert_eq!(mailto_handler(&serde_json::json!({})), None);
     }
 
     #[test]
