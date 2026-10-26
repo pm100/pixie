@@ -1097,6 +1097,12 @@
 
 <style>
   :global(body) { margin: 0; font-family: system-ui, sans-serif; font-size: 14px; background: #fff; color: #111; }
+  /* Plain buttons look the same on every system (the Mac's own are tiny); any style written for a button wins over this. */
+  :global(:where(button)) { font: inherit; font-size: 14px; padding: 5px 12px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; cursor: pointer; }
+  :global(:where(button:disabled)) { opacity: .5; cursor: default; }
+  :global(:where(select)) { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; }
+  :global(:where(select:disabled)) { opacity: .5; }
+  :global(:where(input[type='checkbox'], input[type='radio'])) { width: 16px; height: 16px; vertical-align: -3px; }
   main { display: flex; flex-direction: column; height: 100vh; }
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }

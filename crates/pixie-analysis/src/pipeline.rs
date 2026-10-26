@@ -730,6 +730,15 @@ impl PhotoPipeline {
     }
 
     /// The (photos, videos) in these folders that a walk found and the pipeline has not stored yet.
+    /// The scan was stopped: what was handed over and is still waiting is dropped (what is stored stays). Files being
+    /// worked on right now finish.
+    pub fn clear_intake(&self) {
+        let mut i = lock(&self.shared.intake);
+        i.queue.clear();
+        i.queued.clear();
+        i.outstanding.clear();
+    }
+
     /// A folder was removed: what was waiting to be read from it is dropped.
     pub fn forget_folder(&self, folder: FolderId) {
         let mut i = lock(&self.shared.intake);
@@ -1026,6 +1035,19 @@ mod tests {
         assert_eq!(p.pending_in(&[r.folder]), (0, 0));
         p.enqueue(r.walk()); // offered again: it was forgotten, so it is accepted
         assert_eq!(p.pending_in(&[r.folder]), (1, 0));
+        p.stop();
+    }
+
+    #[test]
+    fn stopping_drops_the_files_still_waiting() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        let p = r.pipeline(2);
+        p.set_paused(true);
+        p.enqueue(r.walk());
+        assert_eq!(p.pending_in(&[r.folder]), (1, 0));
+        p.clear_intake();
+        assert_eq!(p.pending_in(&[r.folder]), (0, 0));
         p.stop();
     }
 

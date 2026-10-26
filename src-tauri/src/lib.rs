@@ -305,6 +305,9 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                 break;
             }
         }
+        if cancel.load(Ordering::Relaxed) {
+            pipeline.clear_intake(); // stopped: the files already handed over but not yet read are let go too
+        }
         let _ = app.emit("scan-done", ScanDone { folders: scanned, found });
         analysis.kick(); // new photos to analyse; the worker waits while this scan job runs
         people.kick();
@@ -759,6 +762,7 @@ async fn search_photos(state: tauri::State<'_, AppState>, text: String) -> Resul
 #[tauri::command]
 fn cancel_scan(state: tauri::State<AppState>) {
     state.cancel_scan.store(true, Ordering::Relaxed);
+    state.pipeline.clear_intake(); // at once, not when the walk notices
 }
 
 #[tauri::command]
