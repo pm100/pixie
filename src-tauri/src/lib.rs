@@ -253,6 +253,37 @@ impl Drop for JobEnd {
     }
 }
 
+/// The drive or share a folder path lives on, if it is on one that can be unplugged or disconnected: `P:\`, a `\\server\share`,
+/// or `/Volumes/name` (the Mac), with the name to show for it.
+fn removable_root(path: &str) -> Option<(String, String)> {
+    let b = path.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let drive = format!("{}:", (b[0] as char).to_ascii_uppercase());
+        return Some((format!("{drive}\\"), format!("drive {drive}")));
+    }
+    if let Some(rest) = path.strip_prefix("\\\\") {
+        let mut parts = rest.split('\\').filter(|p| !p.is_empty());
+        let (server, share) = (parts.next()?, parts.next()?);
+        return Some((format!("\\\\{server}\\{share}"), format!("\\\\{server}\\{share}")));
+    }
+    let name = path.strip_prefix("/Volumes/")?.split('/').next().filter(|n| !n.is_empty())?;
+    Some((format!("/Volumes/{name}"), format!("\"{name}\"")))
+}
+
+/// What to tell the person when a folder could not be scanned. A folder that cannot be reached is named, with the reason
+/// as far as it can be told: its drive is not connected, or the folder itself is gone. `exists` says whether a path exists.
+fn scan_error_message_with(e: &PixieError, folder: Option<&str>, exists: impl Fn(&str) -> bool) -> String {
+    let (PixieError::NotFound(_), Some(path)) = (e, folder) else { return e.user_message() };
+    match removable_root(path) {
+        Some((root, shown)) if !exists(&root) => format!("Pixie can't reach {path}: {shown} is not connected."),
+        _ => format!("Pixie can't find {path}. It may have been moved, renamed or deleted."),
+    }
+}
+
+fn scan_error_message(e: &PixieError, folder: Option<&str>) -> String {
+    scan_error_message_with(e, folder, |p| std::path::Path::new(p).exists())
+}
+
 /// Run one scan job on its own thread: `ids` first, then any folders added to the queue while it runs. The caller
 /// holds the gate; it is released when the job ends.
 fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids: Vec<i64>, mode: ScanMode) {
@@ -295,7 +326,8 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                         scanned += 1;
                     }
                     Err(e) => {
-                        let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
+                        let path = db.get_folder(id).ok().flatten().map(|f| f.path);
+                        let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: scan_error_message(&e, path.as_deref()) });
                     }
                 }
             }
@@ -1413,4 +1445,34 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pixie");
+}
+
+#[cfg(test)]
+mod scan_message_tests {
+    use super::*;
+
+    fn nf() -> PixieError {
+        PixieError::NotFound("x".into())
+    }
+
+    #[test]
+    fn a_drive_that_is_not_connected_is_named() {
+        let none = |_: &str| false;
+        assert_eq!(scan_error_message_with(&nf(), Some("/Volumes/photo/2019"), none), "Pixie can't reach /Volumes/photo/2019: \"photo\" is not connected.");
+        assert_eq!(scan_error_message_with(&nf(), Some("p:\\joan"), none), "Pixie can't reach p:\\joan: drive P: is not connected.");
+        assert_eq!(scan_error_message_with(&nf(), Some("\\\\nas\\photo\\joan"), none), "Pixie can't reach \\\\nas\\photo\\joan: \\\\nas\\photo is not connected.");
+    }
+
+    #[test]
+    fn a_folder_that_is_gone_from_a_connected_drive_is_said_to_be_gone() {
+        let all = |_: &str| true;
+        let m = scan_error_message_with(&nf(), Some("/Volumes/photo/2019"), all);
+        assert_eq!(m, "Pixie can't find /Volumes/photo/2019. It may have been moved, renamed or deleted.");
+        assert_eq!(scan_error_message_with(&nf(), Some("/Users/me/Pictures"), |_| false), "Pixie can't find /Users/me/Pictures. It may have been moved, renamed or deleted.");
+    }
+
+    #[test]
+    fn other_problems_keep_their_usual_message() {
+        assert_eq!(scan_error_message_with(&nf(), None, |_| false), nf().user_message());
+    }
 }
