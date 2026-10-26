@@ -127,14 +127,79 @@ pub fn scan_folder(db: &Db, folder_id: FolderId, cancel: &AtomicBool, on_progres
     scan_folder_with(db, folder_id, ScanMode::Quick, cancel, on_progress)
 }
 
-/// Walk a watched folder and work out which files are new or changed (cheap, sequential): it reads no file and changes
-/// nothing. If the root is unreachable, returns `NotFound`. A cancelled walk comes back with `stats.cancelled` set.
+/// How many files a walk hands over at a time when it hands them over as it goes.
+pub const HAND_OVER: usize = 100;
+/// The files whose sizes and times are looked up together. Each lookup waits for the drive: a network share (over wifi
+/// especially) answers one question at a time about 20 times slower than it answers many at once.
+const STAT_CHUNK: usize = 256;
+const STAT_AT_ONCE: usize = 32;
+
+/// A file the walk has listed and not yet settled: its path, its kind, and its size and time if the listing gave them.
+type Listed = (String, MediaKind, Option<(i64, i64)>);
+
+/// The size and modified time of each path, asked for `STAT_AT_ONCE` at a time; None for one that cannot be read.
+fn stat_all(paths: &[&str]) -> Vec<Option<(i64, i64)>> {
+    let mut out: Vec<Option<(i64, i64)>> = vec![None; paths.len()];
+    let per = paths.len().div_ceil(STAT_AT_ONCE).max(1);
+    std::thread::scope(|scope| {
+        for (slots, ps) in out.chunks_mut(per).zip(paths.chunks(per)) {
+            scope.spawn(move || {
+                for (slot, p) in slots.iter_mut().zip(ps) {
+                    *slot = std::fs::symlink_metadata(p).ok().map(|md| (md.len() as i64, mtime_ms(&md)));
+                }
+            });
+        }
+    });
+    out
+}
+
+/// Look up the details of the listed files that lack them (together, see `STAT_CHUNK`), then sort each into unchanged
+/// (counted) or new or changed (added to `todo`).
+fn settle_chunk(db: &Db, folder_id: FolderId, mode: ScanMode, chunk: Vec<Listed>, stats: &mut ScanStats, todo: &mut Vec<Candidate>) -> Result<()> {
+    let mut details: Vec<Option<(i64, i64)>> = chunk.iter().map(|c| c.2).collect();
+    {
+        let lacking: Vec<usize> = (0..chunk.len()).filter(|&i| details[i].is_none()).collect();
+        let paths: Vec<&str> = lacking.iter().map(|&i| chunk[i].0.as_str()).collect();
+        for (&i, d) in lacking.iter().zip(stat_all(&paths)) {
+            details[i] = d;
+        }
+    }
+    for ((path, kind, _), d) in chunk.into_iter().zip(details) {
+        let Some((size, mtime)) = d else {
+            stats.unreadable += 1;
+            continue;
+        };
+        match db.find_photo_stat(&path)? {
+            Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
+            existing => todo.push(Candidate { folder_id, path, size, mtime, is_update: existing.is_some(), kind }),
+        }
+    }
+    Ok(())
+}
+
+/// Walk a watched folder and work out which files are new or changed (cheap): it reads no file and changes nothing. If the
+/// root is unreachable, returns `NotFound`. A cancelled walk comes back with `stats.cancelled` set.
 pub fn walk_folder(
     db: &Db,
     folder_id: FolderId,
     mode: ScanMode,
     cancel: &AtomicBool,
+    on_progress: impl FnMut(&ScanProgress),
+) -> Result<Walk> {
+    walk_folder_streaming(db, folder_id, mode, cancel, on_progress, None)
+}
+
+/// `walk_folder`, but with `hand_over` the new and changed files are passed on `HAND_OVER` at a time while the walk is
+/// still going (and the last few at its end), so whoever reads them can begin at once, not when the walk is over. The
+/// returned `Walk` then holds none of them.
+#[allow(unused_assignments)] // (the last progress count is set and not read)
+pub fn walk_folder_streaming(
+    db: &Db,
+    folder_id: FolderId,
+    mode: ScanMode,
+    cancel: &AtomicBool,
     mut on_progress: impl FnMut(&ScanProgress),
+    mut hand_over: Option<&mut dyn FnMut(Vec<Candidate>)>,
 ) -> Result<Walk> {
     // Say right away that this folder has begun: opening a slow or sleeping drive can take a while before anything else.
     on_progress(&ScanProgress { folder_id, seen: 0, indexed: 0, to_index: 0, latest: None });
@@ -149,6 +214,24 @@ pub fn walk_folder(
     let mut stats = ScanStats::default();
     let mut seen: HashSet<String> = HashSet::new();
     let mut todo: Vec<Candidate> = Vec::new();
+    let mut chunk: Vec<Listed> = Vec::new();
+    let mut announced = 0usize;
+
+    // The listed files are settled a chunk at a time; then progress is told and the new files are handed on.
+    macro_rules! settle {
+        () => {{
+            settle_chunk(db, folder_id, mode, std::mem::take(&mut chunk), &mut stats, &mut todo)?;
+            if let Some(h) = hand_over.as_mut() {
+                if todo.len() >= HAND_OVER {
+                    h(std::mem::take(&mut todo));
+                }
+            }
+            if seen.len() / 100 > announced {
+                announced = seen.len() / 100;
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None });
+            }
+        }};
+    }
 
     // Phase 1: walk.
     for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
@@ -169,19 +252,21 @@ pub fn walk_folder(
         let Some(kind) = media_kind(entry.path()) else { continue };
         let Some(path) = entry.path().to_str().map(str::to_owned) else { continue };
         seen.insert(path.clone());
-
-        let Ok(md) = entry.metadata() else {
-            stats.unreadable += 1;
-            continue;
-        };
-        let (size, mtime) = (md.len() as i64, mtime_ms(&md));
-
-        match db.find_photo_stat(&path)? {
-            Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
-            existing => todo.push(Candidate { folder_id, path, size, mtime, is_update: existing.is_some(), kind }),
+        // On Windows the listing already gave the size and time (no further question to the drive); elsewhere they are
+        // asked for, many at once, when the chunk is settled.
+        #[cfg(windows)]
+        let known = entry.metadata().ok().map(|md| (md.len() as i64, mtime_ms(&md)));
+        #[cfg(not(windows))]
+        let known = None;
+        chunk.push((path, kind, known));
+        if chunk.len() >= STAT_CHUNK {
+            settle!();
         }
-        if seen.len() % 100 == 0 {
-            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None });
+    }
+    settle!();
+    if let Some(h) = hand_over.as_mut() {
+        if !todo.is_empty() {
+            h(std::mem::take(&mut todo));
         }
     }
     Ok(Walk { folder_id, root: root.to_path_buf(), candidates: todo, seen, stats })
@@ -374,6 +459,57 @@ mod tests {
     }
 
     #[test]
+    fn a_streaming_walk_hands_files_over_while_it_goes_and_returns_none() {
+        let (dir, db, f) = setup();
+        for i in 0..(STAT_CHUNK * 2 + 30) {
+            fs::write(dir.path().join(format!("p{i:04}.jpg")), jpeg(8, 8)).unwrap();
+        }
+        let mut batches: Vec<usize> = Vec::new();
+        let mut hand = |b: Vec<Candidate>| batches.push(b.len());
+        let walk = walk_folder_streaming(&db, f, ScanMode::Quick, &AtomicBool::new(false), |_| {}, Some(&mut hand)).unwrap();
+        assert_eq!(batches.iter().sum::<usize>(), STAT_CHUNK * 2 + 30, "every file was handed over");
+        assert!(batches.len() >= 3, "in several batches, while the walk went on: {batches:?}");
+        assert!(batches.iter().all(|n| *n >= HAND_OVER || n == batches.last().unwrap()), "{batches:?}");
+        assert!(walk.candidates.is_empty(), "nothing is left in the walk");
+        assert_eq!(walk.seen.len(), STAT_CHUNK * 2 + 30);
+    }
+
+    #[test]
+    fn many_files_are_looked_up_in_groups_and_come_out_in_order_with_their_sizes() {
+        let (dir, db, f) = setup();
+        let n = STAT_CHUNK * 2 + 17;
+        for i in 0..n {
+            fs::write(dir.path().join(format!("p{i:04}.jpg")), vec![0u8; i + 1]).unwrap();
+        }
+        let walk = walk_folder(&db, f, ScanMode::Quick, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(walk.candidates.len(), n);
+        for (i, c) in walk.candidates.iter().enumerate() {
+            assert!(c.path.ends_with(&format!("p{i:04}.jpg")), "in file-name order: {}", c.path);
+            assert_eq!(c.size, i as i64 + 1);
+        }
+    }
+
+    #[test]
+    fn stat_all_gives_sizes_and_none_for_what_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+        let missing = dir.path().join("nope.bin");
+        let paths: Vec<String> = (0..70).map(|i| if i == 33 { missing.to_string_lossy().into_owned() } else { a.to_string_lossy().into_owned() }).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let out = stat_all(&refs);
+        assert_eq!(out.len(), 70);
+        for (i, o) in out.iter().enumerate() {
+            if i == 33 {
+                assert!(o.is_none());
+            } else {
+                assert_eq!(o.map(|d| d.0), Some(5));
+            }
+        }
+        assert!(stat_all(&[]).is_empty());
+    }
+
+    #[test]
     fn a_walk_lists_new_and_changed_files_and_reads_and_stores_nothing() {
         let (dir, db, f) = setup();
         fs::write(dir.path().join("a.jpg"), jpeg(8, 8)).unwrap();
@@ -528,25 +664,25 @@ mod tests {
     #[test]
     fn walk_error_mid_scan_marks_nothing_missing() {
         let (dir, db, f) = setup();
-        for i in 0..150 {
+        for i in 0..600 {
             fs::write(dir.path().join(format!("f{i:03}.jpg")), jpeg(8, 8)).unwrap();
         }
         let z = dir.path().join("z");
         fs::create_dir_all(&z).unwrap();
         fs::write(z.join("deep.jpg"), jpeg(8, 8)).unwrap();
         scan(&db, f);
-        assert_eq!(db.count_photos().unwrap(), 151);
+        assert_eq!(db.count_photos().unwrap(), 601);
         // "Unplug" the subfolder part-way through the rescan.
         let zc = z.clone();
         let s = scan_folder(&db, f, &AtomicBool::new(false), |p| {
-            if p.seen == 100 {
+            if p.seen >= 100 {
                 let _ = fs::remove_dir_all(&zc);
             }
         })
         .unwrap();
         assert!(s.walk_errors > 0, "{s:?}");
         assert_eq!(s.marked_missing, 0);
-        assert_eq!(db.count_photos().unwrap(), 151);
+        assert_eq!(db.count_photos().unwrap(), 601);
     }
 
     #[test]

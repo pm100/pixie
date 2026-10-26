@@ -31,3 +31,11 @@ maclaunch:
 win-build:
     npm run tauri build
     Get-ChildItem target/release/bundle/nsis/*-setup.exe | ForEach-Object { Write-Host ("Installer: " + $_.FullName + "  (" + [math]::Round($_.Length / 1MB, 1) + " MB)  SHA256 " + ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($_.FullName))) -replace '-', '')) }
+
+# Build the macOS disk image (Apple silicon, unsigned) on the Mac (`ssh mac`) from what is pushed to origin, copy it to
+# target/ here and show its size and checksum. HEIC support comes from a vcpkg clone on the Mac (see README), not Homebrew,
+# because Homebrew's libheif drags in x265 (GPL).
+mac-build:
+    ssh mac 'export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH PKG_CONFIG_PATH=$HOME/work/vcpkg-pixie/installed/arm64-osx-dynamic/lib/pkgconfig VCPKG_ROOT=$HOME/work/vcpkg-pixie VCPKGRS_TRIPLET=arm64-osx-dynamic; cd ~/work/pixie && git pull --ff-only && npm install && npm --prefix ui install && npm run tauri build'
+    scp "mac:work/pixie/target/release/bundle/dmg/*.dmg" target/
+    Get-ChildItem target/*.dmg | ForEach-Object { Write-Host ("Disk image: " + $_.FullName + "  (" + [math]::Round($_.Length / 1MB, 1) + " MB)  SHA256 " + (Get-FileHash $_.FullName -Algorithm SHA256).Hash) }

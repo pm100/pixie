@@ -181,8 +181,19 @@ impl Shared {
         *k = false;
     }
 
+    /// Is the pipeline held? Paused, or (for the work the database lists, not for files a walk hands over, which are
+    /// worked on while the walk is still going) a scan job running.
     fn holding(&self) -> bool {
         self.paused.load(Ordering::SeqCst) || (self.scanning)()
+    }
+
+    /// Should a batch stop now? `intake`: it is files a walk handed over, which only a pause stops.
+    fn batch_held(&self, intake: bool) -> bool {
+        if intake {
+            self.paused.load(Ordering::SeqCst)
+        } else {
+            self.holding()
+        }
     }
 
     /// Tag every stored vector that has not been tagged with the current vocabulary. Pure arithmetic on what is
@@ -233,6 +244,13 @@ impl Shared {
     }
 
     /// A file of the intake has been stored (or could not be): it is no longer outstanding.
+    /// A result could not be stored. Said, unless the photo's folder was removed meanwhile (then it is expected).
+    fn store_failed(&self, what: &str, p: &Photo, e: &dyn std::fmt::Display) {
+        if matches!(self.db.get_folder(p.folder_id), Ok(Some(_))) {
+            eprintln!("[{what}] cannot store result for {}: {e}", p.path);
+        }
+    }
+
     fn finished_intake(&self, c: &Photo) {
         let mut i = lock(&self.intake);
         i.queued.remove(&c.path);
@@ -302,7 +320,10 @@ impl Shared {
         let id = match stored {
             Ok(id) => id,
             Err(e) => {
-                eprintln!("[analysis] cannot store {}: {e}", c.path);
+                // (a folder removed while it was being read is not a problem to report)
+                if matches!(self.db.get_folder(c.folder_id), Ok(Some(_))) {
+                    eprintln!("[analysis] cannot store {}: {e}", c.path);
+                }
                 return (0, Outcome::Nothing);
             }
         };
@@ -387,9 +408,18 @@ impl Shared {
     fn run(&self) {
         let (mut embed_failures, mut face_failures) = (0usize, 0usize);
         while !self.stop.load(Ordering::SeqCst) {
-            if self.holding() {
+            if self.paused.load(Ordering::SeqCst) {
                 if !self.hold_reported.swap(true, Ordering::SeqCst) {
                     self.report(); // once, when it starts waiting; not on every poll
+                }
+                self.wait(self.poll);
+                continue;
+            }
+            // Files a walk has handed over are worked on at once, even while the walk goes on; what the database lists
+            // waits for the scan to end.
+            if (self.scanning)() && lock(&self.intake).queue.is_empty() {
+                if !self.hold_reported.swap(true, Ordering::SeqCst) {
+                    self.report();
                 }
                 self.wait(self.poll);
                 continue;
@@ -403,7 +433,7 @@ impl Shared {
             let taken = self.take_intake(BATCH as usize);
             if !taken.is_empty() {
                 let items: Vec<WorkItem> = taken.iter().map(|c| intake_item(c, ev.is_some(), fv.is_some(), art.is_some())).collect();
-                let r = self.batch(&items, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+                let r = self.batch(true, &items, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
                 self.requeue(taken, &r.done);
                 self.tidy_faces(false);
                 self.report();
@@ -426,7 +456,7 @@ impl Shared {
                 self.wait(IDLE_WAIT);
                 continue;
             }
-            let down = self.batch(&batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures)).down;
+            let down = self.batch(false, &batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures)).down;
             self.tidy_faces(false);
             self.report();
             if down {
@@ -438,6 +468,7 @@ impl Shared {
     /// Work through one batch with several workers. Returns true if a model kept failing.
     fn batch(
         &self,
+        intake: bool,
         batch: &[WorkItem],
         embedder: &Option<Arc<dyn Embedder>>,
         faces: &Option<Arc<dyn FaceEngine>>,
@@ -460,7 +491,7 @@ impl Shared {
                 let btx = btx.clone();
                 let next_read = &next_read;
                 scope.spawn(move || loop {
-                    if self.stop.load(Ordering::SeqCst) || self.holding() {
+                    if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
                         break;
                     }
                     let i = next_read.fetch_add(1, Ordering::SeqCst);
@@ -472,7 +503,7 @@ impl Shared {
                             Ok(()) => break,
                             Err(TrySendError::Disconnected(_)) => return,
                             Err(TrySendError::Full(m)) => {
-                                if self.stop.load(Ordering::SeqCst) || self.holding() {
+                                if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
                                     return;
                                 }
                                 msg = m;
@@ -488,7 +519,7 @@ impl Shared {
                 let (brx, embed_off, faces_off, art) = (&brx, &embed_off, &faces_off, &art);
                 scope.spawn(move || loop {
                     let Ok((i, bytes)) = lock(brx).recv() else { break };
-                    if self.stop.load(Ordering::SeqCst) || self.holding() {
+                    if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
                         break;
                     }
                     let w = &batch[i];
@@ -535,7 +566,7 @@ impl Shared {
                                                 let _ = self.db.set_tags(id, v, TAGS_VERSION, &idx.tags_for(&vec));
                                             }
                                         }
-                                        Err(e) => eprintln!("[analysis] cannot store result for {}: {e}", w.photo.path), // the photo vanished mid-run
+                                        Err(e) => self.store_failed("analysis", &w.photo, &e),
                                     }
                                 }
                                 Err(e) => {
@@ -570,7 +601,7 @@ impl Shared {
                                                 self.new_faces.fetch_add(ids.len(), Ordering::SeqCst);
                                             }
                                         }
-                                        Err(e) => eprintln!("[people] cannot store result for {}: {e}", w.photo.path),
+                                        Err(e) => self.store_failed("people", &w.photo, &e),
                                     }
                                 }
                                 Err(e) => {
@@ -699,6 +730,17 @@ impl PhotoPipeline {
     }
 
     /// The (photos, videos) in these folders that a walk found and the pipeline has not stored yet.
+    /// A folder was removed: what was waiting to be read from it is dropped.
+    pub fn forget_folder(&self, folder: FolderId) {
+        let mut i = lock(&self.shared.intake);
+        let (gone, kept): (VecDeque<Candidate>, VecDeque<Candidate>) = std::mem::take(&mut i.queue).into_iter().partition(|c| c.folder_id == folder);
+        i.queue = kept;
+        for c in gone {
+            i.queued.remove(&c.path);
+        }
+        i.outstanding.remove(&folder);
+    }
+
     pub fn pending_in(&self, folders: &[FolderId]) -> (i64, i64) {
         let i = lock(&self.shared.intake);
         folders.iter().filter_map(|f| i.outstanding.get(f)).fold((0, 0), |a, n| (a.0 + n.0, a.1 + n.1))
@@ -932,23 +974,58 @@ mod tests {
     }
 
     #[test]
-    fn a_file_offered_twice_is_read_once_and_a_held_pipeline_keeps_what_it_was_given() {
+    fn a_file_offered_twice_is_read_once_and_a_paused_pipeline_keeps_what_it_was_given() {
         let r = Rig::new();
         for i in 0..4u8 {
             r.file(&format!("p{i}.png"), 250, i);
         }
-        let hold = Arc::new(AtomicBool::new(true)); // a scan job is running: the pipeline waits
-        let p = r.pipeline_with(2, hold.clone());
+        let p = r.pipeline(2);
         with_models(&p);
+        p.set_paused(true); // paused: nothing is read
         p.enqueue(r.walk());
         p.enqueue(r.walk()); // the same files again (a second scan found them too)
         assert_eq!(p.pending_in(&[r.folder]), (4, 0), "each file counts once");
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 0, "nothing was read while held");
-        hold.store(false, Ordering::SeqCst);
-        p.kick();
+        assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 0, "nothing was read while paused");
+        p.set_paused(false);
         assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((4, 4), (4, 4))));
         assert_eq!(r.db.count_photos_in(&Default::default()).unwrap(), 4);
+        p.stop();
+    }
+
+    #[test]
+    fn files_handed_over_while_the_walk_is_still_going_are_worked_on_at_once_but_the_databases_list_waits() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 250, 2);
+        let walking = Arc::new(AtomicBool::new(true)); // a scan job is running
+        let p = r.pipeline_with(2, walking.clone());
+        with_models(&p);
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((2, 2), (2, 2))), "worked on while the walk goes on");
+        // a photo already in the library that needs analysing is the database's to list: it waits for the walk
+        r.png("late.png", 250, 9);
+        p.kick();
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(r.db.embedding_counts(EV).unwrap().0, 2, "not yet: the scan job is still running");
+        walking.store(false, Ordering::SeqCst);
+        p.kick();
+        assert!(wait_until(5000, || r.db.embedding_counts(EV).unwrap().0 == 3));
+        p.stop();
+    }
+
+    #[test]
+    fn a_removed_folders_waiting_files_are_dropped() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        let p = r.pipeline(2);
+        p.set_paused(true);
+        p.enqueue(r.walk());
+        assert_eq!(p.pending_in(&[r.folder]), (1, 0));
+        p.forget_folder(r.folder);
+        assert_eq!(p.pending_in(&[r.folder]), (0, 0));
+        p.enqueue(r.walk()); // offered again: it was forgotten, so it is accepted
+        assert_eq!(p.pending_in(&[r.folder]), (1, 0));
         p.stop();
     }
 

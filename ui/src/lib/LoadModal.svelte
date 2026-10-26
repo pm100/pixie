@@ -32,11 +32,7 @@
 
 <FlowStage label="Getting to know your photos">
   <h1>Getting to know your photos…</h1>
-  {#if phase === 'scanning'}
-    <p class="sub">{scanText(scan)}{folder ? ` · ${folder}` : ''}</p>
-  {:else}
-    <p class="sub">Pixie is looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
-  {/if}
+  <p class="sub">Pixie is looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
   {#if notice}<p class="err" role="alert">{notice}</p>{/if}
   <!-- The pictures go by the whole time: first as the files are found, then as each is looked at. -->
   <div class="strip" aria-hidden="true">
@@ -52,31 +48,28 @@
     {/each}
   </div>
   <p class="name">{newest?.name ?? ' '}</p>
-  {#if phase === 'scanning'}
-    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={fraction === null ? undefined : Math.round(fraction * 100)}>
-      <div style="width: {fraction === null ? 4 : Math.round(fraction * 100)}%"></div>
-    </div>
-  {:else}
-    <div class="overall">
-      <div class="head"><b>{view.headline}</b></div>
-      {#if view.fraction !== null}
-        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(view.fraction * 100)}><div style="width: {Math.round(view.fraction * 100)}%"></div></div>
-      {/if}
-    </div>
-    <dl class="counters">
-      {#each view.counters as c (c.key)}
-        <div class="counter" class:done={c.done}><dt>{c.label}</dt><dd>{c.text}</dd></div>
-      {/each}
-    </dl>
-    {#each view.problems as p (p.key + p.kind)}
-      {#if p.kind === 'error'}
-        <div class="err" role="alert">{p.text} <button onclick={onretry}>Retry</button></div>
-      {:else}
-        <div class="err" role="status">{p.text} <button onclick={onresume}>Resume</button></div>
-      {/if}
+  <!-- One screen from the first moment: the files are worked on as the walk finds them. -->
+  <div class="overall">
+    <div class="head"><b>{phase === 'scanning' ? `${scanText(scan)}${folder ? ` · ${folder}` : ''}` : view.headline}</b></div>
+    {#if phase === 'scanning' || view.fraction === null}
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div style="width: {phase === 'scanning' && fraction !== null ? Math.round(fraction * 100) : 4}%"></div></div>
+    {:else}
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(view.fraction * 100)}><div style="width: {Math.round(view.fraction * 100)}%"></div></div>
+    {/if}
+  </div>
+  <dl class="counters">
+    {#each view.counters as c (c.key)}
+      <div class="counter" class:done={c.done}><dt>{c.label}</dt><dd>{c.text}</dd></div>
     {/each}
-    <p class="note">This can take a while for a big library. You don't have to wait here.</p>
-  {/if}
+  </dl>
+  {#each view.problems as p (p.key + p.kind)}
+    {#if p.kind === 'error'}
+      <div class="err" role="alert">{p.text} <button onclick={onretry}>Retry</button></div>
+    {:else}
+      <div class="err" role="status">{p.text} <button onclick={onresume}>Resume</button></div>
+    {/if}
+  {/each}
+  <p class="note">This can take a while for a big library. You don't have to wait here.</p>
   {#snippet footer()}
     {#if phase === 'scanning'}
       <button onclick={onstop}>Stop</button>

@@ -821,7 +821,7 @@
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
   // Picture analysis is showing, count the people found. (The analyses' states arrive as events.)
   $effect(() => {
-    const flow = phase === 'analysing';
+    const flow = phase === 'scanning' || phase === 'analysing';
     if (!flow && !(tab === 'settings' && settingsPage === 'analysis')) return;
     const tick = async () => {
       try {

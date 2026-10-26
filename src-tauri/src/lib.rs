@@ -14,7 +14,7 @@ use pixie_image::range::{plan_range, read_range, served_end, RangePlan};
 use pixie_image::service::ThumbService;
 use pixie_image::thumbs::ThumbClass;
 use pixie_index::suggest::{known_places, Places, Suggestion};
-use pixie_index::{finish_walk, walk_folder, Db, ScanGuard, ScanMode, ScanQueue};
+use pixie_index::{finish_walk, walk_folder_streaming, Db, ScanGuard, ScanMode, ScanQueue};
 use pixie_mail::{resolve_recipients, send_photos, send_test, OsSecrets, RecipientRef, SendRequest, SizeChoice, SmtpMailer};
 use serde::{Deserialize, Serialize};
 use state::AppState;
@@ -119,6 +119,7 @@ fn list_folder_info(state: tauri::State<AppState>) -> Result<Vec<FolderInfo>, Pi
 
 #[tauri::command]
 fn remove_folder(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
+    state.pipeline.forget_folder(id);
     state.db.remove_folder(id)
 }
 
@@ -276,9 +277,11 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                 let progress_app = app.clone();
                 // The walk only lists what is new or changed; the analysis pipeline then reads each file once and does
                 // everything with it, starting with its row in the library.
-                match walk_folder(&db, id, mode, &cancel, |p| {
+                // (the files are handed to the pipeline as the walk finds them, so analysis begins at once)
+                let mut hand = |batch: Vec<pixie_index::Candidate>| pipeline.enqueue(batch);
+                match walk_folder_streaming(&db, id, mode, &cancel, |p| {
                     let _ = progress_app.emit("scan-progress", p);
-                }) {
+                }, Some(&mut hand)) {
                     Ok(mut walk) => {
                         if walk.stats.cancelled {
                             break;
@@ -287,7 +290,6 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                             let _ = app.emit("scan-error", ScanErrorEvent { folder_id: id, message: e.user_message() });
                         }
                         found += walk.seen.len();
-                        pipeline.enqueue(std::mem::take(&mut walk.candidates));
                         scanned += 1;
                     }
                     Err(e) => {
