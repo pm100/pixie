@@ -69,6 +69,8 @@ export const placeFor = (lat: number, lon: number, background = false) => invoke
 
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
+/** Opens a new email with the photo attached. 'outlook': a message is open in classic Outlook; 'share': the Windows Share sheet is. */
+export const emailPhoto = (id: number) => invoke<'outlook' | 'newoutlook' | 'share'>('email_photo', { id, lang: userLang() });
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----

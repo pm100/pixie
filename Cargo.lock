@@ -3547,6 +3547,7 @@ dependencies = [
 name = "pixie-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "libc",
  "notify",
  "open",
@@ -3563,6 +3564,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "trash",
+ "windows 0.61.3",
+ "windows-collections 0.2.0",
 ]
 
 [[package]]

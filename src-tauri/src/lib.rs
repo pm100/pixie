@@ -1,8 +1,10 @@
 mod autoscan;
 mod drives;
+mod outlook;
 mod placement;
 mod sniff;
 mod state;
+mod subject;
 
 use pixie_core::{
     Bounds, Contact, DayGroup, Folder, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoQuery,
@@ -1020,6 +1022,35 @@ fn open_in_default_player(state: tauri::State<AppState>, id: i64) -> Result<(), 
     open::that_detached(&photo.path).map_err(|e| e.to_string())
 }
 
+/// Opens a new email with the photo attached (Outlook). Returns which way it was done, for the message to the person.
+#[tauri::command]
+async fn email_photo(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: i64, lang: String) -> Result<String, String> {
+    let photo = match state.db.get_photo(id) {
+        Ok(Some(p)) => p,
+        _ => return Err("That photo is not in the library any more.".into()),
+    };
+    let db = state.db.clone();
+    let places = state.places.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // The subject: who is in the photo, where it was taken and when, as far as is known (a place needs the network;
+        // without it the subject simply has no place).
+        let people: Vec<String> = db.faces_of(id).unwrap_or_default().into_iter().filter_map(|f| f.person_name).collect();
+        let place = match (photo.meta.gps_lat, photo.meta.gps_lon) {
+            (Some(lat), Some(lon)) => places.place_for_background(lat, lon, &lang).ok().flatten().and_then(|p| p.landmark.or(p.locality)),
+            _ => None,
+        };
+        let file_name = std::path::Path::new(&photo.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let subject = subject::email_subject(&people, place.as_deref(), photo.meta.taken_at, &file_name);
+        outlook::email_file(&app, std::path::Path::new(&photo.path), &subject).map(|r| match r {
+            outlook::Route::ClassicOutlook => "outlook".to_string(),
+            outlook::Route::NewOutlook => "newoutlook".to_string(),
+            outlook::Route::ShareSheet => "share".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Blocks on the rate limit and the network, so it runs on the blocking pool, not an
 /// async worker. A lookup overtaken by a newer one returns `Err` quickly (the UI drops it).
 #[tauri::command]
@@ -1375,7 +1406,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, email_photo, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())
