@@ -4,31 +4,42 @@
 
 A desktop photo manager for everyday users, not professionals. Point it at the folders where your photos already live and browse them by date, folder and place. Pixie never moves or changes your originals.
 
-Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only.
+Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build is untried and unsigned.
 
-> **Status: early development.** The library, browsing and location views work. Search, slideshow, print, editing and collages are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
+> **Status: early development.** Browsing, maps, trips, Auto tags, people and duplicate finding work. Slideshow, print, editing and collages are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
 
 ## What works today
 
-- **Library.** Add photo folders; Pixie indexes them in place in the background and rescans only what changed. Missing files are marked, not forgotten. JPEG, PNG, WebP, TIFF and HEIC.
-- **Fast browsing.** Thumbnails are built in the background and cached. A library of about 5,800 photos scrolls smoothly.
-- **Three-pane layout.** Tree on the left, photo grid in the middle, details on the right. Divider widths are remembered.
-- **By date.** Photos are grouped under day headings ("Sat 3 Jun 2024 · 14 photos"). The Dates tree (year, month, day) jumps to a day and follows your scrolling. Sort newest or oldest first; photos with no date always come last.
-- **By folder.** Click a folder in the tree to filter the grid to it.
-- **Selection.** Click, ctrl-click and shift-click.
-- **Viewer.** Full-window viewer; arrow keys move to the next photo in the current order.
-- **Location.** For a photo with GPS, the details pane shows a small map and the place name, in your language. Famous places are named (for example "Colosseum"), alongside a "town, region, country" line.
+**Your library**
+- **Add folders and forget them.** A welcome screen suggests where your photos probably are (Pictures, OneDrive, other drives). Pixie indexes them in place in the background, rescans only what changed, and keeps folders up to date by itself. Missing files are marked, not forgotten. Pixie never moves, edits or deletes your originals.
+- **Photos and videos.** JPEG, PNG, WebP, TIFF and HEIC photos, and MP4, MOV and M4V videos.
+- **Fast browsing.** Thumbnails are built in the background and cached; a library of thousands of photos scrolls smoothly. Pause and resume the background work whenever you like.
 
-Planned next: a map of all geotagged photos, emailing photos to people by nickname, videos, search and duplicates, a Windows wallpaper/lock-screen slideshow, simple editing, print, collages. The design is in [`docs/superpowers/specs`](docs/superpowers/specs).
+**Browse**
+- **Three-pane layout.** A list on the left, the photo grid in the middle, details on the right. Divider widths are remembered.
+- **Filters that work together.** Pick a date (year, month, day, "Last N days" or undated), a media type, a folder, an Auto tag, a person or a trip, or use the map. Counts in the list follow whatever else is chosen, and Clear all starts again.
+- **By date.** Photos sit under day headings ("Sat 3 Jun 2024 · 14 photos"); sort newest or oldest first.
+- **Viewer.** A full-window viewer, also available in its own window; arrow keys move through the current order. Select with click, ctrl-click and shift-click.
+- **Details.** Date, place, camera information, the people in the photo and a small map.
+
+**Places**
+- **Location.** For a photo with GPS, Pixie shows a map and the place name in your language. Famous places are named (for example "Colosseum") alongside a "town, region, country" line.
+- **Map of everything.** Switch Browse to the map to see all geotagged photos as clustered pins, filter by the area on screen and by date.
+- **Trips.** Pixie guesses where home is (you can move it), then finds runs of days spent away. Trips are listed by year and destination, with nights away, a route on the map and names you can edit. You choose what counts as a trip in Settings.
+
+**What is in your photos** (all analysed on your computer, in one background pass)
+- **Auto tags.** Labels such as Beach, Museum or Dog, grouped into categories you can browse by.
+- **People.** Pixie finds faces and groups them into people. Name a group in the People tab and the rest of that person's photos follow. A walk-through lets you confirm uncertain matches, ignore groups, and move faces out of a wrong group.
+- **Duplicates.** Files that appear more than once are found and shown as one item in Browse. The Duplicates tab lets you pick which copy to keep. Nothing is deleted for good.
+
+Planned next: a Windows wallpaper and lock-screen slideshow, simple editing, print, collages and emailing photos to people by nickname. The design is in [`docs/superpowers/specs`](docs/superpowers/specs).
 
 ## Privacy
 
-Pixie works offline, and your photos never leave your computer. The one exception is the location feature. When you select a photo that has GPS, Pixie sends **that photo's coordinates** (and nothing else) to:
+Pixie works offline, and your photos never leave your computer. There are two uses of the network:
 
-- OpenStreetMap, for map tiles and the town/region/country line (Nominatim);
-- Wikipedia, to find a well-known place nearby.
-
-Answers are cached on your machine. With no network the map shows "Map unavailable" and everything else keeps working.
+- **Locations.** When you select a photo that has GPS, Pixie sends **that photo's coordinates** (and nothing else) to OpenStreetMap, for map tiles and the town, region and country line (Nominatim), and to Wikipedia, to find a well-known place nearby. Answers are cached on your machine. With no network the map shows "Map unavailable" and everything else keeps working.
+- **Analysis models.** The first time Pixie analyses pictures it downloads small open models (CLIP for Auto tags, YuNet and SFace for faces) from Hugging Face and GitHub. Only the model files are downloaded; none of your photos or data are sent. After that the analysis runs entirely offline.
 
 ## Building and running
 
@@ -79,7 +90,7 @@ CI runs all of these on Windows.
 npm run tauri build
 ```
 
-Installers and code signing are not set up yet.
+On Windows this produces a per-user NSIS installer (`just win-build` does the same with the vcpkg paths preset). Code signing, a macOS bundle and Store submission are not set up yet.
 
 ## Project layout
 
