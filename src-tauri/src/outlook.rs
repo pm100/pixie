@@ -274,11 +274,15 @@ fn mailto_handler(settings: &serde_json::Value) -> Option<String> {
 const MAIL_SCRIPT: &str = r#"
 on run argv
   set theSubject to item 1 of argv
+  -- (the paths are turned into files out here: inside the tell, "POSIX file" is the mail app's to interpret)
+  set theFiles to {}
+  repeat with i from 2 to count of argv
+    set end of theFiles to POSIX file (item i of argv)
+  end repeat
   tell application "Mail"
     set m to make new outgoing message with properties {subject:theSubject, visible:true}
-    repeat with i from 2 to count of argv
-      set theFile to POSIX file (item i of argv)
-      tell content of m to make new attachment with properties {file name:theFile} at after the last paragraph
+    repeat with f in theFiles
+      tell content of m to make new attachment with properties {file name:(contents of f)} at after the last paragraph
     end repeat
     activate
   end tell
@@ -290,11 +294,14 @@ end run
 const OUTLOOK_SCRIPT: &str = r#"
 on run argv
   set theSubject to item 1 of argv
+  set theFiles to {}
+  repeat with i from 2 to count of argv
+    set end of theFiles to POSIX file (item i of argv)
+  end repeat
   tell application "Microsoft Outlook"
     set m to make new outgoing message with properties {subject:theSubject}
-    repeat with i from 2 to count of argv
-      set theFile to POSIX file (item i of argv)
-      make new attachment at m with properties {file:theFile}
+    repeat with f in theFiles
+      make new attachment at m with properties {file:(contents of f)}
     end repeat
     open m
     activate
