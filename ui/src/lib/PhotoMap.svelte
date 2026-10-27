@@ -145,7 +145,7 @@
       cur = pts[pts.length - 1][1];
       if (!lonAt.has(route.path[k])) lonAt.set(route.path[k], cur);
       for (const pt of pts) all.push(L.latLng(pt[0], pt[1]));
-      L.polyline(pts, { color: '#2a5bd7', weight: 3, opacity: 0.85, interactive: false }).addTo(routeLayer);
+      L.polyline(pts, { color: ROUTE_COLOUR, weight: 3, opacity: 0.9, interactive: false }).addTo(routeLayer);
       const mid = Math.floor((pts.length - 1) / 2);
       const p1 = map.latLngToLayerPoint(pts[mid]), p2 = map.latLngToLayerPoint(pts[mid + 1]);
       const deg = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
@@ -155,18 +155,31 @@
         interactive: false, keyboard: false,
       }).addTo(routeLayer);
     }
+    // No numbered stops (a round number on the map means a count of photos): only where the trip starts and where it ends.
+    const first = route.path[0] ?? 0;
+    const last = route.path[route.path.length - 1] ?? first;
+    const flag = (i: number, kind: 'start' | 'finish', title: string) => {
+      const st = stops[i];
+      const when = tripDates({ start: st.first, end: st.last });
+      L.marker([st.lat, lonAt.get(i) ?? st.lon], {
+        icon: L.divIcon({ html: kind === 'start' ? START_FLAG : FINISH_FLAG, className: 'rt-flag', iconSize: [30, 38], iconAnchor: [6, 37] }),
+        keyboard: false, zIndexOffset: 1000,
+      }).bindTooltip(`${title}${stopNames[i] ? ` · ${stopNames[i]}` : ''} · ${when}`, { direction: 'right', offset: [12, -18] }).addTo(routeLayer!);
+    };
+    if (first === last) flag(first, 'start', 'Start and finish');
+    else { flag(first, 'start', 'Start'); flag(last, 'finish', 'Finish'); }
     stops.forEach((st, i) => {
       const lon = lonAt.get(i) ?? st.lon;
-      const when = tripDates({ start: st.first, end: st.last });
-      const label = `${i + 1}. ${stopNames[i] ? `${stopNames[i]} · ` : ''}${when}`;
-      L.marker([st.lat, lon], {
-        icon: L.divIcon({ html: `<div>${i + 1}</div>`, className: 'rt-stop', iconSize: [24, 24] }),
-        keyboard: false, zIndexOffset: 1000,
-      }).bindTooltip(label, { direction: 'top', offset: [0, -10] }).addTo(routeLayer!);
       if (!all.some((q) => q.lat === st.lat && q.lng === lon)) all.push(L.latLng(st.lat, lon));
     });
     return L.latLngBounds(all);
   }
+
+  /** The route: green, which the rest of the map does not use (clusters are blue, single photos red). */
+  const ROUTE_COLOUR = '#2e9d4a';
+  // The start and finish flags: a pole and a pennant (green), and a chequered flag. The pole's foot is the place.
+  const START_FLAG = '<svg width="30" height="38" viewBox="0 0 30 38"><line x1="6" y1="37" x2="6" y2="3" stroke="#333" stroke-width="3" stroke-linecap="round"/><path d="M7 3 L27 3 L22 10.5 L27 18 L7 18 Z" fill="#2e9d4a" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+  const FINISH_FLAG = '<svg width="30" height="38" viewBox="0 0 30 38"><defs><pattern id="rt-chk" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#fff"/><rect width="4" height="4" fill="#222"/><rect x="4" y="4" width="4" height="4" fill="#222"/></pattern></defs><line x1="6" y1="37" x2="6" y2="3" stroke="#333" stroke-width="3" stroke-linecap="round"/><rect x="7" y="3" width="20" height="16" fill="url(#rt-chk)" stroke="#333" stroke-width="1.5"/></svg>';
 
   function fitAll() {
     if (!map || points.length === 0) return;
@@ -254,7 +267,7 @@
     routeShown = r;
   });
 
-  // A choice in the browse tree: when its points arrive, show all of them (the same as Zoom to all).
+  // A choice in the browse tree: when its points arrive, show all of them (the same as Recenter).
   let fitSeen = untrack(() => fitMap); // the value at mount: only later changes count
   let fitWanted = false;
   $effect(() => {
@@ -279,7 +292,7 @@
 
 <div class="wrap">
   <div class="map" bind:this={el}></div>
-  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Zoom out to fit every photo and video on the map">Zoom to all</button>
+  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Centre the map on every photo and video shown, and zoom to fit them">Recenter</button>
   {#if points.length === 0}
     <div class="note">No photos with a location yet.</div>
   {/if}
@@ -299,10 +312,10 @@
   :global(.pm .cl) { width: 100%; height: 100%; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; background: rgba(47, 111, 237, .85); color: #fff; font: 600 13px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); }
   :global(.pm .pin) { width: 100%; height: 100%; box-sizing: border-box; border-radius: 50%; background: #d33; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5); cursor: pointer; }
   :global(.pm .cl) { cursor: pointer; }
-  :global(.rt-stop) { background: none; border: 0; }
-  :global(.rt-stop div) { width: 24px; height: 24px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; background: #2a5bd7; color: #fff; font: 700 13px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); }
+  :global(.rt-flag) { background: none; border: 0; }
+  :global(.rt-flag svg) { display: block; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .5)); }
   :global(.rt-arrow) { background: none; border: 0; }
-  :global(.rt-arrow div) { width: 20px; height: 20px; display: grid; place-items: center; font-size: 15px; line-height: 1; color: #2a5bd7; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
+  :global(.rt-arrow div) { width: 20px; height: 20px; display: grid; place-items: center; font-size: 15px; line-height: 1; color: #2e9d4a; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
   :global(.pop) { cursor: pointer; width: 180px; }
   :global(.pop img) { display: block; width: 180px; height: 135px; object-fit: cover; border-radius: 4px; background: #2a2a30; }
   :global(.pop .noimg) { width: 180px; height: 135px; border-radius: 4px; background: #2a2a30; color: #bbb; display: grid; place-items: center; font-size: 28px; }
