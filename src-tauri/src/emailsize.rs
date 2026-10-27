@@ -10,11 +10,6 @@ pub fn sent_size(bytes: u64) -> u64 {
     bytes.saturating_add(bytes / 3).saturating_add(bytes / 50)
 }
 
-/// Does this much (the files' own sizes added up) go over the limit once sent?
-pub fn too_big(total_bytes: u64, limit_bytes: u64) -> bool {
-    sent_size(total_bytes) > limit_bytes
-}
-
 /// Pack items, given by their sizes in the order they are to go, into messages that each fit under `limit_bytes` once sent.
 /// Each item stays whole; one that is too big even alone gets a message to itself. Returns the item numbers of each
 /// message, in order.
@@ -56,13 +51,6 @@ mod tests {
     fn sending_makes_a_file_about_a_third_bigger() {
         assert!(sent_size(15 * MB) > 19 * MB && sent_size(15 * MB) < 21 * MB);
         assert_eq!(sent_size(0), 0);
-    }
-
-    #[test]
-    fn it_is_too_big_when_the_sent_size_goes_over() {
-        assert!(!too_big(10 * MB, 20 * MB));
-        assert!(too_big(16 * MB, 20 * MB), "16 MB of files is over 20 MB once sent");
-        assert!(!too_big(0, 20 * MB));
     }
 
     #[test]

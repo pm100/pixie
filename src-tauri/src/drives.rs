@@ -115,6 +115,7 @@ pub fn is_network_path(path: &Path) -> bool {
 }
 
 /// The names macOS gives the file systems of network shares.
+#[cfg(any(target_os = "macos", test))]
 fn network_fs_name(name: &str) -> bool {
     matches!(name, "smbfs" | "nfs" | "afpfs" | "webdav" | "cifs" | "ftp")
 }

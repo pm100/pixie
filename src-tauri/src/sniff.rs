@@ -116,20 +116,9 @@ fn sniff_drives(drives: Vec<DriveRoot>, label: fn(&Path) -> Option<String>, b: &
 }
 
 /// Run the whole look-around, handing events to `emit` as they happen. `label` reads a drive's volume name (it may
-/// block, so it is called on the drive's own thread).
-pub fn run_sniff(
-    known: Vec<Suggestion>,
-    home: Option<PathBuf>,
-    drives: Vec<DriveRoot>,
-    label: fn(&Path) -> Option<String>,
-    b: &Budgets,
-    emit: &mut dyn FnMut(SniffEvent),
-) {
-    run_sniff_with(true, known, home, drives, label, b, emit)
-}
-
-/// `run_sniff`, with the choice of whether to count what is in the known places (the look-around still needs them, to
-/// leave them out of what it finds). Counting is skipped when they were counted already.
+/// block, so it is called on the drive's own thread). `count_known` says whether to count what is in the known places
+/// (the look-around still needs them, to leave them out of what it finds); counting is skipped when they were counted
+/// already.
 pub fn run_sniff_with(
     count_known: bool,
     known: Vec<Suggestion>,
@@ -216,7 +205,7 @@ mod tests {
 
     fn run(known_places: Vec<Suggestion>, home: Option<std::path::PathBuf>, drives: Vec<DriveRoot>) -> Vec<SniffEvent> {
         let mut events = Vec::new();
-        run_sniff(known_places, home, drives, |_| None, &quick(), &mut |e| events.push(e));
+        run_sniff_with(true, known_places, home, drives, |_| None, &quick(), &mut |e| events.push(e));
         events
     }
 
@@ -240,7 +229,7 @@ mod tests {
         eprintln!("known: {:?}", list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
         eprintln!("drives: {others:?}");
         let start = std::time::Instant::now();
-        run_sniff(list, home, others, crate::drives::volume_label, &Budgets::app(), &mut |e| eprintln!("{:>5.1}s  {:?}", start.elapsed().as_secs_f32(), e));
+        run_sniff_with(true, list, home, others, crate::drives::volume_label, &Budgets::app(), &mut |e| eprintln!("{:>5.1}s  {:?}", start.elapsed().as_secs_f32(), e));
     }
 
     #[test]
@@ -313,7 +302,7 @@ mod tests {
         });
         // (plenty of retries, so a busy machine that runs the first attempt late cannot make the test fail)
         let mut events = Vec::new();
-        run_sniff(Vec::new(), None, vec![DriveRoot { root: r3, network: true }], |_| None, &Budgets { retries: 12, ..quick() }, &mut |e| events.push(e));
+        run_sniff_with(true, Vec::new(), None, vec![DriveRoot { root: r3, network: true }], |_| None, &Budgets { retries: 12, ..quick() }, &mut |e| events.push(e));
         creator.join().unwrap();
         let f = found(&events);
         assert_eq!(f.len(), 1, "{events:?}");
@@ -339,7 +328,7 @@ mod tests {
             places.push(known(&t.path().join(format!("P{i}")), &format!("P{i}")));
         }
         let mut order = Vec::new();
-        run_sniff(places, None, vec![DriveRoot { root: net.path().to_path_buf(), network: true }], |_| None, &quick(), &mut |e| {
+        run_sniff_with(true, places, None, vec![DriveRoot { root: net.path().to_path_buf(), network: true }], |_| None, &quick(), &mut |e| {
             order.push(match e {
                 SniffEvent::Count { .. } => 'c',
                 SniffEvent::Found(_) => 'f',
