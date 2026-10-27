@@ -13,11 +13,13 @@ pub struct DriveRoot {
 }
 
 /// `GetDriveTypeW` answers 3 for a drive built into (or permanently attached to) the computer.
+#[cfg(any(windows, test))]
 pub fn is_fixed(drive_type: u32) -> bool {
     drive_type == 3
 }
 
 /// ...and 4 for a network drive. Asking does not touch the network.
+#[cfg(any(windows, test))]
 pub fn is_network(drive_type: u32) -> bool {
     drive_type == 4
 }
@@ -82,6 +84,7 @@ pub fn volume_label(root: &Path) -> Option<String> {
 
 /// What a path's form alone says about where it is: a UNC path (`\\server\share`) is on the network, a path that starts
 /// with a drive letter needs the system's say-so (None), anything else is not a Windows network path.
+#[cfg(any(windows, test))]
 fn network_by_form(path: &str) -> Option<bool> {
     let p = path.strip_prefix(r"\\?\").unwrap_or(path);
     if p.to_ascii_uppercase().starts_with("UNC\\") {
