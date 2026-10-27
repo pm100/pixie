@@ -146,12 +146,12 @@
       view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
       selection = emptySelection;
       refresh(true).catch((e) => (message = String(e)));
-      if (mode === 'map') loadPoints();
+      if (mode === 'map') { fitMap++; loadPoints(); }
     }
   }
   let analysis = $state<AnalysisStatus | null>(null);
 
-  /** The pop-out pages through the listing by position, so it cannot outlive a change of what the listing shows. */
+  /** The pop-out pages through the listing by position; it is closed when the listing it pages through is gone. */
   function closePopout() {
     if (popoutOpen) { void emit(POPOUT_CLOSE); popoutOpen = false; popoutSnap = null; }
   }
@@ -183,11 +183,10 @@
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    closePopout();
     view = { ...view, search: hitsActive(next, activePerson) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   // People: faces grouped by who they are, as a filter. It combines with a tag.
@@ -236,11 +235,10 @@
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    closePopout();
     view = { ...view, search: hitsActive(activeTag, next) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   /** The People tab changed someone: refresh the list, and re-take the photos of a chosen person (they may have changed). */
@@ -300,7 +298,19 @@
     shown = v;
     selection = emptySelection;
     version++;
-    if (toTop) jump(0);
+    if (toTop) {
+      jump(0);
+      followPopout();
+    }
+  }
+
+  /** The listing was changed by a choice in the browse tree: the pop-out follows to the first item of the new listing
+   *  (it ignores this when its Follow is off), or closes when nothing is left to show. */
+  function followPopout() {
+    if (!popoutOpen) return;
+    if (total < 1) { closePopout(); return; }
+    popoutSnap = { index: 0, total, view: { ...shown } };
+    sendShow(true);
   }
 
   /** The day groups for the When list: the same as `g`, except that a chosen date (or Last 30 days) is left out, as
@@ -351,14 +361,13 @@
     view = { ...view, order: 'newest', since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
 
   /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
-    closePopout();
     try {
       await Promise.all([setTagFilter(null), setPersonFilter(null)]);
     } catch (e) { message = String(e); }
@@ -370,7 +379,7 @@
     savePref('kind', null);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   /** Show only one year, month or day, or the items without a date (the same key again clears it). */
@@ -383,7 +392,7 @@
     view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   function setKind(kind: MediaKind | null) {
@@ -392,7 +401,7 @@
     savePref('kind', kind);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   /** Show only one photo folder (the same folder again clears it). */
@@ -401,7 +410,7 @@
     view = { ...view, folderId: id };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   /** Show only one trip (the same trip again clears it): its days become the date range. */
@@ -419,7 +428,7 @@
     }
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') loadPoints();
+    if (mode === 'map') { fitMap++; loadPoints(); }
   }
 
   // Trips: runs of days away from home. Home is the user's to confirm (in Settings), so none are shown before that.
@@ -527,6 +536,8 @@
   let mode = $state<'library' | 'map'>(loadPref<unknown>('browseMap', false) === true ? 'map' : 'library');
   let mapBounds: Bounds | null = null; // the area the map shows now
   let points = $state<GeoPoint[]>([]);
+  /** Counts the choices made in the browse tree: the map shows all of what was chosen when the new points arrive. */
+  let fitMap = $state(0);
   let soloPhoto = $state<Photo | null>(null); // a photo opened from the map's popup
   let lastMap: MapView | null = parseMapView(loadPref<unknown>('mapView', null)); // latest position, kept for the next opening
   let mapStart = $state<MapView | null>(lastMap); // where the map opens; read once by the map
@@ -688,7 +699,7 @@
   /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
    *  Settings, Picture analysis (which counts the whole library). */
   const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad }));
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople }));
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, scanning }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -1035,7 +1046,7 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
+                <PhotoMap {points} {fitMap} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={focusPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { getPhoto, type Photo, type Route } from './api';
   import { debounce } from './debounce';
   import { basename, formatDateTime } from './format';
@@ -9,8 +9,10 @@
   import { tripDates } from './trips';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, initial, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
+  let { points, fitMap = 0, initial, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
     points: GeoPoint[];
+    /** Changes whenever a choice is made in the browse tree: once the new points are in, the map shows all of them. */
+    fitMap?: number;
     /** A chosen trip: its stops are numbered and arrows show the way from one to the next. */
     route?: Route | null;
     /** The name of each stop of `route`, where known. */
@@ -252,11 +254,25 @@
     routeShown = r;
   });
 
+  // A choice in the browse tree: when its points arrive, show all of them (the same as Zoom to all).
+  let fitSeen = untrack(() => fitMap); // the value at mount: only later changes count
+  let fitWanted = false;
+  $effect(() => {
+    if (fitMap !== fitSeen) {
+      fitSeen = fitMap;
+      fitWanted = true;
+    }
+  });
+
   // New points (the map opened, a filter changed, a scan finished): fit the first time, then redraw.
   $effect(() => {
     points;
     if (!map) return;
-    if (!positioned) fitAll();
+    if (!positioned || fitWanted) {
+      fitWanted = false;
+      map.closePopup();
+      fitAll();
+    }
     redraw();
   });
 </script>

@@ -166,3 +166,27 @@ describe('a load: the photos of the folders just added', () => {
     expect(counter(v, 'tags').text).toBe('Paused');
   });
 });
+
+describe('the ticks beside the counters for the whole library', () => {
+  const caughtUp = { tags: status({ done: 10, total: 10 }), faces: status({ done: 10, total: 10 }), dupes: dups({ done: 10, total: 10 }) };
+  it('appear when an analysis is finished and no scan is running', () => {
+    const v = analysisView(input({ ...caughtUp }));
+    expect(v.finished).toBe(true);
+    expect(v.counters.every((c) => c.done)).toBe(true);
+  });
+  it('do not come and go while a scan is running, though the counts are level for a moment', () => {
+    const v = analysisView(input({ ...caughtUp, scanning: true }));
+    expect(v.counters.some((c) => c.done)).toBe(false);
+    expect(v.finished).toBe(true); // the end of the load does not wait for this
+  });
+  it('are per row: a finished analysis keeps its tick while another is still working', () => {
+    const v = analysisView(input({ ...caughtUp, tags: status({ done: 4, total: 10 }) }));
+    expect(counter(v, 'tags').done).toBe(false);
+    expect(counter(v, 'faces').done).toBe(true);
+  });
+  it('are per row for a load, which has fixed totals', () => {
+    const v = analysisView(input({ ...caughtUp, load: { photos: 10, shown: 10, hashed: 10, tagged: 5, scanned: 10, faces: 1, duplicates: 0, pending: 0, pending_videos: 0 } }));
+    expect(counter(v, 'faces').done).toBe(true);
+    expect(counter(v, 'tags').done).toBe(false);
+  });
+});
