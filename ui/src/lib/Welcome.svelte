@@ -1,5 +1,6 @@
 <script lang="ts">
   import AppIcon from './AppIcon.svelte';
+  import { clipTitle } from './clipTitle';
   import FlowStage from './FlowStage.svelte';
   import { addLabel, startLabel } from './loadFlow';
   import { countText, listedRows, lookingText, tickedPaths, type Row } from './suggestions';
@@ -42,7 +43,7 @@
       {#each shown as r (r.path)}
         <label class="row">
           <input type="checkbox" checked={r.ticked} onchange={() => ontoggle(r.path)} />
-          <span class="what"><b>{r.name}</b><span class="path">{r.path}</span></span>
+          <span class="what"><b>{r.name}</b><span class="path" use:clipTitle>{r.path}</span></span>
           <span class="n">{r.note ?? countText(r.count, r.kind)}</span>
         </label>
       {/each}

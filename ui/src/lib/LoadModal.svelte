@@ -3,6 +3,7 @@
   import type { AnalysisView } from './analysisView';
   import { readFraction, scanText, type ScanState } from './scanProgress';
   import type { StripItem } from './stripFeed';
+  import { clipTitle } from './clipTitle';
   import { thumbUrl } from './url';
 
   type Sample = StripItem;
@@ -47,7 +48,7 @@
       </div>
     {/each}
   </div>
-  <p class="name">{newest?.name ?? ' '}</p>
+  <p class="name" use:clipTitle>{newest?.name ?? ' '}</p>
   <!-- One screen from the first moment: the files are worked on as the walk finds them. -->
   <div class="overall">
     <div class="head"><b>{phase === 'scanning' ? `${scanText(scan)}${folder ? ` · ${folder}` : ''}` : view.headline}</b></div>
