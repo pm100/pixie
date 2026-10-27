@@ -1,3 +1,4 @@
+import { plural } from './format';
 import type { AnalysisStatus } from './analysis';
 import type { DupStatus } from './dupes';
 
@@ -97,7 +98,7 @@ export function analysisView(o: AnalysisInput): AnalysisView {
   const built: Built[] = [];
   if (on('tags')) {
     const counts: Counts | null = load === undefined ? (o.tags ? { done: o.tags.done, total: o.tags.total } : null) : load && { done: load.tagged, total: load.shown + load.pending };
-    built.push(modelRow('tags', o.tags, counts, `${n(counts?.done ?? 0)} photos`));
+    built.push(modelRow('tags', o.tags, counts, plural(counts?.done ?? 0, 'photo')));
   }
   if (on('faces')) {
     const counts: Counts | null = load === undefined ? (o.faces ? { done: o.faces.done, total: o.faces.total } : null) : load && { done: load.scanned, total: load.shown + load.pending };

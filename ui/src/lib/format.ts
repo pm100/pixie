@@ -61,3 +61,6 @@ export function formatDuration(ms: number | null): string {
   const ss = String(s).padStart(2, '0');
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
+
+/** "1 photo", "2 photos": a thing is pluralised only when there is more than one (`many` for the odd ones, such as "people"). */
+export const plural = (count: number, one: string, many = `${one}s`): string => `${count.toLocaleString()} ${count === 1 ? one : many}`;

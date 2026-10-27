@@ -3,7 +3,7 @@
 export type Phase = 'off' | 'welcome' | 'scanning' | 'analysing' | 'allset' | 'background';
 
 const n = (x: number) => x.toLocaleString();
-const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
+import { plural } from './format';
 
 /** Where the flow goes when the scan ends. Stopping keeps what was found and shows Browse; finding nothing, or only
  *  videos (which are not analysed), has nothing to analyse and goes straight to the end screen. */
@@ -29,7 +29,7 @@ export function allSetSummary(o: {
   }
   return {
     problems,
-    title: `All set — ${n(items)} items found`,
+    title: `All set — ${plural(items, 'item')} found`,
     detail: `${plural(o.photos, 'photo')} and ${plural(o.videos, 'video')}, in ${plural(o.folders.length, 'folder')}. That took ${duration(o.seconds)}.`,
     rows: o.folders.map((f) => ({ name: f.name, text: n(f.count) })),
     showPeopleBox: o.facesFound,

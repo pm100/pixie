@@ -71,9 +71,7 @@
   {/each}
   <p class="note">This can take a while for a big library. You don't have to wait here.</p>
   {#snippet footer()}
-    {#if phase === 'scanning'}
-      <button onclick={onstop}>Stop</button>
-    {/if}
+    <button onclick={onstop} title={phase === 'scanning' ? 'Stop reading the folders; what was found so far is kept' : 'Pause the analysis; resume it from the top right or in Settings'}>Stop</button>
     <button class="primary" onclick={onbackground}>Carry on in the background</button>
   {/snippet}
 </FlowStage>

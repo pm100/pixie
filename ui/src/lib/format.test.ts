@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basename, dirname, folderName, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, weekday } from './format';
+import { basename, dirname, folderName, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, plural, weekday } from './format';
 
 describe('dates', () => {
   it('knows the weekday of a day string', () => {
@@ -68,5 +68,16 @@ describe('folderName', () => {
     expect(folderName('P:\\')).toBe('P:\\');
     expect(folderName('E:/')).toBe('E:/');
     expect(folderName('/')).toBe('/');
+  });
+});
+
+describe('plural', () => {
+  it('pluralises only when there is more than one', () => {
+    expect(plural(1, 'item')).toBe('1 item');
+    expect(plural(0, 'item')).toBe('0 items');
+    expect(plural(2, 'photo')).toBe('2 photos');
+    expect(plural(1, 'person', 'people')).toBe('1 person');
+    expect(plural(3, 'person', 'people')).toBe('3 people');
+    expect(plural(1234, 'video')).toBe('1,234 videos');
   });
 });

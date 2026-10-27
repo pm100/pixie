@@ -2,6 +2,7 @@
   import type { DayGroup, FolderInfo, MediaKind, Trip } from './api';
   import { untrack } from 'svelte';
   import Check from './Check.svelte';
+  import { plural } from './format';
   import { folderNote, type FolderStates } from './folderState';
   import Chevron from './Chevron.svelte';
   import WhenNav from './WhenNav.svelte';
@@ -145,7 +146,7 @@
         </button>
       {/each}
       {#if shownPeople.hidden > 0 || allPeople}
-        <button class="item more" onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${people.length} people`}</button>
+        <button class="item more" onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${plural(people.length, 'person', 'people')}`}</button>
       {/if}
     {/if}
   {/if}

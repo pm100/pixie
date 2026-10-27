@@ -28,7 +28,7 @@
 </script>
 
 <section class="card">
-  <button class="samples" onclick={onopen} aria-label={`See all ${person.faces} faces${person.name ? ' of ' + person.name : ''}`}>
+  <button class="samples" onclick={onopen} aria-label={`See ${person.faces === 1 ? 'the face' : `all ${person.faces} faces`}${person.name ? ' of ' + person.name : ''}`}>
     {#each shownFaces as f (f)}<img alt="" loading="lazy" decoding="async" src={faceUrl(f, undefined, 320)} />{/each}
   </button>
   <div class="head">

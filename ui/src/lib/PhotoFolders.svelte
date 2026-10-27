@@ -2,8 +2,9 @@
   import type { FolderInfo } from './api';
   import { folderNote, type FolderStates } from './folderState';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import { plural } from './format';
   import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
-  import { readFraction, scanText, type ScanState } from './scanProgress';
+  import { scanText, type ScanState } from './scanProgress';
 
   let { folders, folderStates = {}, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
@@ -42,13 +43,9 @@
       <span class="path" title={f.path}>{f.path}</span>
       {#if note}<span class="offnote" role="status">{note}</span>{/if}
       {#if busy}
-        {@const frac = readFraction(scan)}
-        <span class="prog" role="status">
-          <span class="txt">{scanText(scan)}</span>
-          <progress value={frac ?? undefined} max="1" aria-label="Scan progress"></progress>
-        </span>
+        <span class="n" role="status">{scanText(scan)}</span>
       {:else}
-        <span class="n">{f.count.toLocaleString()} items</span>
+        <span class="n">{plural(f.count, 'item')}</span>
       {/if}
       {#if busy}
         <button onclick={onstop} title="Stop this scan; what was read so far is kept">Stop</button>
@@ -85,9 +82,6 @@
   .n { color: #777; font-size: 12px; }
   li.offline .path, li.offline .n { opacity: .55; }
   .offnote { font-size: 12px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
-  .prog { display: flex; flex-direction: column; gap: 3px; width: 190px; flex: none; }
-  .prog .txt { color: #555; font-size: 12px; }
-  .prog progress { width: 100%; height: 6px; }
   .none { color: #777; }
   .err { color: #b00020; }
 </style>

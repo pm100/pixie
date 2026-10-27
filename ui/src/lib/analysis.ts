@@ -22,7 +22,7 @@ export function analysisLine(s: AnalysisStatus): string {
   if (s.error) return `Picture analysis is having trouble: ${s.error}`; // the model is loaded but failing on photos
   if (s.total === 0) return 'No photos to analyse yet';
   if (s.paused && s.done < s.total) return `Paused at ${n(s.done)} of ${n(s.total)}`;
-  if (s.done >= s.total) return `All ${n(s.total)} photos analysed`;
+  if (s.done >= s.total) return s.total === 1 ? '1 photo analysed' : `All ${n(s.total)} photos analysed`;
   return `Analysing photos… ${n(s.done)} of ${n(s.total)}`;
 }
 

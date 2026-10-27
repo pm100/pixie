@@ -32,7 +32,7 @@
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { scanText } from './lib/scanProgress';
-  import { folderName } from './lib/format';
+  import { folderName, plural } from './lib/format';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
   import BackgroundProgress from './lib/BackgroundProgress.svelte';
@@ -529,7 +529,7 @@
     savePref('collapsedSections', collapsed);
   }
 
-  const kindWord = (k: MediaKind | null) => (k === 'photo' ? 'photos' : k === 'video' ? 'videos' : 'items');
+  const kindWord = (k: MediaKind | null, count: number) => (k === 'photo' ? plural(count, 'photo') : k === 'video' ? plural(count, 'video') : plural(count, 'item'));
 
   // Map mode (the Grid | Map switch in Browse's toolbar): a map above the grid. The map moves freely; the grid follows
   // the part in view only when the user asks ("Only this area", which then shows as a pill like every other filter).
@@ -828,6 +828,22 @@
     });
   }
 
+  /** Stop on the load screen. While the folders are being read: stop reading (what was found is kept, and the scan's end
+   *  takes us to Browse). Once photos are being analysed: pause the analysis, which can be resumed from the indicator at
+   *  the top right or in Settings. */
+  const stopLoad = async () => {
+    if (phase === 'scanning') {
+      flowStopped = true;
+      cancelScan();
+      return;
+    }
+    try { await analysisSetPaused(true); } catch (e) { message = String(e); }
+    feed?.stop();
+    feed = null;
+    phase = 'off';
+    refresh(true).catch((e) => (message = String(e)));
+  };
+
   /** Leave the modal: whatever is still running (the scan, then the analysis) carries on in the background. A note says
    *  so, and says how to tell when it has finished (the indicator at the top right, below). */
   const carryOnInBackground = () => {
@@ -975,7 +991,7 @@
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
-      <span>{total.toLocaleString()} {kindWord(view.kind)}{areaOnly ? ' in the map area' : ''}</span>
+      <span>{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
     <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes'}>
@@ -1109,7 +1125,7 @@
            adding={addMode} canSearchMore={!searchedMore} onsearch={searchMore} oncancel={cancelAdd} />
 {:else if phase === 'scanning' || phase === 'analysing'}
   <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowView} notice={message}
-             onstop={() => { flowStopped = true; cancelScan(); }} onbackground={carryOnInBackground}
+             onstop={stopLoad} onbackground={carryOnInBackground}
              onretry={() => analysisRetry()} onresume={() => analysisSetPaused(false)} />
 {:else if phase === 'background'}
   <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}

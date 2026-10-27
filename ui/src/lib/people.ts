@@ -22,8 +22,8 @@ export function peopleLine(s: PeopleStatus): string {
   if (s.error) return `Face finding is having trouble: ${s.error}`;
   if (s.total === 0) return 'No photos to check for faces yet';
   if (s.paused && s.done < s.total) return `Paused at ${n(s.done)} of ${n(s.total)}`;
-  if (s.done >= s.total) return `Faces checked in all ${n(s.total)} photos`;
-  return `Looking for people… ${n(s.done)} of ${n(s.total)} photos`;
+  if (s.done >= s.total) return `Faces checked in ${s.total === 1 ? 'the' : 'all'} ${plural(s.total, 'photo')}`;
+  return `Looking for people… ${n(s.done)} of ${plural(s.total, 'photo')}`;
 }
 
 /** One face to look at: the photo it is in (with that photo's version, to show it) and the face's box as fractions
@@ -50,7 +50,7 @@ export type FaceOrder = 'best' | 'doubtful' | 'unchecked';
 /** The sections of the People tab. */
 export type Section = 'groups' | 'people' | 'hidden';
 
-const plural = (count: number, one: string) => `${n(count)} ${one}${count === 1 ? '' : 's'}`;
+import { plural } from './format';
 /** "12 photos". (A photo with the same person twice is rare, so faces are not counted separately.) */
 export const faceCardLine = (p: { photos: number }): string => plural(p.photos, 'photo');
 

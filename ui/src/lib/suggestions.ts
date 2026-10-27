@@ -1,3 +1,4 @@
+import { plural } from './format';
 import type { Suggestion } from './api';
 
 /** A suggested folder on the welcome screen: what the app found, whether it is ticked, and its count once known. */
@@ -40,6 +41,6 @@ export const lookingText = (what: string | null): string => (what ? `Looking in 
 /** The count shown beside a folder. */
 export function countText(c: Row['count'], kind: Suggestion['kind']): string {
   if (c === null) return kind === 'further' ? '' : 'counting…';
-  if (c.capped) return `${c.n.toLocaleString()}+ items`;
-  return c.n === 0 ? 'no photos or videos' : `about ${c.n.toLocaleString()} items`;
+  if (c.capped) return `${c.n.toLocaleString()}+ items`; // (a lower bound: always more than one)
+  return c.n === 0 ? 'no photos or videos' : `about ${plural(c.n, 'item')}`;
 }
