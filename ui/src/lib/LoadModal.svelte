@@ -33,7 +33,7 @@
 
 <FlowStage label="Getting to know your photos">
   <h1>Getting to know your photos…</h1>
-  <p class="sub">Pixie is looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is uploaded.</p>
+  <p class="sub">Pixie is looking at each photo. It adds Auto tags (labels such as Beach or Museum that you can browse by) and finds the people in them. This all happens on your computer; nothing is sent to the cloud.</p>
   {#if notice}<p class="err" role="alert">{notice}</p>{/if}
   <!-- The pictures go by the whole time: first as the files are found, then as each is looked at. -->
   <div class="strip" aria-hidden="true">
