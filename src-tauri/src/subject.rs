@@ -50,12 +50,36 @@ pub fn email_subject(people: &[String], place: Option<&str>, taken_at: Option<i6
     }
 }
 
+/// The subject of an email with several items: how many, and when they were taken ("Photos: 5 items \u{2013} 14 Jul 2019",
+/// or "\u{2013} 12 Jul 2019 to 2 Aug 2019" when they span days; no date when none is known). `taken` are their `taken_at`s.
+pub fn many_subject(count: usize, taken: &[i64]) -> String {
+    let what = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
+    let (Some(first), Some(last)) = (taken.iter().min(), taken.iter().max()) else {
+        return format!("Photos: {what}");
+    };
+    let (a, b) = (short_date(*first), short_date(*last));
+    if a == b {
+        format!("Photos: {what} \u{2013} {a}")
+    } else {
+        format!("Photos: {what} \u{2013} {a} to {b}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn names(n: &[&str]) -> Vec<String> {
         n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn several_items_are_counted_and_dated() {
+        let day = 1_563_062_400; // 14 Jul 2019
+        assert_eq!(many_subject(5, &[day, day + 3600]), "Photos: 5 items \u{2013} 14 Jul 2019");
+        assert_eq!(many_subject(3, &[day, day + 20 * 86_400]), "Photos: 3 items \u{2013} 14 Jul 2019 to 3 Aug 2019");
+        assert_eq!(many_subject(4, &[]), "Photos: 4 items");
+        assert_eq!(many_subject(1, &[day]), "Photos: 1 item \u{2013} 14 Jul 2019");
     }
 
     #[test]

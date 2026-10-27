@@ -78,6 +78,16 @@ export const openViewerWindow = () => invoke<void>('open_viewer_window');
 export const emailPhoto = (id: number) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photo', { id, lang: userLang() });
 /** Whether each watched folder can be reached right now. */
 export const folderStates = () => invoke<{ id: number; state: FolderStateName }[]>('folder_states');
+/** Opens a new email with these photos attached. */
+export const emailPhotos = (ids: number[]) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photos', { ids, lang: userLang() });
+/** Quick pick: pick a photo, or take it off the picked ones. */
+export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_photo', { id, picked });
+/** The ids of the picked photos, in the order picked. */
+export const pickIds = () => invoke<number[]>('pick_ids');
+/** The picked photos themselves, newest first (the Selected tab). */
+export const listPicked = () => invoke<Photo[]>('list_picked');
+/** Nothing is picked. */
+export const clearPicks = () => invoke<void>('clear_picks');
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----

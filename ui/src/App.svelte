@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, clearPicks,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -51,6 +51,7 @@
   import Shell from './lib/Shell.svelte';
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
+  import SelectedTab from './lib/SelectedTab.svelte';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
   import Nav from './lib/Nav.svelte';
   import Viewer from './lib/Viewer.svelte';
@@ -261,7 +262,25 @@
 
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
-  const tabs = visibleTabs({ create: false, share: false });
+  // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Selected tab holds them.
+  let picked = $state<ReadonlySet<number>>(new Set());
+  async function loadPicks() {
+    try { picked = new Set(await pickIds()); } catch { /* the next time */ }
+  }
+  async function togglePick(id: number) {
+    const on = !picked.has(id);
+    const next = new Set(picked);
+    if (on) next.add(id); else next.delete(id);
+    picked = next;
+    try { await pickPhoto(id, on); } catch (e) { message = String(e); await loadPicks(); }
+  }
+  async function clearAllPicks() {
+    picked = new Set();
+    try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
+  }
+  // Nothing picked, nothing to show on the tab.
+  $effect(() => { if (tab === 'selected' && picked.size === 0) tab = 'browse'; });
+  const tabs = $derived(visibleTabs({ create: false, share: false, selected: picked.size }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -947,6 +966,7 @@
 
   async function removeFolderAndRefresh(id: number) {
     await removeFolder(id);
+    void loadPicks(); // picks in it went with it
     closePopout(); // its photos may be gone
     loadTags();
     loadPeople();
@@ -972,6 +992,7 @@
     refresh().catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
+    void loadPicks();
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
@@ -1046,7 +1067,7 @@
       <span>{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes'}>
+    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'selected'}>
       <div class="tools">
         {#if activeTag !== null}
           <span class="filter">Tagged “{tagLabel(activeTag)}”
@@ -1129,7 +1150,7 @@
                 {#if total === 0 && !scanning}
                   <p class="empty small">{areaOnly ? 'No photos or videos in this part of the map.' : emptyMessage}</p>
                 {:else}
-                  <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
+                  <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
                         onopen={openItem}
                         onselect={(i, mods) => (selection = click(selection, i, mods))} />
                 {/if}
@@ -1138,7 +1159,7 @@
           {:else if total === 0 && !scanning}
             <p class="empty">{emptyMessage}</p>
           {:else}
-            <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo}
+            <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
                   onopen={openItem}
                   onselect={(i, mods) => (selection = click(selection, i, mods))} />
           {/if}
@@ -1154,6 +1175,11 @@
     {#if peopleTabBuilt}
       <div class="page-over" hidden={tab !== 'faces'}>
         <PeopleTab active={tab === 'faces'} status={peopleState} onchange={peopleTabChanged} />
+      </div>
+    {/if}
+    {#if tab === 'selected'}
+      <div class="page-over">
+        <SelectedTab active={tab === 'selected'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} />
       </div>
     {/if}
     {#if tab === 'dupes'}

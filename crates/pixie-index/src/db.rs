@@ -166,6 +166,11 @@ const MIGRATIONS: &[&str] = &[
     // V17: a face the user ignored: out of every group and list but "Ignored", where it keeps its own picture.
     "ALTER TABLE people DROP COLUMN bin;
      ALTER TABLE faces ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0;",
+    // V18: Quick pick: the photos the user has picked to act on together, in the order picked.
+    "CREATE TABLE picks (
+        photo_id  INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+        picked_at INTEGER NOT NULL
+     );",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1064,6 +1069,47 @@ impl Db {
     /// An item the user removed (to the Recycle Bin): hidden like any missing file.
     pub fn mark_removed(&self, id: PhotoId) -> Result<()> {
         self.conn().execute("UPDATE photos SET missing = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Quick pick: pick a photo (or take it off the picked ones). Picking a photo that is not in the library does nothing.
+    pub fn set_pick(&self, id: PhotoId, on: bool) -> Result<()> {
+        let c = self.conn();
+        if on {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            c.execute("INSERT OR IGNORE INTO picks(photo_id, picked_at) SELECT id, ?2 FROM photos WHERE id = ?1", params![id, now]).map_err(db_err)?;
+        } else {
+            c.execute("DELETE FROM picks WHERE photo_id = ?1", params![id]).map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    /// The ids of the photos picked (live ones), in the order they were picked.
+    pub fn pick_ids(&self) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare("SELECT k.photo_id FROM picks k JOIN photos p ON p.id = k.photo_id WHERE p.missing = 0 ORDER BY k.picked_at, k.rowid")
+            .map_err(db_err)?;
+        let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The picked photos themselves, for the Selected tab: newest first, like Browse.
+    pub fn list_picked(&self) -> Result<Vec<Photo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0 AND id IN (SELECT photo_id FROM picks) ORDER BY {}",
+                order_sql(SortOrder::Newest)
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map([], row_to_photo).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// Put every photo back: nothing is picked.
+    pub fn clear_picks(&self) -> Result<()> {
+        self.conn().execute("DELETE FROM picks", []).map_err(db_err)?;
         Ok(())
     }
 
@@ -2753,6 +2799,44 @@ mod tests {
         db.upsert_photo(f, "/p/c.jpg", 1, 1, &with(Some("SAMSUNG-SM-G930A"), 300)).unwrap();
         db.upsert_photo(f, "/p/d.jpg", 1, 1, &with(None, 400)).unwrap();
         (db, f)
+    }
+
+    #[test]
+    fn picked_photos_are_listed_in_the_order_picked_and_come_off_again() {
+        let (db, f) = camera_library();
+        let all = db.list_photos(0, 10).unwrap();
+        let id_of = |n: &str| all.iter().find(|p| p.path.ends_with(n)).unwrap().id;
+        let (a, c, d) = (id_of("a.jpg"), id_of("c.jpg"), id_of("d.jpg"));
+        db.set_pick(c, true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        db.set_pick(a, true).unwrap();
+        db.set_pick(a, true).unwrap(); // picking twice is the same as once
+        assert_eq!(db.pick_ids().unwrap(), [c, a], "in the order picked");
+        assert_eq!(db.list_picked().unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [c, a], "newest photo first (c was taken after a)");
+        db.set_pick(c, false).unwrap();
+        assert_eq!(db.pick_ids().unwrap(), [a]);
+        db.set_pick(9999, true).unwrap(); // not a photo: nothing happens
+        assert_eq!(db.pick_ids().unwrap(), [a]);
+        // a photo that goes missing is not listed; a removed folder takes its picks with it
+        db.set_pick(d, true).unwrap();
+        let seen: std::collections::HashSet<String> = ["/p/a.jpg".to_string()].into_iter().collect();
+        db.mark_missing_except(f, &seen).unwrap();
+        assert_eq!(db.pick_ids().unwrap(), [a]);
+        db.remove_folder(f).unwrap();
+        assert!(db.pick_ids().unwrap().is_empty());
+        db.clear_picks().unwrap();
+    }
+
+    #[test]
+    fn clearing_the_picks_leaves_the_photos() {
+        let (db, _) = camera_library();
+        for p in db.list_photos(0, 10).unwrap() {
+            db.set_pick(p.id, true).unwrap();
+        }
+        assert_eq!(db.pick_ids().unwrap().len(), 4);
+        db.clear_picks().unwrap();
+        assert!(db.pick_ids().unwrap().is_empty());
+        assert_eq!(db.list_photos(0, 10).unwrap().len(), 4);
     }
 
     #[test]

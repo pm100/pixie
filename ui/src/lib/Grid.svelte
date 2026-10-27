@@ -10,7 +10,7 @@
   import { retryDelay } from './retry';
   import { posterUrl, thumbUrl } from './url';
 
-  let { groups, version, view, selected, scrollTo, onopen, onselect }: {
+  let { groups, version, view, selected, scrollTo, onopen, onselect, picks = new Set<number>(), onpick = () => {} }: {
     groups: DayGroup[];
     version: number;
     view: View;
@@ -18,6 +18,9 @@
     scrollTo: { group: number; n: number } | null;
     onopen: (index: number) => void;
     onselect: (index: number, mods: { ctrl: boolean; shift: boolean }) => void;
+    /** Quick pick: the picked photos (by id), and a click on the marker in a photo's top-left corner. */
+    picks?: ReadonlySet<number>;
+    onpick?: (id: number) => void;
   } = $props();
 
   const CELL = 180, GAP = 6, PAGE = 200, ROW_H = CELL + GAP, HEAD_H = 40;
@@ -143,6 +146,14 @@
               <span class="ph">⚠︎</span>
             {/if}
           </button>
+          <!-- The pick marker is its own button beside the photo (a button cannot hold another), over its top-left corner. -->
+          {#if p}
+            <button class="pick" class:on={picks.has(p.id)} style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
+                    aria-label={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'} aria-pressed={picks.has(p.id)} title={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'}
+                    onclick={() => onpick(p.id)}>
+              <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
+            </button>
+          {/if}
         {/each}
       {/if}
     {/each}
@@ -156,6 +167,15 @@
   .head span { color: #777; font-size: 13px; }
   .cell { position: absolute; width: 180px; height: 180px; padding: 0; border: 0; background: #e8e8ec; border-radius: 6px; overflow: hidden; cursor: pointer; outline-offset: 0; }
   .cell.sel { outline: 3px solid #2f6fed; }
+  /* A square over the photo's top-left corner: the marker shows while the mouse is over it, and stays on a picked photo. */
+  .pick { position: absolute; z-index: 2; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 6px 0 0 0; background: none; cursor: pointer; }
+  .tk { position: absolute; left: 8px; top: 8px; width: 22px; height: 22px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .4);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, .5); color: #fff; opacity: 0; }
+  .tk svg { width: 14px; height: 14px; opacity: 0; }
+  .pick:hover .tk, .pick:focus-visible .tk { opacity: 1; }
+  .pick:hover .tk svg { opacity: .55; }
+  .pick.on .tk { opacity: 1; background: #2f6fed; }
+  .pick.on .tk svg { opacity: 1; }
   img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .ph { display: grid; place-items: center; height: 100%; color: #888; font-size: 28px; }
   .ph.dark { background: #2a2a30; color: #bbb; }

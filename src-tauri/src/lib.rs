@@ -1108,35 +1108,85 @@ fn open_in_default_player(state: tauri::State<AppState>, id: i64) -> Result<(), 
     open::that_detached(&photo.path).map_err(|e| e.to_string())
 }
 
-/// Opens a new email with the photo attached (Outlook). Returns which way it was done, for the message to the person.
-#[tauri::command]
-async fn email_photo(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: i64, lang: String) -> Result<String, String> {
-    let photo = match state.db.get_photo(id) {
-        Ok(Some(p)) => p,
-        _ => return Err("That photo is not in the library any more.".into()),
-    };
-    let db = state.db.clone();
-    let places = state.places.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        // The subject: who is in the photo, where it was taken and when, as far as is known (a place needs the network;
-        // without it the subject simply has no place).
-        let people: Vec<String> = db.faces_of(id).unwrap_or_default().into_iter().filter_map(|f| f.person_name).collect();
+fn route_name(r: outlook::Route) -> String {
+    match r {
+        outlook::Route::ClassicOutlook | outlook::Route::MacOutlook => "outlook",
+        outlook::Route::NewOutlook => "newoutlook",
+        outlook::Route::AppleMail => "mail",
+        outlook::Route::ShareSheet => "share",
+    }
+    .to_string()
+}
+
+/// Opens a new email with these photos attached (Outlook, Mail). One photo gets the subject built from who is in it,
+/// where and when; several get a subject that counts them and says when. Returns which way it was done, for the message
+/// to the person.
+fn email_items(app: tauri::AppHandle, db: Db, places: Arc<PlaceService>, ids: Vec<i64>, lang: String) -> Result<String, String> {
+    let mut photos = Vec::new();
+    for id in &ids {
+        match db.get_photo(*id) {
+            Ok(Some(p)) if !p.missing => photos.push(p),
+            _ => {}
+        }
+    }
+    if photos.is_empty() {
+        return Err("Those photos are not in the library any more.".into());
+    }
+    let subject = if photos.len() == 1 {
+        let photo = &photos[0];
+        // Who is in the photo, where it was taken and when, as far as is known (a place needs the network; without it
+        // the subject simply has no place).
+        let people: Vec<String> = db.faces_of(photo.id).unwrap_or_default().into_iter().filter_map(|f| f.person_name).collect();
         let place = match (photo.meta.gps_lat, photo.meta.gps_lon) {
             (Some(lat), Some(lon)) => places.place_for_background(lat, lon, &lang).ok().flatten().and_then(|p| p.landmark.or(p.locality)),
             _ => None,
         };
         let file_name = std::path::Path::new(&photo.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let subject = subject::email_subject(&people, place.as_deref(), photo.meta.taken_at, &file_name);
-        outlook::email_file(&app, std::path::Path::new(&photo.path), &subject).map(|r| match r {
-            outlook::Route::ClassicOutlook => "outlook".to_string(),
-            outlook::Route::NewOutlook => "newoutlook".to_string(),
-            outlook::Route::MacOutlook => "outlook".to_string(),
-            outlook::Route::AppleMail => "mail".to_string(),
-            outlook::Route::ShareSheet => "share".to_string(),
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        subject::email_subject(&people, place.as_deref(), photo.meta.taken_at, &file_name)
+    } else {
+        let taken: Vec<i64> = photos.iter().filter_map(|p| p.meta.taken_at).collect();
+        subject::many_subject(photos.len(), &taken)
+    };
+    let paths: Vec<PathBuf> = photos.iter().map(|p| PathBuf::from(&p.path)).collect();
+    outlook::email_files(&app, &paths, &subject).map(route_name)
+}
+
+/// Opens a new email with the photo attached.
+#[tauri::command]
+async fn email_photo(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: i64, lang: String) -> Result<String, String> {
+    let (db, places) = (state.db.clone(), state.places.clone());
+    tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, vec![id], lang)).await.map_err(|e| e.to_string())?
+}
+
+/// Opens a new email with these photos attached (the Selected tab's Email).
+#[tauri::command]
+async fn email_photos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, ids: Vec<i64>, lang: String) -> Result<String, String> {
+    let (db, places) = (state.db.clone(), state.places.clone());
+    tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, ids, lang)).await.map_err(|e| e.to_string())?
+}
+
+/// Quick pick: pick a photo, or take it off the picked ones.
+#[tauri::command]
+fn pick_photo(state: tauri::State<AppState>, id: i64, picked: bool) -> Result<(), PixieError> {
+    state.db.set_pick(id, picked)
+}
+
+/// The ids of the picked photos, in the order picked.
+#[tauri::command]
+fn pick_ids(state: tauri::State<AppState>) -> Result<Vec<i64>, PixieError> {
+    state.db.pick_ids()
+}
+
+/// The picked photos themselves, for the Selected tab.
+#[tauri::command]
+fn list_picked(state: tauri::State<AppState>) -> Result<Vec<Photo>, PixieError> {
+    state.db.list_picked()
+}
+
+/// Nothing is picked.
+#[tauri::command]
+fn clear_picks(state: tauri::State<AppState>) -> Result<(), PixieError> {
+    state.db.clear_picks()
 }
 
 /// Blocks on the rate limit and the network, so it runs on the blocking pool, not an
@@ -1494,7 +1544,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, email_photo, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, email_photo, email_photos, pick_photo, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

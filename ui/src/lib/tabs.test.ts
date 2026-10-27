@@ -9,6 +9,12 @@ describe('visibleTabs', () => {
     expect(visibleTabs({ create: true, share: true }).map((t) => t.id)).toEqual(['browse', 'faces', 'dupes', 'create', 'share', 'settings']);
     expect(visibleTabs({ create: false, share: true }).map((t) => t.id)).toEqual(['browse', 'faces', 'dupes', 'share', 'settings']);
   });
+  it('adds Selected, with its count, right after Browse while something is picked', () => {
+    expect(visibleTabs({ create: false, share: false, selected: 0 }).map((t) => t.id)).toEqual(['browse', 'faces', 'dupes', 'settings']);
+    const tabs = visibleTabs({ create: false, share: false, selected: 12 });
+    expect(tabs.map((t) => t.id)).toEqual(['browse', 'selected', 'faces', 'dupes', 'settings']);
+    expect(tabs[1].label).toBe('Selected (12)');
+  });
   it('labels are the words a person would use', () => {
     expect(visibleTabs({ create: true, share: true }).map((t) => t.label)).toEqual(['Browse', 'People', 'Duplicates', 'Create', 'Share', 'Settings']);
   });
