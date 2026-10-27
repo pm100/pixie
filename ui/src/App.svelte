@@ -699,7 +699,7 @@
   /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
    *  Settings, Picture analysis (which counts the whole library). */
   const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad }));
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, scanning }));
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 

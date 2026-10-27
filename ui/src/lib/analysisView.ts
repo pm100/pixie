@@ -44,8 +44,6 @@ export type AnalysisInput = {
   load?: LoadProgress | null;
   /** Which analyses are switched on (all, by default). One that is off is not listed and nothing waits for it. */
   on?: Partial<Record<CounterKey, boolean>>;
-  /** A scan is running: files are still being found, so no analysis can be called finished yet. */
-  scanning?: boolean;
 };
 
 const n = (x: number) => x.toLocaleString();
@@ -110,16 +108,12 @@ export function analysisView(o: AnalysisInput): AnalysisView {
     built.push(dupesRow(o.dupes?.paused ?? false, counts, `${n(load === undefined ? o.dupes?.extra_files ?? 0 : load?.duplicates ?? 0)} found`)); // listed once its count is known
   }
 
-  const raw = built.map((b) => b.counter);
+  const counters = built.map((b) => b.counter);
   // Pausing is one thing for all the analyses, so it is said once.
   const problems = built.flatMap((b) => b.problems).filter((p, i, all) => p.kind !== 'paused' || all.findIndex((q) => q.kind === 'paused') === i);
   const downloads = built.flatMap((b) => (b.progress && 'download' in b.progress ? [b.progress.download] : []));
   const counted = built.flatMap((b) => (b.progress && 'total' in b.progress ? [b.progress] : []));
-  const finished = raw.length > 0 && raw.every((c) => c.done);
-  // For the whole library no tick is shown while a scan is running: files keep arriving, the totals grow, and a tick
-  // would come and go as an analysis catches up and falls behind again.
-  const settled = load !== undefined || !o.scanning;
-  const counters = raw.map((c) => ({ ...c, done: c.done && settled }));
+  const finished = counters.length > 0 && counters.every((c) => c.done);
 
   let fraction: number | null = null;
   let headline = 'Starting…';

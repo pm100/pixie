@@ -14,7 +14,7 @@
 </div>
 <dl class="counters">
   {#each view.counters as c (c.key)}
-    <div class="counter" class:done={c.done}><dt>{c.label}</dt><dd>{c.text}</dd></div>
+    <div class="counter"><dt>{c.label}</dt><dd>{c.text}</dd></div>
   {/each}
 </dl>
 {#each view.problems.filter((p) => p.kind === 'error') as p (p.key)}
@@ -43,8 +43,6 @@
   .counter { display: flex; justify-content: space-between; gap: 12px; }
   .counter dt { font-weight: 600; }
   .counter dd { margin: 0; color: #555; }
-  .counter.done dd { color: #1d6b2a; }
-  .counter.done dd::after { content: ' ✓'; }
   .row { display: flex; gap: 8px; margin-bottom: 14px; }
   .err { color: #b3261e; }
   .about { color: #555; font-size: 13px; padding-left: 18px; max-width: 560px; }
