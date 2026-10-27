@@ -5,8 +5,10 @@
   import PhotoCaption from './PhotoCaption.svelte';
   import { posterUrl, thumbUrl, videoUrl } from './url';
 
-  let { index, total, view, solo = null, onclose, onnav, onpopout, filmstrip = true }: {
+  let { index, total, view, solo = null, page, onclose, onnav, onpopout, filmstrip = true }: {
     index: number; total: number; view: View; solo?: Photo | null; onclose: () => void; onnav: (i: number) => void;
+    /** Where the photos come from, when not the Browse listing described by `view` (the Selected tab pages through its own). */
+    page?: (offset: number, limit: number) => Promise<Photo[]>;
     onpopout?: () => void;
     /** The strip of neighbours along the bottom; the pop-out window turns it off. */
     filmstrip?: boolean;
@@ -64,7 +66,7 @@
     const mine = ++token;
     // One call for the whole neighbourhood instead of one per arrow press.
     const { lo, hi } = filmRange(i, total, FILM);
-    listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId, view.since, view.until, view.search).then((rows) => {
+    (page ? page(lo, hi - lo) : listPhotos(lo, hi - lo, view.order, view.folderId, view.kind, view.bounds, view.maxId, view.since, view.until, view.search)).then((rows) => {
       rows.forEach((p, k) => (photos[lo + k] = p));
       stripTick++;
       if (mine !== token || !photos[i]) return;

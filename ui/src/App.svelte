@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, clearPicks,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -46,7 +46,6 @@
   import { thumbUrl } from './lib/url';
   import { addFound, applyCount, notInLibrary, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
   import { click, emptySelection, single } from './lib/selection';
-  import SelectionBar from './lib/SelectionBar.svelte';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
   import Shell from './lib/Shell.svelte';
   import Tabs from './lib/Tabs.svelte';
@@ -274,12 +273,37 @@
     picked = next;
     try { await pickPhoto(id, on); } catch (e) { message = String(e); await loadPicks(); }
   }
+  /** A click on a photo in Browse. A Shift or Ctrl click selects several, and every photo now selected is picked too. */
+  function selectItem(i: number, mods: { ctrl: boolean; shift: boolean }) {
+    selection = click(selection, i, mods);
+    if (mods.ctrl || mods.shift) void pickSelection(selection.picked);
+  }
+  async function pickSelection(indexes: ReadonlySet<number>) {
+    const v = shown; // the listing the positions refer to
+    const sorted = [...indexes].sort((a, b) => a - b);
+    const ids: number[] = [];
+    try {
+      // The photos at those positions: one read for each run of neighbours (at most 500 at a time).
+      for (let k = 0; k < sorted.length; ) {
+        let len = 1;
+        while (k + len < sorted.length && sorted[k + len] === sorted[k] + len && len < 500) len++;
+        const page = await listPhotos(sorted[k], len, v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search);
+        ids.push(...page.map((p) => p.id));
+        k += len;
+      }
+      const fresh = ids.filter((id) => !picked.has(id));
+      if (fresh.length === 0) return;
+      picked = new Set([...picked, ...fresh]);
+      await pickMany(fresh);
+    } catch (e) {
+      message = String(e);
+      await loadPicks();
+    }
+  }
   async function clearAllPicks() {
     picked = new Set();
     try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
   }
-  // Nothing picked, nothing to show on the tab.
-  $effect(() => { if (tab === 'selected' && picked.size === 0) tab = 'browse'; });
   const tabs = $derived(visibleTabs({ create: false, share: false, selected: picked.size }));
 
   async function loadFolderInfos() {
@@ -1152,7 +1176,7 @@
                 {:else}
                   <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
                         onopen={openItem}
-                        onselect={(i, mods) => (selection = click(selection, i, mods))} />
+                        onselect={selectItem} />
                 {/if}
               </div>
             </div>
@@ -1161,7 +1185,7 @@
           {:else}
             <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
                   onopen={openItem}
-                  onselect={(i, mods) => (selection = click(selection, i, mods))} />
+                  onselect={selectItem} />
           {/if}
         {/snippet}
         {#snippet right()}
@@ -1170,7 +1194,6 @@
       </Shell>
         {/if}
       </div>
-      <SelectionBar count={selection.picked.size} onclear={() => (selection = emptySelection)} />
     </div>
     {#if peopleTabBuilt}
       <div class="page-over" hidden={tab !== 'faces'}>

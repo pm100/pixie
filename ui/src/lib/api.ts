@@ -82,6 +82,8 @@ export const folderStates = () => invoke<{ id: number; state: FolderStateName }[
 export const emailPhotos = (ids: number[]) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photos', { ids, lang: userLang() });
 /** Quick pick: pick a photo, or take it off the picked ones. */
 export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_photo', { id, picked });
+/** Quick pick: pick all of these photos at once. */
+export const pickMany = (ids: number[]) => invoke<void>('pick_many', { ids });
 /** The ids of the picked photos, in the order picked. */
 export const pickIds = () => invoke<number[]>('pick_ids');
 /** The picked photos themselves, newest first (the Selected tab). */

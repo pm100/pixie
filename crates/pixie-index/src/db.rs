@@ -1084,6 +1084,21 @@ impl Db {
         Ok(())
     }
 
+    /// Pick all of these photos at once (one transaction); ones already picked stay as they were.
+    pub fn set_picks(&self, ids: &[PhotoId]) -> Result<()> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        {
+            let mut ins = tx.prepare("INSERT OR IGNORE INTO picks(photo_id, picked_at) SELECT id, ?2 FROM photos WHERE id = ?1").map_err(db_err)?;
+            for id in ids {
+                ins.execute(params![id, now]).map_err(db_err)?;
+            }
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
     /// The ids of the photos picked (live ones), in the order they were picked.
     pub fn pick_ids(&self) -> Result<Vec<PhotoId>> {
         let c = self.conn();
@@ -2825,6 +2840,22 @@ mod tests {
         db.remove_folder(f).unwrap();
         assert!(db.pick_ids().unwrap().is_empty());
         db.clear_picks().unwrap();
+    }
+
+    #[test]
+    fn many_photos_can_be_picked_at_once_and_keep_the_order_of_the_ones_already_picked() {
+        let (db, _) = camera_library();
+        let all = db.list_photos(0, 10).unwrap();
+        let ids: Vec<_> = all.iter().map(|p| p.id).collect();
+        db.set_pick(ids[2], true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3)); // (picks made in the same millisecond are ordered by photo)
+        db.set_picks(&ids).unwrap();
+        db.set_picks(&ids).unwrap(); // again: no change
+        let picked = db.pick_ids().unwrap();
+        assert_eq!(picked.len(), 4);
+        assert_eq!(picked[0], ids[2], "the one picked first stays first");
+        db.set_picks(&[9999]).unwrap(); // not a photo: nothing happens
+        assert_eq!(db.pick_ids().unwrap().len(), 4);
     }
 
     #[test]
