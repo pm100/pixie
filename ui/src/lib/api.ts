@@ -1,3 +1,4 @@
+import type { AnalysisOptions } from './analysisOptions';
 import type { FolderStateName } from './folderState';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { untilReady } from './startupRetry';
@@ -92,6 +93,16 @@ export const emailInfo = (ids: number[]) => invoke<{ count: number; photos: numb
  *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. */
 export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number) =>
   invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb });
+/** Which background analyses are on (kept in the library). */
+export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
+/** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */
+export const setAnalysisOptions = (o: AnalysisOptions) => invoke<void>('set_analysis_options', { tags: o.tags, faces: o.faces, dupes: o.dupes });
+/** The loading Pixie has to do: files found and not yet stored (they get their thumbnails as they are), and the one Pause. */
+export type LoadStatus = { pending: number; paused: boolean };
+export const loadStatus = () => invoke<LoadStatus>('load_status');
+/** Debug builds only: forget everything (folders, photos, faces, names, tags, picks, settings and what was made from the photos) so the
+ *  first run starts again. The photo files and the downloaded models are not touched. */
+export const resetLibrary = () => invoke<void>('reset_library');
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----
@@ -160,10 +171,7 @@ export const onSuggestionsDone = (f: () => void) => listen('suggestions-done', (
 /** What the look-around is sniffing now ("your home folder", "your other drives"), for the spinner. */
 export const onSuggestionLooking = (f: (what: string) => void) => listen<string>('suggestion-looking', (e) => f(e.payload));
 /** The well-known photo places that exist; counts and further candidates then arrive as events (subscribe first). */
-/** `deep` false: only the usual places are counted (adding a folder later); `suggestMore` then searches the rest on request. */
-export const suggestFolders = (deep = true) => invoke<Suggestion[]>('suggest_folders', { deep });
-/** The wider search, on request: other folders with pictures in them. The same events as `suggestFolders`. */
-export const suggestMore = () => invoke<void>('suggest_more');
+export const suggestFolders = () => invoke<Suggestion[]>('suggest_folders');
 
 /** What `scanFolders` did: the folders' ids, and whether they joined a scan that was already running. */
 export type ScanStart = { folder_ids: number[]; queued: boolean };

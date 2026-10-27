@@ -114,7 +114,8 @@ export function analysisView(o: AnalysisInput): AnalysisView {
   const problems = built.flatMap((b) => b.problems).filter((p, i, all) => p.kind !== 'paused' || all.findIndex((q) => q.kind === 'paused') === i);
   const downloads = built.flatMap((b) => (b.progress && 'download' in b.progress ? [b.progress.download] : []));
   const counted = built.flatMap((b) => (b.progress && 'total' in b.progress ? [b.progress] : []));
-  const finished = counters.length > 0 && counters.every((c) => c.done);
+  // With every analysis switched off there is nothing to wait for (see `allOff` below: that is not "done").
+  const finished = (!on('tags') && !on('faces') && !on('dupes')) || (counters.length > 0 && counters.every((c) => c.done));
 
   let fraction: number | null = null;
   let headline = 'Starting…';
@@ -127,7 +128,12 @@ export function analysisView(o: AnalysisInput): AnalysisView {
     fraction = total > 0 ? counted.reduce((a, p) => a + p.done, 0) / total : null;
     headline = fraction === null ? 'Starting…' : `Analysing ${Math.floor(fraction * 100)}%`;
   }
-  if (finished) {
+  const allOff = !on('tags') && !on('faces') && !on('dupes');
+  if (allOff) {
+    // Nothing is being done, which is not the same as everything being done: no bar, and no "Done".
+    fraction = null;
+    headline = 'Analysis is turned off';
+  } else if (finished) {
     fraction = 1;
     headline = 'Done';
   }

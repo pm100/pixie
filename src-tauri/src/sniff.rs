@@ -95,7 +95,8 @@ fn sniff_drives(drives: Vec<DriveRoot>, label: fn(&Path) -> Option<String>, b: &
                         (false, Some(volume)) => format!("{volume} ({letter}:)"),
                         _ => fallback,
                     };
-                    probe_root(&d.root, &name, if d.network { "network drive" } else { "" }, drive_budget, MIN_FILES)
+                    // (a network drive is already named "Network drive X:", so the note does not say so again)
+                    probe_root(&d.root, &name, "", drive_budget, MIN_FILES)
                 }),
             }
         })
@@ -275,13 +276,14 @@ mod tests {
     }
 
     #[test]
-    fn a_network_drive_with_pictures_says_so() {
+    fn a_network_drive_with_pictures_says_so_once() {
         let net = tempfile::tempdir().unwrap();
         jpgs(net.path(), 80);
         let events = run(vec![], None, vec![DriveRoot { root: net.path().to_path_buf(), network: true }]);
         let f = found(&events);
         assert_eq!(f.len(), 1);
-        assert!(f[0].note.as_deref().unwrap().contains("network drive"), "{:?}", f[0].note);
+        assert!(f[0].name.starts_with("Network drive"), "named as one: {:?}", f[0].name);
+        assert!(!f[0].note.as_deref().unwrap().to_lowercase().contains("network"), "and the note does not say it again: {:?}", f[0].note);
     }
 
     #[test]

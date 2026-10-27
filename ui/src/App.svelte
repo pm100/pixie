@@ -5,8 +5,8 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks,
-    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore, folderStates,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
@@ -31,7 +31,6 @@
   import { parseNetworkRescan, rescanMinutes, type NetworkRescan } from './lib/networkRescan';
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
-  import { scanText } from './lib/scanProgress';
   import { folderName, plural } from './lib/format';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
@@ -51,6 +50,8 @@
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
   import SelectedTab from './lib/SelectedTab.svelte';
+  import AnalysisStep from './lib/AnalysisStep.svelte';
+  import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
   import Nav from './lib/Nav.svelte';
@@ -308,7 +309,30 @@
     picked = new Set();
     try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
   }
-  const tabs = $derived(visibleTabs({ create: false, share: false, selected: picked.size }));
+  // The loading (files found and not yet stored, which get their thumbnails as they are): it goes on whatever analyses are on.
+  // `loadPeak` is the most files waiting at once since it was last idle, which is what the pill's percentage is measured from.
+  let loadState = $state<LoadStatus>({ pending: 0, paused: false });
+  let loadPeak = $state(0);
+  function setLoad(s: LoadStatus) {
+    loadState = s;
+    loadPeak = s.pending === 0 ? 0 : Math.max(loadPeak, s.pending);
+  }
+  // Which analyses are on (Settings, Picture analysis; asked on the welcome screen): they all are until the person says otherwise.
+  let analysisOptions = $state<AnalysisOptions>({ ...ALL_ON });
+  /** The choice on the welcome screen, applied when Start is pressed. */
+  let welcomeOptions = $state<AnalysisOptions>({ ...ALL_ON });
+  async function applyAnalysisOptions(next: AnalysisOptions) {
+    const before = analysisOptions;
+    analysisOptions = next;
+    try { await setAnalysisOptions(next); } catch (e) { message = String(e); analysisOptions = before; return; }
+    const drop = clearsFilters(next);
+    if (drop.tag && activeTag !== null) await setTag(null);
+    if (drop.person && activePerson !== null) await setPerson(null);
+    if (!next.dupes && before.dupes) { refresh(true).catch((e) => (message = String(e))); void loadFolderInfos(); } // every copy shows again
+  }
+  // A tab whose analysis was switched off is gone: leave it.
+  $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
+  const tabs = $derived(visibleTabs({ create: false, share: false, selected: picked.size, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -720,7 +744,6 @@
   /** The folder picker is being used to add folders later (from Settings), not as the first-run welcome. */
   let addMode = $state(false);
   /** (adding) The wider search of the computer has been asked for. */
-  let searchedMore = $state(false);
   /** The picker's rows: when adding, without folders the library already has. */
   const pickerRows = $derived(addMode ? notInLibrary(rows, folders.map((f) => f.path)) : rows);
   let sniffing = $state(false); // still sniffing for photo folders
@@ -772,7 +795,7 @@
     });
   /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
    *  Settings, Picture analysis (which counts the whole library). */
-  const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad }));
+  const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad, on: analysisOptions }));
   // The folders just added: until their photos are all analysed, the bars (Settings, Picture analysis, and the indicator at
   // the top right) show how far those have got, out of all that was found in them. With nothing newly added they show
   // the whole library.
@@ -789,14 +812,20 @@
     const t = setInterval(tick, 1500);
     return () => { live = false; clearInterval(t); };
   });
-  const trackView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackLoad }));
+  // The load screen with every analysis off: it is still loading the files, which is what it says (not "analysis is off").
+  const flowViewShown = $derived(
+    !analysisOptions.tags && !analysisOptions.faces && !analysisOptions.dupes
+      ? { ...flowView, headline: 'Loading your photos…', fraction: flowLoad && flowLoad.photos + flowLoad.pending > 0 ? flowLoad.photos / (flowLoad.photos + flowLoad.pending) : null }
+      : flowView,
+  );
+  const trackView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackLoad, on: analysisOptions }));
   const trackActive = $derived(trackIds.length > 0 && trackLoad !== null && !trackView.finished);
   // Done: back to the whole library (not while folders are still being read, when nothing may have been stored yet).
   $effect(() => {
     if (trackIds.length > 0 && trackLoad !== null && !scanning && trackView.finished) trackIds = [];
   });
   const trackNames = $derived(folderInfos.filter((f) => trackIds.includes(f.id)).map((f) => folderName(f.path)).join(', '));
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined }));
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined, on: analysisOptions }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -806,7 +835,6 @@
   const openWelcome = () => openPicker(false);
   async function openPicker(adding: boolean) {
     addMode = adding;
-    searchedMore = false;
     rows = [];
     sniffing = true;
     looking = null;
@@ -821,19 +849,11 @@
       onSuggestionsDone(() => (sniffing = false)),
     ];
     try {
-      const list = toRows(await suggestFolders(!adding));
+      const list = toRows(await suggestFolders());
       rows = adding ? list.map((r) => ({ ...r, ticked: false })) : list;
     } catch (e) { message = String(e); sniffing = false; }
     ready = true;
     early.forEach((f) => f());
-  }
-
-  /** (adding) Search the rest of the computer, as the first-run welcome does. */
-  function searchMore() {
-    searchedMore = true;
-    sniffing = true;
-    looking = null;
-    suggestMore().catch((e) => { message = String(e); sniffing = false; });
   }
 
   function cancelAdd() {
@@ -877,7 +897,15 @@
     await flowStarted;
   }
 
-  const welcomeStart = () => beginLoad(tickedPaths(pickerRows));
+  // The first run has two screens: the folders (Next), then what Pixie does with the photos (Start). Adding folders later is one.
+  const welcomeNext = async () => {
+    if (addMode) await beginLoad(tickedPaths(pickerRows));
+    else phase = 'options';
+  };
+  const optionsStart = async () => {
+    await applyAnalysisOptions(welcomeOptions);
+    await beginLoad(tickedPaths(pickerRows));
+  };
 
   /** Add folders: the same folder picker as the welcome screen (see `openPicker`). */
   const chooseFolder = () => openPicker(true);
@@ -890,6 +918,7 @@
     // those still to come.
     const lp = flowIds.length > 0 ? await loadProgress(flowIds) : null;
     flowPhotos = lp ? lp.photos + lp.pending : 0;
+    if (lp) flowLoad = lp; // fresh at the moment the walk ended
     const next = phaseAfterScan({ stopped: flowStopped, found, photos: flowPhotos });
     if (next === 'off') {
       phase = 'off';
@@ -953,7 +982,8 @@
   };
 
   /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
-  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState, dupes: dupPass(dupState), load: trackActive ? { fraction: trackView.fraction } : null }));
+  // (an analysis that is switched off is not part of the work, whatever its last numbers were)
+  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis: analysisOptions.tags ? analysis : null, people: analysisOptions.faces ? peopleState : null, dupes: analysisOptions.dupes ? dupPass(dupState) : null, load: trackActive ? { fraction: trackView.fraction } : null, loading: { ...loadState, peak: loadPeak } }));
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
@@ -978,7 +1008,8 @@
   // end it early). The end screen is prepared first and swapped in only when ready, so it never flashes or blinks.
   $effect(() => {
     // (and everything the walk found has been stored: videos, which are not analysed, are stored by the same pass)
-    if (phase !== 'analysing' || finishing || !flowView.finished || (flowLoad?.pending_videos ?? 0) > 0 || (flowLoad?.pending ?? 0) > 0) return;
+    // (the count must be known: an unmeasured load is not an empty one, or with every analysis off this would end at once)
+    if (phase !== 'analysing' || finishing || !flowView.finished || flowLoad === null || flowLoad.pending_videos > 0 || flowLoad.pending > 0) return;
     finishing = true;
     void buildAllSet().then(() => {
       if (phase === 'analysing') phase = 'allset'; // still here: not sent to the background meanwhile
@@ -1021,6 +1052,8 @@
     if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
     void loadPicks();
+    loadStatus().then(setLoad).catch(() => {});
+    getAnalysisOptions().then((o) => { analysisOptions = parseOptions(o); welcomeOptions = { ...analysisOptions }; }).catch(() => {});
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
@@ -1035,6 +1068,7 @@
       startScan(null).catch(() => (scanning = false));
     });
     const subs = [
+      listen<LoadStatus>('load-status', (e) => setLoad(e.payload)),
       listen<AnalysisStatus>('analysis-status', (e) => { analysis = e.payload; loadTagsSoon(); }),
       listen<DupStatus>('duplicate-status', (e) => { dupState = e.payload; dupHiddenChanged(); }),
       listen<PeopleStatus>('people-status', (e) => { peopleState = e.payload; loadPeopleSoon(); }),
@@ -1157,11 +1191,10 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
-               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera}
+               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
-               scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
                onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
         {/snippet}
         {#snippet center()}
@@ -1216,7 +1249,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
@@ -1231,10 +1264,12 @@
 
 {#if phase === 'welcome'}
   <Welcome rows={pickerRows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
-           onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeStart}
-           adding={addMode} canSearchMore={!searchedMore} onsearch={searchMore} oncancel={cancelAdd} />
+           onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeNext}
+           adding={addMode} oncancel={cancelAdd} />
+{:else if phase === 'options'}
+  <AnalysisStep options={welcomeOptions} onoptions={(o) => (welcomeOptions = o)} onback={() => (phase = 'welcome')} onstart={optionsStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
-  <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowView} notice={message}
+  <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowViewShown} notice={message}
              onstop={stopLoad} onbackground={carryOnInBackground}
              onretry={() => analysisRetry()} onresume={() => analysisSetPaused(false)} />
 {:else if phase === 'background'}

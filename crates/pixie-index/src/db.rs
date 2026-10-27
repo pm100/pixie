@@ -171,6 +171,11 @@ const MIGRATIONS: &[&str] = &[
         photo_id  INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
         picked_at INTEGER NOT NULL
      );",
+    // V19: the person's own choices that the background work has to know at start-up (which analyses are on).
+    "CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+     );",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -522,6 +527,8 @@ impl Db {
             tx.pragma_update(None, "user_version", (i + 1) as i64).map_err(db_err)?;
             tx.commit().map_err(db_err)?;
         }
+        // The one row `face_meta` is made with: put it back if it was lost.
+        conn.execute("INSERT OR IGNORE INTO face_meta(id, rev) VALUES (1, 0)", []).map_err(db_err)?;
         conn.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS search_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS text_hits (photo_id INTEGER PRIMARY KEY);
@@ -641,12 +648,18 @@ impl Db {
     /// Photos (not videos, not hidden duplicates) that still need something from the analysis pipeline, newest
     /// first: a hash, an Auto tags vector (when `embed_version` is given) or a face scan (when `face_version` is).
     pub fn photos_needing_work(&self, embed_version: Option<&str>, face_version: Option<&str>, check_art: bool, limit: i64) -> Result<Vec<WorkItem>> {
+        self.photos_needing_work_with(embed_version, face_version, check_art, true, limit)
+    }
+
+    /// `photos_needing_work`, where `hashing` says whether a file still without its hash counts as work (off with duplicate
+    /// finding switched off, so such photos do not hold up the rest).
+    pub fn photos_needing_work_with(&self, embed_version: Option<&str>, face_version: Option<&str>, check_art: bool, hashing: bool, limit: i64) -> Result<Vec<WorkItem>> {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
                 "SELECT {PHOTO_COLS}, need_hash, need_embed, need_faces, need_art FROM (
                     SELECT p.*,
-                           (p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!') AS need_hash,
+                           (?5 AND p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!') AS need_hash,
                            (?1 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)) AS need_embed,
                            (?2 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?2)) AS need_faces,
                            (?3 AND EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = p.id AND f.art IS NULL)) AS need_art
@@ -656,7 +669,7 @@ impl Db {
             ))
             .map_err(db_err)?;
         let rows = s
-            .query_map(params![embed_version, face_version, check_art, limit], |r| {
+            .query_map(params![embed_version, face_version, check_art, limit, hashing], |r| {
                 Ok(WorkItem {
                     photo: row_to_photo(r)?,
                     hash: r.get::<_, i64>(14)? != 0,
@@ -1069,6 +1082,51 @@ impl Db {
     /// An item the user removed (to the Recycle Bin): hidden like any missing file.
     pub fn mark_removed(&self, id: PhotoId) -> Result<()> {
         self.conn().execute("UPDATE photos SET missing = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Developer tool: forget everything in the library (folders, photos, faces, names, tags, picks, contacts, settings): Pixie
+    /// is as it was before its first run. Files on disk are not touched.
+    pub fn reset_all(&self) -> Result<()> {
+        let mut c = self.conn();
+        c.execute_batch("PRAGMA foreign_keys = OFF").map_err(db_err)?;
+        let result = (|| -> Result<()> {
+            let tx = c.transaction().map_err(db_err)?;
+            let tables: Vec<String> = {
+                let mut s = tx.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").map_err(db_err)?;
+                let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<String>, _>>().map_err(db_err)?;
+                rows
+            };
+            for t in tables.iter().filter(|t| t.as_str() != "face_meta") {
+                tx.execute(&format!("DELETE FROM \"{t}\""), []).map_err(db_err)?;
+            }
+            // (face_meta is one row that must always exist: it starts again from nothing instead of being emptied)
+            tx.execute("INSERT OR IGNORE INTO face_meta(id, rev) VALUES (1, 0)", []).map_err(db_err)?;
+            tx.execute("UPDATE face_meta SET rev = 0, loose = 0", []).map_err(db_err)?;
+            // the filters held in memory
+            for t in ["search_hits", "text_hits", "tag_hits", "person_hits", "camera_hits", "filter_state", "camera_norm"] {
+                tx.execute(&format!("DELETE FROM {t}"), []).map_err(db_err)?;
+            }
+            tx.commit().map_err(db_err)?;
+            Ok(())
+        })();
+        let _ = c.execute_batch("PRAGMA foreign_keys = ON");
+        result
+    }
+
+    /// A saved choice of the person's (see `settings`), or None when it was never made.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn().query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0)).optional().map_err(db_err)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)", params![key, value]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Show every copy again: no photo is hidden as the extra copy of another (duplicate finding is off).
+    pub fn clear_dup_flags(&self) -> Result<()> {
+        self.conn().execute("UPDATE photos SET dup = 0 WHERE dup != 0", []).map_err(db_err)?;
         Ok(())
     }
 
@@ -2856,6 +2914,75 @@ mod tests {
         assert_eq!(picked[0], ids[2], "the one picked first stays first");
         db.set_picks(&[9999]).unwrap(); // not a photo: nothing happens
         assert_eq!(db.pick_ids().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn resetting_forgets_everything_and_the_library_is_usable_again() {
+        let (db, f) = camera_library();
+        let ids: Vec<_> = db.list_photos(0, 10).unwrap().iter().map(|p| p.id).collect();
+        db.set_pick(ids[0], true).unwrap();
+        db.set_setting("analysis.faces", "0").unwrap();
+        db.set_camera_filter(Some("Pixel 7")).unwrap();
+        db.reset_all().unwrap();
+        assert!(db.list_folders().unwrap().is_empty());
+        assert_eq!(db.count_photos().unwrap(), 0);
+        assert!(db.pick_ids().unwrap().is_empty());
+        assert_eq!(db.get_setting("analysis.faces").unwrap(), None);
+        assert_eq!(db.active_filters().unwrap(), (None, None, None));
+        // and it works again, with foreign keys still enforced
+        let g = db.add_folder("/new").unwrap();
+        db.upsert_photo(g, "/new/a.jpg", 1, 1, &meta(Some(1))).unwrap();
+        assert_eq!(db.count_photos().unwrap(), 1);
+        assert!(db.upsert_photo(f + 99, "/x/b.jpg", 1, 1, &meta(Some(2))).is_err(), "a photo in no folder is refused again");
+    }
+
+    #[test]
+    fn after_a_reset_the_face_data_still_reads() {
+        let (db, _) = camera_library();
+        db.reset_all().unwrap();
+        assert_eq!(db.face_rev().unwrap(), 0, "the one face_meta row is still there");
+        assert!(db.list_people().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_library_that_lost_its_face_meta_row_gets_it_back_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.conn().execute("DELETE FROM face_meta", []).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.face_rev().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_saved_choice_reads_back_and_can_be_changed() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.get_setting("analysis.faces").unwrap(), None);
+        db.set_setting("analysis.faces", "0").unwrap();
+        assert_eq!(db.get_setting("analysis.faces").unwrap().as_deref(), Some("0"));
+        db.set_setting("analysis.faces", "1").unwrap();
+        assert_eq!(db.get_setting("analysis.faces").unwrap().as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn with_hashing_off_a_photo_that_only_lacks_its_hash_is_not_work() {
+        let (db, _) = camera_library();
+        assert_eq!(db.photos_needing_work(None, None, false, 10).unwrap().len(), 4, "hashing counts by default");
+        assert!(db.photos_needing_work_with(None, None, false, false, 10).unwrap().is_empty(), "off: nothing to do");
+        // other work still shows
+        assert_eq!(db.photos_needing_work_with(Some("v"), None, false, false, 10).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn clearing_the_duplicate_flags_shows_every_copy_again() {
+        let (db, _) = camera_library();
+        let all = db.list_photos(0, 10).unwrap();
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![all[0].id]).unwrap();
+        assert_eq!(db.list_photos(0, 10).unwrap().len(), 3, "one is hidden as a copy");
+        db.clear_dup_flags().unwrap();
+        assert_eq!(db.list_photos(0, 10).unwrap().len(), 4);
     }
 
     #[test]

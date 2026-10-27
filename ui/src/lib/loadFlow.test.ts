@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addLabel, allSetSummary, phaseAfterScan, startLabel } from './loadFlow';
+import { addLabel, allSetSummary, nextLabel, phaseAfterScan } from './loadFlow';
 
 describe('phaseAfterScan', () => {
   it('a stopped scan ends the flow and Browse opens with what was found', () => {
@@ -54,11 +54,11 @@ describe('allSetSummary', () => {
   });
 });
 
-describe('startLabel', () => {
-  it('says just Start, and is off with nothing ticked', () => {
-    expect(startLabel(0)).toEqual({ label: 'Start', disabled: true });
-    expect(startLabel(1)).toEqual({ label: 'Start', disabled: false });
-    expect(startLabel(4)).toEqual({ label: 'Start', disabled: false });
+describe('nextLabel', () => {
+  it('says just Next, and is off with nothing ticked', () => {
+    expect(nextLabel(0)).toEqual({ label: 'Next', disabled: true });
+    expect(nextLabel(1)).toEqual({ label: 'Next', disabled: false });
+    expect(nextLabel(4)).toEqual({ label: 'Next', disabled: false });
   });
 });
 

@@ -1,6 +1,6 @@
 /** The first-run / add-a-folder flow: which full-screen step is showing ('off': Browse). 'background' is the note shown
  *  after "Carry on in the background": what is still running, how to tell when it ends, what to do meanwhile. */
-export type Phase = 'off' | 'welcome' | 'scanning' | 'analysing' | 'allset' | 'background';
+export type Phase = 'off' | 'welcome' | 'options' | 'scanning' | 'analysing' | 'allset' | 'background';
 
 const n = (x: number) => x.toLocaleString();
 import { plural } from './format';
@@ -36,9 +36,9 @@ export function allSetSummary(o: {
   };
 }
 
-/** The Start button on the welcome screen: just "Start", off while nothing is ticked. */
-export function startLabel(ticked: number): { label: string; disabled: boolean } {
-  return { label: 'Start', disabled: ticked === 0 };
+/** The button of the first welcome screen: just "Next" (the second screen has the Start), off while nothing is ticked. */
+export function nextLabel(ticked: number): { label: string; disabled: boolean } {
+  return { label: 'Next', disabled: ticked === 0 };
 }
 
 /** The button of the same screen when it is used to add folders later: "Add", or how many, off while nothing is ticked. */

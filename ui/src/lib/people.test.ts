@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
+import { clickSelection, lookingForPeople, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
 import { hitsActive } from './tagNav';
 
@@ -151,5 +151,17 @@ describe('refreshOffered', () => {
     expect(refreshOffered(3, 4)).toBe(false);
     expect(refreshOffered(undefined, 4)).toBe(false);
     expect(refreshOffered(5, null)).toBe(false);
+  });
+});
+
+describe('lookingForPeople', () => {
+  const base = { models: 'ready', model_done: 0, model_total: 0, done: 10, total: 100, paused: false, error: null, rev: 0 } as PeopleStatus;
+  it('is true only while it is really working through the photos', () => {
+    expect(lookingForPeople(base)).toBe(true);
+    expect(lookingForPeople({ ...base, done: 100 })).toBe(false); // finished
+    expect(lookingForPeople({ ...base, paused: true })).toBe(false);
+    expect(lookingForPeople({ ...base, error: 'trouble' })).toBe(false);
+    expect(lookingForPeople({ ...base, models: 'downloading' })).toBe(false);
+    expect(lookingForPeople({ ...base, total: 0, done: 0 })).toBe(false);
   });
 });

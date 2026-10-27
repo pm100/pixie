@@ -44,6 +44,9 @@ struct State {
     paused: bool,
     loading: bool,
     loaded: bool,
+    /// People are switched on (when off the models are not fetched and the pipeline looks for no faces).
+    enabled: bool,
+    engine: Option<Arc<dyn FaceEngine>>,
 }
 
 struct Inner {
@@ -117,9 +120,14 @@ impl Inner {
             s.loading = false;
             match result {
                 Ok(engine) => {
-                    s.models = "ready";
                     s.loaded = true;
-                    self.cfg.pipeline.set_face_engine(engine); // the pipeline now scans the photos that have not been
+                    s.engine = Some(engine.clone());
+                    if s.enabled {
+                        s.models = "ready";
+                        self.cfg.pipeline.set_face_engine(engine); // the pipeline now scans the photos that have not been
+                    } else {
+                        s.models = "off"; // switched off while it was loading: kept, and handed over when switched on
+                    }
                 }
                 Err(e) => {
                     s.models = "error";
@@ -133,17 +141,24 @@ impl Inner {
 
 impl PeopleService {
     pub fn start(cfg: PeopleConfig) -> PeopleService {
+        Self::start_with(cfg, true)
+    }
+
+    /// `enabled` false: People are off to begin with, and no model is fetched until they are switched on.
+    pub fn start_with(cfg: PeopleConfig, enabled: bool) -> PeopleService {
         let svc = PeopleService {
             inner: Arc::new(Inner {
                 cfg,
                 state: Mutex::new(State {
-                    models: "missing",
+                    models: if enabled { "missing" } else { "off" },
                     model_done: 0,
                     model_total: 0,
                     error: None,
                     paused: false,
                     loading: false,
                     loaded: false,
+                    enabled,
+                    engine: None,
                 }),
             }),
         };
@@ -160,7 +175,7 @@ impl PeopleService {
     fn begin(&self) {
         {
             let mut s = self.inner.lock();
-            if s.loading || s.loaded {
+            if !s.enabled || s.loading || s.loaded {
                 return;
             }
             s.loading = true;
@@ -186,6 +201,28 @@ impl PeopleService {
     /// Try the download and load again after an error.
     pub fn retry(&self) {
         self.begin();
+    }
+
+    /// Switch People on or off. Off: the pipeline looks for no more faces and no model is fetched (the faces and names
+    /// already found are kept). On: the models are fetched if they are not yet here, and the photos not yet scanned are picked up.
+    pub fn set_enabled(&self, on: bool) {
+        let engine = {
+            let mut s = self.inner.lock();
+            if s.enabled == on {
+                return;
+            }
+            s.enabled = on;
+            s.models = if !on { "off" } else if s.engine.is_some() { "ready" } else { "missing" };
+            s.engine.clone()
+        };
+        if !on {
+            self.inner.cfg.pipeline.clear_face_engine();
+        } else if let Some(e) = engine {
+            self.inner.cfg.pipeline.set_face_engine(e);
+        } else {
+            self.begin();
+        }
+        self.inner.emit();
     }
 
     /// The one Pause: the pipeline stops taking photos (for every step), and the window is told.

@@ -26,6 +26,10 @@ export function peopleLine(s: PeopleStatus): string {
   return `Looking for people… ${n(s.done)} of ${plural(s.total, 'photo')}`;
 }
 
+/** Is it in the middle of looking for faces (models ready, not paused, not stuck, photos still to do)? */
+export const lookingForPeople = (s: PeopleStatus): boolean =>
+  s.models === 'ready' && !s.error && !s.paused && s.total > 0 && s.done < s.total;
+
 /** One face to look at: the photo it is in (with that photo's version, to show it) and the face's box as fractions
  *  (0..1) of the upright photo (mirrors the Rust `FaceTile`). */
 export type FaceTile = { id: number; photo_id: number; mtime: number; size: number; x: number; y: number; w: number; h: number };

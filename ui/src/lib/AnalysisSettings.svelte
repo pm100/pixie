@@ -1,14 +1,29 @@
 <script lang="ts">
+  import AnalysisChoices from './AnalysisChoices.svelte';
+  import type { AnalysisOptions } from './analysisOptions';
   import type { AnalysisView } from './analysisView';
+  import type { LoadStatus } from './api';
+  import { plural } from './format';
 
-  let { view, note = null, onpause, onretry }: { view: AnalysisView; note?: string | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
+  let { view, note = null, onpause, onretry, options, onoptions, loading }: {
+    /** The loading of the files found (it goes on whatever is on), and the one Pause. */
+    loading: LoadStatus;
+    view: AnalysisView; note?: string | null; onpause: (paused: boolean) => void; onretry: () => void;
+    /** Which analyses are on, and a change to that. */
+    options: AnalysisOptions; onoptions: (next: AnalysisOptions) => void;
+  } = $props();
 </script>
 
 <h2>Picture analysis</h2>
 <p>Pixie studies your photos on this computer. Nothing leaves your computer except the one-time download of the
   picture-analysis and face models.</p>
+<AnalysisChoices {options} onchange={onoptions} />
+<p class="hint">Turning one off stops that work and keeps what was already found. Turn it on again and it carries on.</p>
 
 {#if note}<p class="note">{note}</p>{/if}
+{#if loading.pending > 0 || loading.paused}
+  <p class="loading" role="status">{loading.paused ? 'Loading is paused' : 'Loading photos'}{loading.pending > 0 ? `: ${plural(loading.pending, 'file')} to go` : ''}.</p>
+{/if}
 <div class="overall">
   <div class="head"><b>{view.headline}</b></div>
   {#if view.fraction !== null}<progress value={view.fraction} max="1"></progress>{/if}
@@ -25,8 +40,8 @@
 <div class="row">
   {#if view.failed}
     <button onclick={onretry}>Try again</button>
-  {:else if view.working || view.paused}
-    <button onclick={() => onpause(!view.paused)}>{view.paused ? 'Resume' : 'Pause'}</button>
+  {:else if view.working || view.paused || loading.pending > 0 || loading.paused}
+    <button onclick={() => onpause(!(view.paused || loading.paused))}>{view.paused || loading.paused ? 'Resume' : 'Pause'}</button>
   {/if}
 </div>
 
@@ -39,6 +54,7 @@
 
 <style>
   .note { margin: 8px 0 0; color: #555; font-size: 13px; }
+  .loading { margin: 8px 0 0; color: #1a3f9a; font-size: 13px; }
   .overall { margin: 8px 0 10px; max-width: 420px; }
   progress { display: block; width: 100%; margin: 4px 0 0; }
   .counters { margin: 0 0 12px; display: grid; gap: 4px; max-width: 420px; }

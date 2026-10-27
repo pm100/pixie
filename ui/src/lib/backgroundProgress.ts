@@ -20,12 +20,15 @@ export function backgroundProgress(o: {
   scanning: boolean; scan: ScanState; analysis: AnalysisStatus | null; people: AnalysisStatus | null; dupes?: AnalysisStatus | null;
   /** Folders were just added and are not all analysed yet: how far those have got (the bar then shows that, not the whole library). */
   load?: { fraction: number | null } | null;
+  /** The loading (reading the files found, making their thumbnails), which goes on whatever analyses are on: files still to load,
+   *  the most there were at once since it was last idle, and whether the Pause is on. */
+  loading?: { pending: number; peak: number; paused: boolean } | null;
 }): BgProgress | null {
   const passes = [
     { name: 'Auto tags', s: o.analysis },
     { name: 'Faces', s: o.people },
     { name: 'Duplicates', s: o.dupes ?? null },
-  ].filter((p): p is { name: string; s: AnalysisStatus } => p.s !== null);
+  ].filter((p): p is { name: string; s: AnalysisStatus } => p.s !== null && p.s.models !== 'off'); // (one switched off is not part of the work)
 
   const failed = passes.find((p) => p.s.models === 'error' || p.s.error);
   if (failed) {
@@ -37,6 +40,14 @@ export function backgroundProgress(o: {
 
   if (o.scanning) {
     return { state: 'working', text: scanText(o.scan), fraction: readFraction(o.scan), detail: 'Reading your photo folders' };
+  }
+
+  // Files are being read and given their thumbnails: that is "loading", and it is what the pill says (analysing comes after).
+  if (o.loading && o.loading.pending > 0) {
+    const { pending, peak, paused } = o.loading;
+    if (paused) return { state: 'paused', text: 'Loading paused', fraction: null, detail: 'Loading the photos is paused. Click to resume.' };
+    const fraction = peak > 0 ? Math.min(1, (peak - pending) / peak) : null;
+    return { state: 'working', text: `Loading photos ${Math.floor((fraction ?? 0) * 100)}%`, fraction, detail: 'Reading the photos Pixie found and making their thumbnails' };
   }
 
   const downloading = passes.filter((p) => p.s.models === 'downloading');

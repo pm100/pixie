@@ -47,27 +47,13 @@ struct SuggestionCount {
 /// Subscribe to the events before calling. The look-around covers the home folder, then every other built-in drive and
 /// mapped network drive: each is checked for pictures on a thread of its own, at the same time, with a deadline, so
 /// an unreachable network share costs only its own row ("not reachable right now") and never freezes anything.
-/// With `deep` false (adding a folder later) only the usual places are counted: the wider search is left to
-/// `suggest_more`, when asked for.
+/// The first run and adding a folder later use the same list.
 #[tauri::command]
-async fn suggest_folders(app: tauri::AppHandle, deep: Option<bool>) -> Result<Vec<Suggestion>, PixieError> {
+async fn suggest_folders(app: tauri::AppHandle) -> Result<Vec<Suggestion>, PixieError> {
     let (places, list) = known_places_of(&app);
-    let deep = deep.unwrap_or(true);
     let (events, known, home) = (app.clone(), list.clone(), places.home.clone());
-    std::thread::spawn(move || {
-        let (home, others) = if deep { (home, other_drives()) } else { (None, Vec::new()) };
-        sniff_and_emit(&events, true, known, home, others);
-    });
+    std::thread::spawn(move || sniff_and_emit(&events, true, known, home, other_drives()));
     Ok(list)
-}
-
-/// The wider search, on request: the home folder and every other drive, for folders with pictures in them that are not
-/// among the usual places. Emits the same events as `suggest_folders` (without counting the usual places again).
-#[tauri::command]
-async fn suggest_more(app: tauri::AppHandle) -> Result<(), PixieError> {
-    let (places, list) = known_places_of(&app);
-    std::thread::spawn(move || sniff_and_emit(&app, false, list, places.home.clone(), other_drives()));
-    Ok(())
 }
 
 /// The well-known places on this computer, and those that exist as suggestions.
@@ -942,6 +928,46 @@ fn open_data_folder(app: tauri::AppHandle) -> Result<(), PixieError> {
     open::that_detached(&dir).map_err(|e| PixieError::Io(e.to_string()))
 }
 
+/// Debug builds only: forget everything (every folder, photo, face, name, tag, pick and setting, and the thumbnails and
+/// pictures made from them) so the first run starts again. The photo files are not touched, nor are the downloaded models.
+#[tauri::command]
+fn reset_library(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), PixieError> {
+    if !cfg!(debug_assertions) {
+        return Err(PixieError::Unsupported("only available in debug builds".into()));
+    }
+    // Stop everything that is reading the library.
+    state.cancel_scan.store(true, Ordering::Relaxed);
+    state.pipeline.clear_intake();
+    state.pipeline.set_paused(true);
+    for _ in 0..50 {
+        if !state.gate.is_busy() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(500)); // a batch already being stored finishes (its folder is about to go)
+    state.db.reset_all()?;
+    // What was made from the photos.
+    let dir = data_dir(app.path()).map_err(|e| PixieError::Io(e.to_string()))?;
+    for cache in [dir.join("thumbs"), state.posters_dir.clone(), state.faces_dir.clone()] {
+        if let Ok(entries) = std::fs::read_dir(&cache) {
+            for e in entries.flatten() {
+                let _ = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+            }
+        }
+    }
+    // Back to how a first run begins: every analysis on, nothing paused.
+    state.analysis.set_enabled(true);
+    state.people.set_enabled(true);
+    state.pipeline.set_hashing(true);
+    state.dupes.set_enabled(true);
+    state.analysis.set_paused(false);
+    state.people.set_paused(false);
+    state.dupes.set_paused(false);
+    state.cancel_scan.store(false, Ordering::Relaxed);
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -1238,6 +1264,53 @@ fn email_items(app: tauri::AppHandle, db: Db, places: Arc<PlaceService>, ids: Ve
         }
     }
     Ok(EmailResult { route, emails: count })
+}
+
+/// The loading the pipeline has to do (files found and not yet stored, with their thumbnails), and whether it is paused. It goes on
+/// whatever analyses are on.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+struct LoadStatus {
+    pending: i64,
+    paused: bool,
+}
+
+#[tauri::command]
+fn load_status(state: tauri::State<AppState>) -> LoadStatus {
+    LoadStatus { pending: state.pipeline.pending_files(), paused: state.pipeline.is_paused() }
+}
+
+/// Which of the background analyses are on. Everything is on until the person says otherwise; the choice is kept in the library.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+struct AnalysisOptions {
+    tags: bool,
+    faces: bool,
+    dupes: bool,
+}
+
+const OPTION_KEYS: [&str; 3] = ["analysis.tags", "analysis.faces", "analysis.dupes"];
+
+fn read_analysis_options(db: &Db) -> AnalysisOptions {
+    let on = |key: &str| db.get_setting(key).ok().flatten().map_or(true, |v| v != "0");
+    AnalysisOptions { tags: on(OPTION_KEYS[0]), faces: on(OPTION_KEYS[1]), dupes: on(OPTION_KEYS[2]) }
+}
+
+#[tauri::command]
+fn get_analysis_options(state: tauri::State<AppState>) -> AnalysisOptions {
+    read_analysis_options(&state.db)
+}
+
+/// Turn the analyses on or off (and remember it). Off: no more work of that kind and no model fetched (what was found is
+/// kept); duplicates off also shows every copy again. On: it carries on from where it was.
+#[tauri::command]
+fn set_analysis_options(state: tauri::State<AppState>, tags: bool, faces: bool, dupes: bool) -> Result<(), PixieError> {
+    for (key, on) in OPTION_KEYS.iter().zip([tags, faces, dupes]) {
+        state.db.set_setting(key, if on { "1" } else { "0" })?;
+    }
+    state.analysis.set_enabled(tags);
+    state.people.set_enabled(faces);
+    state.pipeline.set_hashing(dupes);
+    state.dupes.set_enabled(dupes);
+    Ok(())
 }
 
 /// Opens new emails with these photos attached (see `email_items`); the Email buttons of the Selected tab and the details pane.
@@ -1560,7 +1633,17 @@ pub fn run() {
                 let _ = latest_app.emit("analysis-latest", item);
             }));
             let analysis_app = app.handle().clone();
-            let analysis = Arc::new(pixie_analysis::service::AnalysisService::start(pixie_analysis::service::Config {
+            // The window is told whenever the loading moves (a batch is stored, files arrive, the Pause changes).
+            let load_app = app.handle().clone();
+            let load_pipeline = Arc::downgrade(&pipeline);
+            pipeline.add_reporter(Arc::new(move || {
+                if let Some(p) = load_pipeline.upgrade() {
+                    let _ = load_app.emit("load-status", LoadStatus { pending: p.pending_files(), paused: p.is_paused() });
+                }
+            }));
+            let options = read_analysis_options(&db);
+            pipeline.set_hashing(options.dupes);
+            let analysis = Arc::new(pixie_analysis::service::AnalysisService::start_with(pixie_analysis::service::Config {
                 db: db.clone(),
                 version: pixie_analysis::clip::MODEL_VERSION.to_string(),
                 dir: dir.join("models").join(pixie_analysis::clip::MODEL_VERSION),
@@ -1573,9 +1656,9 @@ pub fn run() {
                 on_status: Arc::new(move |s| {
                     let _ = analysis_app.emit("analysis-status", s);
                 }),
-            }));
+            }, options.tags));
             let people_app = app.handle().clone();
-            let people = Arc::new(pixie_analysis::people_service::PeopleService::start(pixie_analysis::people_service::PeopleConfig {
+            let people = Arc::new(pixie_analysis::people_service::PeopleService::start_with(pixie_analysis::people_service::PeopleConfig {
                 db: db.clone(),
                 version: pixie_analysis::faces::FACES_VERSION.to_string(),
                 dir: dir.join("models").join(pixie_analysis::faces::FACES_VERSION),
@@ -1588,7 +1671,7 @@ pub fn run() {
                 on_status: Arc::new(move |s| {
                     let _ = people_app.emit("people-status", s);
                 }),
-            }));
+            }, options.faces));
             let dupes_app = app.handle().clone();
             let dupes_gate = gate.clone();
             let dupes = Arc::new(pixie_index::DupeService::start(
@@ -1598,6 +1681,7 @@ pub fn run() {
                     let _ = dupes_app.emit("duplicate-status", s);
                 }),
             ));
+            dupes.set_enabled(options.dupes);
             let watch_db = db.clone();
             app.manage(AppState {
                 db,
@@ -1631,8 +1715,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, email_photos, email_info, pick_photo, pick_many, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

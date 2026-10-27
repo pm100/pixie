@@ -134,6 +134,8 @@ pub struct DupeService {
     /// Ends the thread for good.
     stopped: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    /// Duplicate finding is switched on; off, the thread only waits.
+    enabled: Arc<AtomicBool>,
     /// Stops the round of work in progress: set when stopped or paused (the work checks it between files).
     halt: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -146,16 +148,17 @@ impl DupeService {
 
     pub fn start_with(db: Db, scanning: Arc<dyn Fn() -> bool + Send + Sync>, on_status: StatusFn, paused: bool) -> DupeService {
         let stopped = Arc::new(AtomicBool::new(false));
+        let enabled = Arc::new(AtomicBool::new(true));
         let paused = Arc::new(AtomicBool::new(paused));
         let halt = Arc::new(AtomicBool::new(paused.load(Ordering::SeqCst)));
-        let (t_db, t_status, t_stopped, t_paused, t_halt) = (db.clone(), on_status.clone(), stopped.clone(), paused.clone(), halt.clone());
+        let (t_db, t_status, t_stopped, t_paused, t_halt, t_enabled) = (db.clone(), on_status.clone(), stopped.clone(), paused.clone(), halt.clone(), enabled.clone());
         let handle = std::thread::spawn(move || {
             let (db, on_status) = (t_db, t_status);
             let mut last: Option<DupStatus> = None;
             let mut last_refresh: Option<Instant> = None;
             let mut last_status: Option<Instant> = None;
             while !t_stopped.load(Ordering::SeqCst) {
-                if t_paused.load(Ordering::SeqCst) {
+                if t_paused.load(Ordering::SeqCst) || !t_enabled.load(Ordering::SeqCst) {
                     std::thread::sleep(PAUSED_POLL);
                     continue;
                 }
@@ -188,7 +191,17 @@ impl DupeService {
                 std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { STATUS_EVERY });
             }
         });
-        DupeService { db, on_status, stopped, paused, halt, handle: Some(handle) }
+        DupeService { db, on_status, stopped, paused, enabled, halt, handle: Some(handle) }
+    }
+
+    /// Duplicate finding on or off. Off: nothing is hashed or flagged, and every copy is shown again. On: it carries on from
+    /// where it was (the flags are worked out again).
+    pub fn set_enabled(&self, on: bool) {
+        self.enabled.store(on, Ordering::SeqCst);
+        self.halt.store(!on || self.paused.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst), Ordering::SeqCst);
+        if !on {
+            let _ = self.db.clear_dup_flags();
+        }
     }
 
     pub fn is_paused(&self) -> bool {

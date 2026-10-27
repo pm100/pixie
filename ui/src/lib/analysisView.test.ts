@@ -41,7 +41,10 @@ describe('the counters', () => {
     const v = analysisView(input({ tags: status({ done: 5, total: 5 }), faces: null, on: { faces: false } }));
     expect(v.counters.map((c) => c.key)).toEqual(['tags']);
     expect(v.finished).toBe(true);
-    expect(analysisView(input({ on: { tags: false, faces: false, dupes: false } })).finished).toBe(false); // nothing listed is not "done"
+    const off = analysisView(input({ on: { tags: false, faces: false, dupes: false } }));
+    expect(off.finished).toBe(true); // all off: nothing to wait for
+    expect(off.headline).toBe('Analysis is turned off'); // ... but it is not "Done", and there is no bar
+    expect(off.fraction).toBeNull();
   });
 });
 

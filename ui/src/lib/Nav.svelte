@@ -16,12 +16,12 @@
   import { faceUrl } from './url';
   import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
     /** The days to list under When: the library under the other filters, without the date filter itself. */
-    groups: DayGroup[]; kind: MediaKind | null; recent: boolean; scanLine: string | null;
+    groups: DayGroup[]; kind: MediaKind | null; recent: boolean;
     /** The chosen date (a filter like the others): `y:2025`, `m:2025-06`, `d:2025-06-14` or `undated`. */
     period: string | null;
     /** The text of the recent row, e.g. "Last 30 days". */
@@ -33,6 +33,8 @@
     /** Some photos have been checked for faces: with nobody named yet, the section says where to name people. */
     facesFound: boolean;
     /** The photo folders, with the item count of each, and the one chosen (if any). */
+    /** Which analyses are on (People, Auto tags); one that is off says so here, and how to turn it on. */
+    analysisOn?: { tags: boolean; faces: boolean }; onopenanalysis?: () => void;
     /** The cameras (tidied names) with their counts under the filters in force, and the one chosen. */
     cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
@@ -131,7 +133,13 @@
     <WhenNav {groups} {period} {onperiod} />
   {/if}
 
-  {#if people.length === 0 && facesFound}
+  {#if !analysisOn.faces}
+    {@render head('people', 'People')}
+    {#if !folded('people')}
+      <p class="hint">People is turned off, so no faces are being looked for. Turn it on in Settings → Picture analysis.</p>
+      <button class="item more" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
+    {/if}
+  {:else if people.length === 0 && facesFound}
     {@render head('people', 'People')}
     {#if !folded('people')}
       <p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>
@@ -154,7 +162,13 @@
     {/if}
   {/if}
 
-  {#if tags.length > 0}
+  {#if !analysisOn.tags}
+    {@render head('tags', 'Auto tags')}
+    {#if !folded('tags')}
+      <p class="hint">Auto tags are turned off, so photos are not being labelled. Turn them on in Settings → Picture analysis.</p>
+      <button class="item more" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
+    {/if}
+  {:else if tags.length > 0}
     {@render head('tags', 'Auto tags')}
     {#if !folded('tags')}
       {#each tree as g (g.category)}
@@ -244,7 +258,6 @@
     {/if}
   {/if}
 
-  {#if scanLine}<p class="scan">{scanLine}</p>{/if}
 </nav>
 
 <style>
@@ -269,7 +282,6 @@
   .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }
   .hint { margin: 2px 12px 4px; font-size: 12px; color: #777; }
-  .scan { margin: 16px 12px 0; font-size: 12px; color: #777; }
   .row { position: relative; }
   .edit { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); border: 0; background: none; cursor: pointer; color: #777; font-size: 12px; padding: 2px 4px; visibility: hidden; }
   .row:hover .edit, .edit:focus-visible { visibility: visible; }

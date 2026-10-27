@@ -7,7 +7,7 @@
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import {
-    clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
+    clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, lookingForPeople, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
     type FaceOrder, type FaceOverview, type FacePerson, type FaceTile, type PeopleStatus, type Section, type UnsortedFace,
   } from './people';
   import FaceGrid from './FaceGrid.svelte';
@@ -119,6 +119,16 @@
     const back = now && !wasActive && loaded && stale && selected === null;
     wasActive = now;
     if (first || back) untrack(load);
+  });
+
+  // The scan finished while this tab was showing: show the final grouping (the page is only looked at while it works, not
+  // changed, so nothing moves under the user; there is no button to ask for it).
+  let wasScanning = false;
+  $effect(() => {
+    const now = scanning;
+    const finished = wasScanning && !now;
+    wasScanning = now;
+    if (finished) untrack(() => { if (active && loaded && stale && selected === null) void load(); });
   });
 
   /** Run a change, then reload this tab and tell the app. */
@@ -258,11 +268,11 @@
       {#if error}<span class="err">{error}</span>{/if}
     </header>
 
-    {#if scanning || (stale && !busy)}
+    {#if scanning}
       <div class="status" role="status">
         <span>{status ? peopleLine(status) : ''}</span>
         {#if fraction !== null && scanning}<progress value={fraction} max="1"></progress>{/if}
-        {#if stale}<button onclick={load}>Show the new grouping</button>{/if}
+        {#if status && lookingForPeople(status)}<span class="advice">It's best to let Pixie finish before naming anyone.</span>{/if}
       </div>
     {/if}
     {#if notice}<div class="notice" role="status">{notice} <button onclick={() => (notice = null)}>OK</button></div>{/if}
@@ -395,6 +405,7 @@
   .err { color: #b3261e; }
   .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 8px; padding: 6px 12px; border-radius: 8px; background: #eef2fb; color: #2a3f7a; font-size: 13px; }
   .status progress { width: 160px; }
+  .status .advice { color: #555; }
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 8px; padding: 6px 12px; border-radius: 8px; background: #fff4d6; color: #5b4300; font-size: 13px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
   button { font: inherit; font-size: 13px; }

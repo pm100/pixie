@@ -5,9 +5,11 @@
 <script lang="ts">
   import { getVersion } from '@tauri-apps/api/app';
   import { onMount } from 'svelte';
-  import { isDebugBuild, openDataFolder, type FolderInfo } from './api';
+  import { isDebugBuild, openDataFolder, resetLibrary, type FolderInfo, type LoadStatus } from './api';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import EmailSettings from './EmailSettings.svelte';
+  import type { AnalysisOptions } from './analysisOptions';
   import type { AnalysisView } from './analysisView';
   import PhotoFolders from './PhotoFolders.svelte';
   import TripSettings from './TripSettings.svelte';
@@ -18,7 +20,11 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, emailLimitMb, onemaillimit }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
+    /** The loading of the files found, and whether the Pause is on. */
+    loading: LoadStatus;
+    /** Which analyses are on, and a change to that. */
+    analysisOptions: AnalysisOptions; onanalysisoptions: (next: AnalysisOptions) => void;
     /** The email size limit in megabytes, and how it is changed. */
     emailLimitMb: number; onemaillimit: (mb: number) => void;
     folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean;
@@ -49,6 +55,22 @@
   const analysisPaused = $derived(analysis.paused);
   const labelled = (p: { id: SettingsPage; label: string }) => (p.id === 'analysis' && analysisPaused ? `${p.label} (paused)` : p.label);
   const shownPages = $derived(debug ? [...pages, { id: 'developer' as SettingsPage, label: 'Developer' }] : pages);
+  let confirmReset = $state(false);
+  let resetting = $state(false);
+  /** Forget everything and start the first run again: the window is reloaded, and with no folders it opens on the welcome. */
+  async function startAgain() {
+    confirmReset = false;
+    resetting = true;
+    devError = '';
+    try {
+      await resetLibrary();
+      try { globalThis.localStorage?.clear(); } catch { /* preferences are a convenience */ }
+      globalThis.location.reload();
+    } catch (e) {
+      devError = String(e);
+      resetting = false;
+    }
+  }
   async function openData() {
     devError = '';
     try { await openDataFolder(); } catch (e) { devError = String(e); }
@@ -77,14 +99,21 @@
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
-      <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} />
+      <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} options={analysisOptions} onoptions={onanalysisoptions} {loading} />
     {:else if page === 'email'}
       <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
-      <button onclick={openData}>Open data folder</button>
+      <p><button onclick={openData}>Open data folder</button></p>
+      <p><button class="danger" onclick={() => (confirmReset = true)} disabled={resetting}>{resetting ? 'Starting again…' : 'Start again from a clean slate…'}</button></p>
+      <p class="hint">Forgets every folder, photo, face, name, tag and setting, and shows the welcome again. Your photo files and the downloaded models are left alone.</p>
       {#if devError}<p class="err">{devError}</p>{/if}
+      {#if confirmReset}
+        <ConfirmDialog title="Start again from a clean slate?" confirmLabel="Start again" danger
+          message="This removes every folder, photo record, face, name, tag, pick and setting from Pixie, and the thumbnails made from them, then shows the welcome screen. Your photo files are not touched. The downloaded models are kept."
+          onconfirm={startAgain} oncancel={() => (confirmReset = false)} />
+      {/if}
     {:else}
       <h2>About</h2>
       <p>Pixie {version}</p>
@@ -105,5 +134,7 @@
   .page :global(p) { margin: 0 0 8px; }
   .opt { display: block; margin: 6px 0; }
   .err { color: #b00020; }
+  button.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
+  .hint { color: #666; font-size: 13px; }
   .days { width: 4.5em; font: inherit; padding: 2px 4px; }
 </style>

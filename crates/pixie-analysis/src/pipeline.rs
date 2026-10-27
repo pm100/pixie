@@ -133,6 +133,8 @@ struct Shared {
     /// Faces stored since the faces were last regrouped.
     new_faces: AtomicUsize,
     paused: AtomicBool,
+    /// Hashing every file (for finding duplicates) is on.
+    hashing: AtomicBool,
     stop: AtomicBool,
     hold_reported: AtomicBool,
     kicked: Mutex<bool>,
@@ -338,7 +340,9 @@ impl Shared {
     /// Everything that needs the photo, from one read and one decode. A decoder or model that panics is a failure of
     /// that photo or of the model, never of this thread.
     fn process_photo(&self, w: &WorkItem, p: &Photo, bytes: std::io::Result<Vec<u8>>, embedder: Option<&dyn Embedder>, faces: Option<&dyn FaceEngine>, art: Option<&ArtCheck>) -> Outcome {
-        if !w.hash && embedder.is_none() && faces.is_none() && !(w.art && art.is_some()) {
+        // Nothing to do with a photo already in the library when no analysis is on. A file just read is still decoded: its
+        // thumbnail is made from that one read, whatever the analyses are doing.
+        if !w.new && !w.hash && embedder.is_none() && faces.is_none() && !(w.art && art.is_some()) {
             return Outcome::Nothing;
         }
         let path = Path::new(&p.path);
@@ -432,7 +436,7 @@ impl Shared {
             let (ev, fv) = (embedder.as_ref().map(|e| e.version().to_string()), faces.as_ref().map(|f| f.version().to_string()));
             let taken = self.take_intake(BATCH as usize);
             if !taken.is_empty() {
-                let items: Vec<WorkItem> = taken.iter().map(|c| intake_item(c, ev.is_some(), fv.is_some(), art.is_some())).collect();
+                let items: Vec<WorkItem> = taken.iter().map(|c| intake_item(c, ev.is_some(), fv.is_some(), art.is_some(), self.hashing.load(Ordering::SeqCst))).collect();
                 let r = self.batch(true, &items, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
                 self.requeue(taken, &r.done);
                 self.tidy_faces(false);
@@ -442,7 +446,7 @@ impl Shared {
                 }
                 continue;
             }
-            let batch = match self.db.photos_needing_work(ev.as_deref(), fv.as_deref(), art.is_some(), BATCH) {
+            let batch = match self.db.photos_needing_work_with(ev.as_deref(), fv.as_deref(), art.is_some(), self.hashing.load(Ordering::SeqCst), BATCH) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("[analysis] cannot list photos: {e}");
@@ -636,12 +640,12 @@ struct BatchEnd {
 /// already in the library (it changed, or a Reload reads everything again) only has its row refreshed from the file: what
 /// is already known about it (faces, and the names given to them, tags, hash) is kept, and anything its change made
 /// stale is picked up by the database-driven pass that follows.
-fn intake_item(c: &Candidate, embed: bool, faces: bool, art: bool) -> WorkItem {
+fn intake_item(c: &Candidate, embed: bool, faces: bool, art: bool, hash: bool) -> WorkItem {
     let photo = c.kind == MediaKind::Photo;
     let fresh = photo && !c.is_update;
     WorkItem {
         photo: Photo { id: 0, folder_id: c.folder_id, path: c.path.clone(), size: c.size, mtime: c.mtime, meta: PhotoMeta { kind: c.kind, ..Default::default() }, missing: false },
-        hash: fresh,
+        hash: fresh && hash,
         embed: fresh && embed,
         faces: fresh && faces,
         art: fresh && art,
@@ -677,6 +681,7 @@ impl PhotoPipeline {
             // faces found by an earlier run (or grouped by an older version) are regrouped once, when the work runs out
             new_faces: AtomicUsize::new(1),
             paused: AtomicBool::new(false),
+            hashing: AtomicBool::new(true),
             stop: AtomicBool::new(false),
             hold_reported: AtomicBool::new(false),
             kicked: Mutex::new(false),
@@ -693,6 +698,26 @@ impl PhotoPipeline {
         *lock(&self.shared.art_index) = None;
         *lock(&self.shared.embedder) = Some(e);
         self.kick();
+    }
+
+    /// Auto tags were switched off: no more vectors or tags are made (what is stored stays).
+    pub fn clear_embedder(&self) {
+        *lock(&self.shared.tag_index) = None;
+        *lock(&self.shared.art_index) = None;
+        *lock(&self.shared.embedder) = None;
+    }
+
+    /// People were switched off: no more faces are looked for (what is stored stays).
+    pub fn clear_face_engine(&self) {
+        *lock(&self.shared.faces) = None;
+    }
+
+    /// Duplicate finding on or off: whether every file is hashed as it is read.
+    pub fn set_hashing(&self, on: bool) {
+        self.shared.hashing.store(on, Ordering::SeqCst);
+        if on {
+            self.kick();
+        }
     }
 
     /// The face models are loaded: photos not yet scanned for faces are picked up.
@@ -721,12 +746,18 @@ impl PhotoPipeline {
             }
         }
         self.kick();
+        self.shared.report(); // the window learns at once that there is loading to do
     }
 
     /// The photos a walk found (in any folder) that are not stored yet: the analyses' totals include them, so a library
     /// that is still filling in does not look nearly done.
     pub fn pending_photos(&self) -> i64 {
         lock(&self.shared.intake).outstanding.values().map(|n| n.0).sum()
+    }
+
+    /// The files (photos and videos) a walk found that are not stored yet: the loading the pipeline has still to do.
+    pub fn pending_files(&self) -> i64 {
+        lock(&self.shared.intake).outstanding.values().map(|n| n.0 + n.1).sum()
     }
 
     /// The (photos, videos) in these folders that a walk found and the pipeline has not stored yet.
@@ -1024,6 +1055,23 @@ mod tests {
     }
 
     #[test]
+    fn with_hashing_off_photos_are_stored_and_analysed_but_not_hashed_until_it_is_on_again() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 250, 2);
+        let p = r.pipeline(2);
+        with_models(&p);
+        p.set_hashing(false);
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((2, 2), (2, 2))), "stored and analysed");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(r.db.photos_needing_work(None, None, false, 10).unwrap().len(), 2, "neither has its hash");
+        p.set_hashing(true);
+        assert!(wait_until(5000, || r.db.photos_needing_work(None, None, false, 10).unwrap().is_empty()), "hashed once it is on");
+        p.stop();
+    }
+
+    #[test]
     fn a_removed_folders_waiting_files_are_dropped() {
         let r = Rig::new();
         r.file("a.png", 250, 1);
@@ -1181,6 +1229,38 @@ mod tests {
         assert_eq!(r.db.face_counts(FV).unwrap().0, 0, "no face model yet");
         p.set_face_engine(Arc::new(FakeFaceEngine));
         assert!(wait_until(5000, || r.db.face_counts(FV).unwrap() == (2, 2)));
+        p.stop();
+    }
+
+    #[test]
+    fn with_every_analysis_off_new_files_are_still_stored_and_thumbnailed() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 250, 2);
+        let p = r.pipeline(2); // (no models: no tags, no faces)
+        p.set_hashing(false); // and no duplicate finding
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.db.count_photos_in(&Default::default()).unwrap() == 2), "both stored");
+        for ph in r.db.list_photos(0, 10).unwrap() {
+            assert!(wait_until(5000, || thumb_path(&r.thumbs(), ThumbClass::Grid, ph.id, ph.mtime, ph.size).exists()), "a thumbnail for {}", ph.path);
+        }
+        assert_eq!(r.db.embedding_counts(EV).unwrap().0, 0);
+        assert_eq!(r.db.face_counts(FV).unwrap().0, 0);
+        assert_eq!(r.db.photos_needing_work(None, None, false, 10).unwrap().len(), 2, "and nothing was hashed");
+        p.stop();
+    }
+
+    #[test]
+    fn the_loading_to_do_counts_photos_and_videos_and_says_when_it_is_paused() {
+        let r = Rig::new();
+        r.file("a.png", 250, 1);
+        let p = r.pipeline(2);
+        p.set_paused(true);
+        assert!(p.is_paused());
+        p.enqueue(r.walk());
+        assert_eq!(p.pending_files(), 1);
+        p.set_paused(false);
+        assert!(wait_until(5000, || p.pending_files() == 0));
         p.stop();
     }
 

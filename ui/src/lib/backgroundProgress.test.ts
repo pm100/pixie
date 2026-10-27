@@ -9,6 +9,16 @@ const noScan = { seen: 0, indexed: 0, toIndex: 0 };
 const idle = { scanning: false, scan: noScan, analysis: status(), people: status() };
 
 describe('backgroundProgress', () => {
+  it('says loading while files are being read, with how far, whatever the analyses are doing (or not doing)', () => {
+    const off = { ...idle, analysis: status({ models: 'off' }), people: status({ models: 'off' }) };
+    const p = backgroundProgress({ ...off, loading: { pending: 25, peak: 100, paused: false } })!;
+    expect([p.state, p.text, p.fraction]).toEqual(['working', 'Loading photos 75%', 0.75]);
+    expect(backgroundProgress({ ...off, loading: { pending: 0, peak: 100, paused: false } })).toBeNull(); // loaded, and nothing else on
+  });
+  it('says loading paused, not analysis paused, while the Pause is on with files still to load', () => {
+    const p = backgroundProgress({ ...idle, analysis: status({ done: 1, total: 2, paused: true }), people: status({ done: 1, total: 2, paused: true }), loading: { pending: 3, peak: 10, paused: true } })!;
+    expect([p.state, p.text]).toEqual(['paused', 'Loading paused']);
+  });
   it('shows how far the folders just added have got, not the whole library', () => {
     const whole = { ...idle, analysis: status({ done: 900, total: 1000 }), people: status({ done: 900, total: 1000 }) };
     expect(backgroundProgress(whole)!.text).toBe('Analysing photos 90%');

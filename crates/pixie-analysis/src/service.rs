@@ -42,6 +42,8 @@ struct State {
     error: Option<String>,
     paused: bool,
     loading: bool,
+    /// Auto tags are switched on (when off the models are not fetched and the pipeline makes no tags).
+    enabled: bool,
     embedder: Option<Arc<dyn Embedder>>,
 }
 
@@ -124,9 +126,13 @@ impl Inner {
             s.loading = false;
             match result {
                 Ok(embedder) => {
-                    s.models = "ready";
                     s.embedder = Some(embedder.clone());
-                    self.cfg.pipeline.set_embedder(embedder); // the pipeline now picks up the photos that lack a vector
+                    if s.enabled {
+                        s.models = "ready";
+                        self.cfg.pipeline.set_embedder(embedder); // the pipeline now picks up the photos that lack a vector
+                    } else {
+                        s.models = "off"; // switched off while it was loading: kept, and handed over when switched on
+                    }
                 }
                 Err(e) => {
                     s.models = "error";
@@ -140,16 +146,22 @@ impl Inner {
 
 impl AnalysisService {
     pub fn start(cfg: Config) -> AnalysisService {
+        Self::start_with(cfg, true)
+    }
+
+    /// `enabled` false: Auto tags are off to begin with, and no model is fetched until they are switched on.
+    pub fn start_with(cfg: Config, enabled: bool) -> AnalysisService {
         let svc = AnalysisService {
             inner: Arc::new(Inner {
                 cfg,
                 state: Mutex::new(State {
-                    models: "missing",
+                    models: if enabled { "missing" } else { "off" },
                     model_done: 0,
                     model_total: 0,
                     error: None,
                     paused: false,
                     loading: false,
+                    enabled,
                     embedder: None,
                 }),
                 cache: Mutex::new(None),
@@ -169,7 +181,7 @@ impl AnalysisService {
     fn begin(&self) {
         {
             let mut s = self.inner.lock();
-            if s.loading || s.embedder.is_some() {
+            if !s.enabled || s.loading || s.embedder.is_some() {
                 return;
             }
             s.loading = true;
@@ -190,6 +202,28 @@ impl AnalysisService {
     /// Try the download and load again after an error.
     pub fn retry(&self) {
         self.begin();
+    }
+
+    /// Switch Auto tags on or off. Off: the pipeline makes no more tags and no model is fetched (the tags already made are
+    /// kept). On: the model is fetched if it is not yet here, and the photos without tags are picked up.
+    pub fn set_enabled(&self, on: bool) {
+        let embedder = {
+            let mut s = self.inner.lock();
+            if s.enabled == on {
+                return;
+            }
+            s.enabled = on;
+            s.models = if !on { "off" } else if s.embedder.is_some() { "ready" } else { "missing" };
+            s.embedder.clone()
+        };
+        if !on {
+            self.inner.cfg.pipeline.clear_embedder();
+        } else if let Some(e) = embedder {
+            self.inner.cfg.pipeline.set_embedder(e);
+        } else {
+            self.begin();
+        }
+        self.inner.emit();
     }
 
     /// The one Pause: the pipeline stops taking photos (for every step), and the window is told.
@@ -307,6 +341,10 @@ mod tests {
     }
 
     fn rig(photos: usize, fail_download: bool) -> Rig {
+        rig_with(photos, fail_download, true)
+    }
+
+    fn rig_with(photos: usize, fail_download: bool, enabled: bool) -> Rig {
         let models = tempfile::tempdir().unwrap();
         let pdir = tempfile::tempdir().unwrap();
         let db = Db::open_in_memory().unwrap();
@@ -321,7 +359,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let loads = Arc::new(AtomicUsize::new(0));
         let (ev, ld) = (events.clone(), loads.clone());
-        let svc = AnalysisService::start(Config {
+        let svc = AnalysisService::start_with(Config {
             db: db.clone(),
             version: "fake-1".into(),
             dir: models.path().to_path_buf(),
@@ -333,7 +371,7 @@ mod tests {
             }),
             pipeline: pipeline(&db, pdir.path()),
             on_status: Arc::new(move |s| ev.lock().unwrap().push(s)),
-        });
+        }, enabled);
         Rig { svc, db, dl, events, loads, _models: models, _photos: pdir }
     }
 
@@ -346,6 +384,36 @@ mod tests {
         assert_eq!((s.done, s.total, s.error.clone()), (3, 3, None));
         assert!(r.events.lock().unwrap().iter().any(|e| e.models == "downloading"));
         assert_eq!(r.loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn switched_off_it_fetches_no_model_and_analyses_nothing_until_switched_on() {
+        let r = rig_with(2, false, false);
+        assert_eq!(r.svc.status().models, "off");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(r.loads.load(Ordering::SeqCst), 0, "no model was loaded");
+        assert_eq!(r.db.embedding_counts("fake-1").unwrap().0, 0);
+        r.svc.set_enabled(true);
+        assert!(wait_until(5000, || r.svc.status().models == "ready"));
+        assert!(wait_until(5000, || r.db.embedding_counts("fake-1").unwrap() == (2, 2)));
+    }
+
+    #[test]
+    fn switching_off_stops_new_analysis_and_on_again_carries_on_with_the_model_already_loaded() {
+        let r = rig(2, false);
+        assert!(wait_until(5000, || r.db.embedding_counts("fake-1").unwrap() == (2, 2)));
+        r.svc.set_enabled(false);
+        assert_eq!(r.svc.status().models, "off");
+        let folder = r.db.list_folders().unwrap()[0].id;
+        let late = r._photos.path().join("late.png");
+        RgbImage::from_pixel(8, 8, Rgb([5, 250, 5])).save(&late).unwrap();
+        r.db.upsert_photo(folder, late.to_str().unwrap(), 1, 1, &PhotoMeta::default()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(r.db.embedding_counts("fake-1").unwrap(), (2, 3), "the new photo is left alone while off");
+        r.svc.set_enabled(true);
+        assert_eq!(r.svc.status().models, "ready", "ready at once: the model is still loaded");
+        assert!(wait_until(5000, || r.db.embedding_counts("fake-1").unwrap() == (3, 3)));
+        assert_eq!(r.loads.load(Ordering::SeqCst), 1, "the model was not loaded again");
     }
 
     #[test]
