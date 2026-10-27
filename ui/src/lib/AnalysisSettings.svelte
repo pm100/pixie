@@ -1,13 +1,14 @@
 <script lang="ts">
   import type { AnalysisView } from './analysisView';
 
-  let { view, onpause, onretry }: { view: AnalysisView; onpause: (paused: boolean) => void; onretry: () => void } = $props();
+  let { view, note = null, onpause, onretry }: { view: AnalysisView; note?: string | null; onpause: (paused: boolean) => void; onretry: () => void } = $props();
 </script>
 
 <h2>Picture analysis</h2>
 <p>Pixie studies your photos on this computer. Nothing leaves your computer except the one-time download of the
   picture-analysis and face models.</p>
 
+{#if note}<p class="note">{note}</p>{/if}
 <div class="overall">
   <div class="head"><b>{view.headline}</b></div>
   {#if view.fraction !== null}<progress value={view.fraction} max="1"></progress>{/if}
@@ -37,6 +38,7 @@
 </ul>
 
 <style>
+  .note { margin: 8px 0 0; color: #555; font-size: 13px; }
   .overall { margin: 8px 0 10px; max-width: 420px; }
   progress { display: block; width: 100%; margin: 4px 0 0; }
   .counters { margin: 0 0 12px; display: grid; gap: 4px; max-width: 420px; }

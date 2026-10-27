@@ -9,6 +9,14 @@ const noScan = { seen: 0, indexed: 0, toIndex: 0 };
 const idle = { scanning: false, scan: noScan, analysis: status(), people: status() };
 
 describe('backgroundProgress', () => {
+  it('shows how far the folders just added have got, not the whole library', () => {
+    const whole = { ...idle, analysis: status({ done: 900, total: 1000 }), people: status({ done: 900, total: 1000 }) };
+    expect(backgroundProgress(whole)!.text).toBe('Analysing photos 90%');
+    const added = backgroundProgress({ ...whole, load: { fraction: 0.17 } })!;
+    expect(added.text).toBe('Analysing photos 17%');
+    expect(added.fraction).toBe(0.17);
+  });
+
   it('is nothing when nothing is running', () => {
     expect(backgroundProgress(idle)).toBeNull();
     expect(backgroundProgress({ ...idle, analysis: null, people: null })).toBeNull();

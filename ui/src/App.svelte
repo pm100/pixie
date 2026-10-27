@@ -256,6 +256,20 @@
     void refreshFolderStates();
   }
 
+  // While photos are still being found and stored, the counts beside the folders follow along (every 3 seconds), not
+  // only when a scan ends.
+  let countsBusy = false;
+  $effect(() => {
+    const t = setInterval(async () => {
+      const working = scanning || (analysis !== null && analysis.done < analysis.total);
+      if (!working || countsBusy || document.visibilityState !== 'visible') return;
+      countsBusy = true;
+      try { folderInfos = await listFolderInfo(); } catch { /* the next time */ }
+      countsBusy = false;
+    }, 3000);
+    return () => clearInterval(t);
+  });
+
   /** Which folders can be reached right now; asked again every 30 seconds while the window is showing. */
   let folderStateMap = $state<FolderStates>({});
   async function refreshFolderStates() {
@@ -699,7 +713,30 @@
   /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
    *  Settings, Picture analysis (which counts the whole library). */
   const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad }));
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople }));
+  // The folders just added: until their photos are all analysed, the bars (Settings, Picture analysis, and the indicator at
+  // the top right) show how far those have got, out of all that was found in them. With nothing newly added they show
+  // the whole library.
+  let trackIds = $state<number[]>([]);
+  let trackLoad = $state<LoadProgress | null>(null);
+  $effect(() => {
+    const ids = trackIds;
+    if (ids.length === 0) { trackLoad = null; return; }
+    let live = true;
+    const tick = async () => {
+      try { const lp = await loadProgress(ids); if (live) trackLoad = lp; } catch { /* the next time */ }
+    };
+    void tick();
+    const t = setInterval(tick, 1500);
+    return () => { live = false; clearInterval(t); };
+  });
+  const trackView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackLoad }));
+  const trackActive = $derived(trackIds.length > 0 && trackLoad !== null && !trackView.finished);
+  // Done: back to the whole library (not while folders are still being read, when nothing may have been stored yet).
+  $effect(() => {
+    if (trackIds.length > 0 && trackLoad !== null && !scanning && trackView.finished) trackIds = [];
+  });
+  const trackNames = $derived(folderInfos.filter((f) => trackIds.includes(f.id)).map((f) => folderName(f.path)).join(', '));
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -757,6 +794,7 @@
     addMode = false;
     message = '';
     flowLoad = null;
+    trackIds = []; trackLoad = null;
     flowStopped = false; flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
     strip = []; flowFolder = null; allSet = null; flowProblems = [];
     feed?.stop();
@@ -766,6 +804,7 @@
     flowStarted = (async () => {
       try {
         flowIds = (await scanFolders(paths)).folder_ids;
+        trackIds = flowIds;
         folders = await listFolders();
       } catch (e) {
         message = String(e);
@@ -854,7 +893,7 @@
   };
 
   /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
-  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState, dupes: dupPass(dupState) }));
+  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis, people: peopleState, dupes: dupPass(dupState), load: trackActive ? { fraction: trackView.fraction } : null }));
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
@@ -1106,10 +1145,10 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings folders={folderInfos} folderStates={folderStateMap} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
-                  analysis={settingsView} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
+                  analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
   </Tabs>

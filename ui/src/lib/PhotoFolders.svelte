@@ -6,10 +6,12 @@
   import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
   import { scanText, type ScanState } from './scanProgress';
 
-  let { folders, folderStates = {}, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
+  let { folders, folderStates = {}, analysing = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
+    /** The folders just added and how far their analysis has got: those rows say so. */
+    analysing?: { ids: number[]; fraction: number | null } | null;
     /** The folder the running scan is on, and what it has reported so far. */
     scanFolder: number | null; scan: ScanState; onstop: () => void;
     onremove: (id: number) => Promise<void>;
@@ -45,7 +47,7 @@
       {#if busy}
         <span class="n" role="status">{scanText(scan)}</span>
       {:else}
-        <span class="n">{plural(f.count, 'item')}</span>
+        <span class="n">{plural(f.count, 'item')}{#if analysing && analysing.fraction !== null && analysing.ids.includes(f.id)} · {Math.floor(analysing.fraction * 100)}% analysed{/if}</span>
       {/if}
       {#if busy}
         <button onclick={onstop} title="Stop this scan; what was read so far is kept">Stop</button>

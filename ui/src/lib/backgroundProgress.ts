@@ -18,6 +18,8 @@ const n = (x: number) => x.toLocaleString();
  *  folder scan, then a model download, then the analysis (Auto tags and faces together), then paused work. */
 export function backgroundProgress(o: {
   scanning: boolean; scan: ScanState; analysis: AnalysisStatus | null; people: AnalysisStatus | null; dupes?: AnalysisStatus | null;
+  /** Folders were just added and are not all analysed yet: how far those have got (the bar then shows that, not the whole library). */
+  load?: { fraction: number | null } | null;
 }): BgProgress | null {
   const passes = [
     { name: 'Auto tags', s: o.analysis },
@@ -55,6 +57,6 @@ export function backgroundProgress(o: {
   const counted = passes.filter((p) => p.s.models === 'ready' && p.s.total > 0);
   const done = counted.reduce((a, p) => a + p.s.done, 0);
   const total = counted.reduce((a, p) => a + p.s.total, 0);
-  const fraction = total > 0 ? done / total : null;
+  const fraction = o.load ? o.load.fraction : total > 0 ? done / total : null;
   return { state: 'working', text: `Analysing photos ${Math.floor((fraction ?? 0) * 100)}%`, fraction, detail };
 }

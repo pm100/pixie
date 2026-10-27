@@ -17,8 +17,12 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
-    folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
+    folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean;
+    /** The folders just added, and how far their analysis has got (null: nothing newly added is still being analysed). */
+    analysing?: { ids: number[]; fraction: number | null } | null;
+    /** Says what the Picture analysis numbers are about when they are for the folders just added. */
+    analysisNote?: string | null; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
@@ -56,7 +60,7 @@
   </nav>
   <div class="page">
     {#if page === 'folders'}
-      <PhotoFolders {folders} {folderStates} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {networkRescan} {onnetworkrescan} />
+      <PhotoFolders {folders} {folderStates} {analysing} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {networkRescan} {onnetworkrescan} />
     {:else if page === 'viewing'}
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>
@@ -70,7 +74,7 @@
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
-      <AnalysisSettings view={analysis} onpause={onanalysispause} onretry={onanalysisretry} />
+      <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
