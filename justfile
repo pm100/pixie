@@ -26,11 +26,13 @@ maclaunch:
     npm install
     npm run tauri dev
 
-# Build the Windows installer (a per-user NSIS setup program) and show where it is.
+# Build the Windows installer (a per-user NSIS setup program), copy it to builds/ and show where it is.
 # It fetches Microsoft's Visual C++ runtime on the target machine if that is missing.
 win-build:
     npm run tauri build
-    Get-ChildItem target/release/bundle/nsis/*-setup.exe | ForEach-Object { Write-Host ("Installer: " + $_.FullName + "  (" + [math]::Round($_.Length / 1MB, 1) + " MB)  SHA256 " + ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($_.FullName))) -replace '-', '')) }
+    New-Item -ItemType Directory -Force builds | Out-Null
+    Copy-Item target/release/bundle/nsis/*-setup.exe builds/ -Force
+    Get-ChildItem builds/*-setup.exe | ForEach-Object { Write-Host ("Installer: " + $_.FullName + "  (" + [math]::Round($_.Length / 1MB, 1) + " MB)  SHA256 " + ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($_.FullName))) -replace '-', '')) }
 
 # Build the macOS disk image (Apple silicon, unsigned) on the Mac (`ssh mac`) from what is pushed to origin, copy it to
 # target/ here and show its size and checksum. HEIC support comes from a vcpkg clone on the Mac (see README), not Homebrew,

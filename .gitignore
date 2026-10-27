@@ -6,3 +6,4 @@ node_modules
 .superpowers/
 /src-tauri/dlls
 /src-tauri/dylibs
+/builds
