@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod camera;
 pub mod mail;
+pub use camera::normalize_camera;
 pub use mail::*;
 
 pub type PhotoId = i64;
@@ -518,6 +520,8 @@ pub struct FacetCounts {
     pub trips: Vec<i64>,
     /// Items taken since the `recent_since` asked for (the Last 30 days row); 0 when none was asked for.
     pub recent: i64,
+    /// Each camera (by its tidied name, see `normalize_camera`) with its item count, most first.
+    pub cameras: Vec<(String, i64)>,
 }
 
 /// One face to look at: its id, the photo it is in (with that photo's version, to show it) and the face's box,

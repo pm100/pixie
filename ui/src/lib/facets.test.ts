@@ -9,6 +9,7 @@ const counts: FacetCounts = {
   people: [[5, 12]],
   trips: [30, 0],
   recent: 21,
+  cameras: [['Pixel 7', 800], ['Samsung SM-G930A', 400]],
 };
 const trips = [{ since: 1000 }, { since: 2000 }];
 
@@ -41,5 +42,15 @@ describe('tripsHeld', () => {
   it('counts the trips with something in them under the filters, or all of them without', () => {
     expect(tripsHeld(trips, indexFacets(counts, trips))).toBe(1);
     expect(tripsHeld(trips, null)).toBe(2);
+  });
+});
+
+describe('the cameras', () => {
+  it('keep the order the backend gave them (most photos first)', () => {
+    expect(indexFacets(counts, []).cameras).toEqual([['Pixel 7', 800], ['Samsung SM-G930A', 400]]);
+  });
+  it('are an empty list from a backend that does not send them', () => {
+    const { cameras, ...old } = counts;
+    expect(indexFacets(old as FacetCounts, []).cameras).toEqual([]);
   });
 });

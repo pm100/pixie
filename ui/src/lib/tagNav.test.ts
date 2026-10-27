@@ -41,4 +41,8 @@ describe('hitsActive', () => {
     expect(hitsActive(null, 3)).toBe(true);
     expect(hitsActive('beach', 3)).toBe(true);
   });
+  it('is on when a camera is applied', () => {
+    expect(hitsActive(null, null, 'Pixel 7')).toBe(true);
+    expect(hitsActive(null, null, null)).toBe(false);
+  });
 });

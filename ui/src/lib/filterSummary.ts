@@ -2,7 +2,7 @@ import type { MediaKind } from './api';
 
 /** How each filter in force reads, or null when it is not on. */
 export type ActiveFilters = {
-  tag: string | null; person: string | null; folder: string | null; trip: string | null;
+  tag: string | null; person: string | null; camera?: string | null; folder: string | null; trip: string | null;
   /** A chosen date ("September 2026") or Last 30 days; the two replace each other, so there is at most one. */
   date: string | null;
   kind: MediaKind | null;
@@ -15,6 +15,7 @@ export function filterNames(f: ActiveFilters): string[] {
   return [
     f.tag !== null ? `Tagged “${f.tag}”` : null,
     f.person !== null ? `Person “${f.person}”` : null,
+    f.camera != null ? `Camera “${f.camera}”` : null,
     f.kind !== null ? (f.kind === 'photo' ? 'Photos only' : 'Videos only') : null,
     f.area ? 'In the map area' : null,
     f.folder !== null ? `Folder “${f.folder}”` : null,

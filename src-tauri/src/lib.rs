@@ -443,6 +443,7 @@ async fn facet_counts(
     until: Option<i64>,
     tag: Option<String>,
     person: Option<i64>,
+    camera: Option<String>,
     trip_dates: bool,
     trip_windows: Vec<(i64, i64)>,
     recent_since: Option<i64>,
@@ -450,7 +451,7 @@ async fn facet_counts(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let groups: Vec<Vec<String>> = pixie_analysis::tags::CATEGORIES.iter().map(|(_, labels)| labels.iter().map(|l| l.to_string()).collect()).collect();
-        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, trip_dates, tag_groups: &groups, trip_windows: &trip_windows, recent_since };
+        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, camera: camera.as_deref(), trip_dates, tag_groups: &groups, trip_windows: &trip_windows, recent_since };
         let mut counts = db.facet_counts(&query_of(None, folder_id, kind, bounds, max_id, since, until, None), &ask).map_err(|e| e.to_string())?;
         counts.tag_group_names = pixie_analysis::tags::CATEGORIES.iter().map(|(name, _)| name.to_string()).collect();
         Ok(counts)
@@ -747,17 +748,24 @@ async fn tidy_faces(state: tauri::State<'_, AppState>) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || db.tidy().map(|r| r.is_some()).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
 }
 
-/// The tag and the person the listings are really restricted to, so the chips can never disagree with them.
+/// The tag, the person and the camera the listings are really restricted to, so the chips can never disagree with them.
 #[derive(Serialize)]
 struct ActiveFilters {
     tag: Option<String>,
     person: Option<i64>,
+    camera: Option<String>,
 }
 
 #[tauri::command]
 fn active_filters(state: tauri::State<AppState>) -> Result<ActiveFilters, PixieError> {
-    let (tag, person) = state.db.active_filters()?;
-    Ok(ActiveFilters { tag, person })
+    let (tag, person, camera) = state.db.active_filters()?;
+    Ok(ActiveFilters { tag, person, camera })
+}
+
+/// Show only photos taken with this camera, by its tidied name (null turns it off). List with the `search` flag.
+#[tauri::command]
+fn set_camera_filter(state: tauri::State<AppState>, camera: Option<String>) -> Result<(), PixieError> {
+    state.db.set_camera_filter(camera.as_deref())
 }
 
 /// Show only photos with this person (null turns it off). List with the `search` flag, like a text search.
@@ -1485,7 +1493,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, email_photo, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])

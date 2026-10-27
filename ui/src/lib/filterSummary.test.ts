@@ -8,8 +8,8 @@ describe('filterNames', () => {
     expect(filterNames(none)).toEqual([]);
   });
   it('names each filter as its pill reads, in the pills\' order', () => {
-    const all: ActiveFilters = { tag: 'Beach', person: 'Anna', folder: 'Pictures', trip: 'Oregon', date: 'Showing only September 2026', kind: 'video', area: true };
-    expect(filterNames(all)).toEqual(['Tagged “Beach”', 'Person “Anna”', 'Videos only', 'In the map area', 'Folder “Pictures”', 'Trip “Oregon”', 'Showing only September 2026']);
+    const all: ActiveFilters = { tag: 'Beach', person: 'Anna', camera: 'Pixel 7', folder: 'Pictures', trip: 'Oregon', date: 'Showing only September 2026', kind: 'video', area: true };
+    expect(filterNames(all)).toEqual(['Tagged “Beach”', 'Person “Anna”', 'Camera “Pixel 7”', 'Videos only', 'In the map area', 'Folder “Pictures”', 'Trip “Oregon”', 'Showing only September 2026']);
   });
 });
 

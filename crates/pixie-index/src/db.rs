@@ -181,6 +181,8 @@ pub struct FacetAsk<'a> {
     /// The tag and person chosen in the tree (held apart from the view).
     pub tag: Option<&'a str>,
     pub person: Option<i64>,
+    /// The camera chosen in the tree, by its tidied name.
+    pub camera: Option<&'a str>,
     /// The view's date window came from a chosen trip: the Trips counts then leave it out, like any section's own filter.
     pub trip_dates: bool,
     /// Groups of tags (the categories) to count different photos for.
@@ -197,12 +199,13 @@ struct FacetBase {
     filter: Filter,
     tag: Option<String>,
     person: Option<i64>,
+    camera: Option<String>,
 }
 
 impl FacetBase {
     /// `q` without its folder / kind / date window as asked, with the chosen tag / person as asked. (The view's own
     /// tag and person hits are never used here: they are passed in.)
-    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>) -> FacetBase {
+    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>) -> FacetBase {
         let mut q = *q;
         q.search = false;
         if no_folder {
@@ -223,7 +226,10 @@ impl FacetBase {
         if person.is_some() {
             sql.push_str(" AND id IN (SELECT photo_id FROM faces WHERE person_id = :person)");
         }
-        FacetBase { sql, filter, tag: tag.map(str::to_string), person }
+        if camera.is_some() {
+            sql.push_str(" AND camera IN (SELECT raw FROM camera_norm WHERE name = :camera)");
+        }
+        FacetBase { sql, filter, tag: tag.map(str::to_string), person, camera: camera.map(str::to_string) }
     }
     fn params(&self) -> Vec<(&str, &dyn rusqlite::ToSql)> {
         let mut v = self.filter.params();
@@ -232,6 +238,9 @@ impl FacetBase {
         }
         if let Some(p) = &self.person {
             v.push((":person", p));
+        }
+        if let Some(c) = &self.camera {
+            v.push((":camera", c));
         }
         v
     }
@@ -386,11 +395,30 @@ fn list_sql(q: &PhotoQuery, f: &Filter) -> String {
     )
 }
 
-/// Rebuild `search_hits` as the photos in every active hit set (text search, tag filter).
+/// Make `camera_norm` list every camera string in the library with its tidied name (see `normalize_camera`), so SQL can
+/// group and filter by the tidied name.
+fn sync_camera_names(c: &Connection) -> Result<()> {
+    let raws: Vec<String> = {
+        let mut s = c.prepare("SELECT DISTINCT camera FROM photos WHERE camera IS NOT NULL AND camera != ''").map_err(db_err)?;
+        let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<String>, _>>().map_err(db_err)?;
+        rows
+    };
+    c.execute("DELETE FROM camera_norm", []).map_err(db_err)?;
+    let mut ins = c.prepare("INSERT OR REPLACE INTO camera_norm(raw, name) VALUES (?1, ?2)").map_err(db_err)?;
+    for raw in raws {
+        let name = pixie_core::normalize_camera(&raw);
+        if !name.is_empty() {
+            ins.execute(params![raw, name]).map_err(db_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuild `search_hits` as the photos in every active hit set (text search, tag, person and camera filters).
 fn refresh_hits(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute("DELETE FROM search_hits", []).map_err(db_err)?;
     let mut sets = Vec::new();
-    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits")] {
+    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits"), ("camera", "camera_hits")] {
         let n: i64 = tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get(0)).map_err(db_err)?;
         if n > 0 {
             sets.push(format!("SELECT photo_id FROM {table}"));
@@ -494,6 +522,8 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS text_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS tag_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS person_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS camera_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS camera_norm (raw TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
         )
         .map_err(db_err)?;
@@ -760,6 +790,7 @@ impl Db {
     /// section is counted with every filter except its own. Short statements, so the database is free in between.
     pub fn facet_counts(&self, q: &PhotoQuery, ask: &FacetAsk) -> Result<FacetCounts> {
         let mut out = FacetCounts::default();
+        sync_camera_names(&self.conn())?;
         let pairs = |sql: String, base: &FacetBase| -> Result<Vec<(i64, i64)>> {
             let c = self.conn();
             let mut s = c.prepare(&sql).map_err(db_err)?;
@@ -768,7 +799,7 @@ impl Db {
         };
 
         // Media types: everything but the media type.
-        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person);
+        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera);
         for (kind, n) in pairs(format!("SELECT kind, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY kind", base.sql), &base)? {
             if kind == 1 {
                 out.videos = n;
@@ -777,16 +808,16 @@ impl Db {
             }
         }
         // Folders: everything but the folder.
-        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person);
+        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera);
         out.folders = pairs(format!("SELECT folder_id, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY folder_id", base.sql), &base)?;
         // People: everything but the person.
-        let base = FacetBase::new(q, false, false, false, ask.tag, None);
+        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera);
         out.people = pairs(
             format!("SELECT person_id, COUNT(DISTINCT photo_id) FROM faces WHERE person_id IS NOT NULL AND photo_id IN ({}) GROUP BY person_id", base.sql),
             &base,
         )?;
         // Auto tags: everything but the tag; then the different photos in each group of tags.
-        let base = FacetBase::new(q, false, false, false, None, ask.person);
+        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera);
         {
             let c = self.conn();
             let mut s = c.prepare(&format!("SELECT tag, COUNT(DISTINCT photo_id) FROM photo_tags WHERE photo_id IN ({}) GROUP BY tag", base.sql)).map_err(db_err)?;
@@ -812,7 +843,7 @@ impl Db {
         }
         // Trips: everything but the date window when that came from a trip.
         if !ask.trip_windows.is_empty() {
-            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person);
+            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera);
             let mut times: Vec<i64> = {
                 let c = self.conn();
                 let mut s = c.prepare(&format!("SELECT taken_at FROM photos WHERE taken_at IS NOT NULL AND id IN ({})", base.sql)).map_err(db_err)?;
@@ -828,13 +859,25 @@ impl Db {
         }
         // Last 30 days is a date choice like the others: everything but the date window.
         if let Some(since) = ask.recent_since {
-            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person);
+            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera);
             let mut params = base.params();
             params.push((":recent_since", &since));
             let c = self.conn();
             out.recent = c
                 .query_row(&format!("SELECT COUNT(*) FROM photos WHERE taken_at >= :recent_since AND id IN ({})", base.sql), params.as_slice(), |r| r.get(0))
                 .map_err(db_err)?;
+        }
+        // Cameras: everything but the camera, grouped by the tidied name.
+        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None);
+        {
+            let c = self.conn();
+            let mut s = c
+                .prepare(&format!(
+                    "SELECT n.name, COUNT(*) AS cnt FROM photos p JOIN camera_norm n ON n.raw = p.camera WHERE p.id IN ({}) GROUP BY n.name ORDER BY cnt DESC, n.name",
+                    base.sql
+                ))
+                .map_err(db_err)?;
+            out.cameras = s.query_map(base.params().as_slice(), |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         }
         Ok(out)
     }
@@ -1311,13 +1354,33 @@ impl Db {
         Ok(())
     }
 
-    /// The tag and the person the listings are really restricted to (the UI draws its chips from these).
-    pub fn active_filters(&self) -> Result<(Option<String>, Option<i64>)> {
+    /// The tag, the person and the camera the listings are really restricted to (the UI draws its chips from these).
+    pub fn active_filters(&self) -> Result<(Option<String>, Option<i64>, Option<String>)> {
         let c = self.conn();
         let value = |name: &str| -> Result<Option<String>> {
             c.query_row("SELECT value FROM filter_state WHERE name = ?1", params![name], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err).map(Option::flatten)
         };
-        Ok((value("tag")?, value("person")?.and_then(|v| v.parse().ok())))
+        Ok((value("tag")?, value("person")?.and_then(|v| v.parse().ok()), value("camera")?))
+    }
+
+    /// Show only photos taken with this camera (its tidied name, see `normalize_camera`); `None` turns the camera filter off.
+    pub fn set_camera_filter(&self, camera: Option<&str>) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        sync_camera_names(&tx)?;
+        tx.execute("DELETE FROM camera_hits", []).map_err(db_err)?;
+        match camera {
+            Some(name) => {
+                tx.execute("INSERT INTO camera_hits(photo_id) SELECT id FROM photos WHERE camera IN (SELECT raw FROM camera_norm WHERE name = ?1)", params![name]).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('camera', ?1)", params![name]).map_err(db_err)?;
+            }
+            None => {
+                tx.execute("DELETE FROM filter_state WHERE name = 'camera'", []).map_err(db_err)?;
+            }
+        }
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
     }
 
     /// Show only photos with this tag; `None` turns the tag filter off.
@@ -2671,14 +2734,69 @@ mod tests {
     #[test]
     fn the_active_tag_and_person_can_be_read_back() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(db.active_filters().unwrap(), (None, None));
+        assert_eq!(db.active_filters().unwrap(), (None, None, None));
         db.set_tag_filter(Some("museum")).unwrap();
         db.set_person_filter(Some(7)).unwrap();
-        assert_eq!(db.active_filters().unwrap(), (Some("museum".to_string()), Some(7)));
+        assert_eq!(db.active_filters().unwrap(), (Some("museum".to_string()), Some(7), None));
         db.set_tag_filter(None).unwrap();
-        assert_eq!(db.active_filters().unwrap(), (None, Some(7)));
+        assert_eq!(db.active_filters().unwrap(), (None, Some(7), None));
         db.set_person_filter(None).unwrap();
-        assert_eq!(db.active_filters().unwrap(), (None, None));
+        assert_eq!(db.active_filters().unwrap(), (None, None, None));
+    }
+
+    fn camera_library() -> (Db, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let with = |camera: Option<&str>, taken: i64| PhotoMeta { camera: camera.map(str::to_string), ..meta(Some(taken)) };
+        db.upsert_photo(f, "/p/a.jpg", 1, 1, &with(Some("Google Pixel 7"), 100)).unwrap();
+        db.upsert_photo(f, "/p/b.jpg", 1, 1, &with(Some("Pixel 7"), 200)).unwrap(); // the same phone, written differently
+        db.upsert_photo(f, "/p/c.jpg", 1, 1, &with(Some("SAMSUNG-SM-G930A"), 300)).unwrap();
+        db.upsert_photo(f, "/p/d.jpg", 1, 1, &with(None, 400)).unwrap();
+        (db, f)
+    }
+
+    #[test]
+    fn a_camera_filter_uses_the_tidied_name_so_variants_of_one_phone_match_together() {
+        let (db, _) = camera_library();
+        let search = PhotoQuery { search: true, ..Default::default() };
+        db.set_camera_filter(Some("Pixel 7")).unwrap();
+        let mut names = file_names(&db, &search);
+        names.sort();
+        assert_eq!(names, ["a.jpg", "b.jpg"]);
+        assert_eq!(db.active_filters().unwrap().2.as_deref(), Some("Pixel 7"));
+        db.set_camera_filter(Some("Samsung SM-G930A")).unwrap();
+        assert_eq!(file_names(&db, &search), ["c.jpg"]);
+        db.set_camera_filter(None).unwrap();
+        assert_eq!(db.active_filters().unwrap().2, None);
+        assert_eq!(file_names(&db, &PhotoQuery::default()).len(), 4, "off: everything");
+    }
+
+    #[test]
+    fn a_camera_filter_combines_with_a_tag() {
+        let (db, _) = camera_library();
+        let ids: Vec<_> = db.list_photos(0, 10).unwrap().into_iter().map(|p| (p.id, basename_of(&p.path))).collect();
+        let id_of = |n: &str| ids.iter().find(|(_, b)| b == n).unwrap().0;
+        db.set_tags(id_of("a.jpg"), "m", "t", &[("museum".to_string(), 0.9)]).unwrap();
+        db.set_tags(id_of("c.jpg"), "m", "t", &[("museum".to_string(), 0.9)]).unwrap();
+        db.set_tag_filter(Some("museum")).unwrap();
+        db.set_camera_filter(Some("Pixel 7")).unwrap();
+        assert_eq!(file_names(&db, &PhotoQuery { search: true, ..Default::default() }), ["a.jpg"], "in both sets");
+    }
+
+    fn basename_of(p: &str) -> String {
+        p.rsplit('/').next().unwrap_or(p).to_string()
+    }
+
+    #[test]
+    fn the_camera_counts_group_by_tidied_name_and_leave_out_their_own_filter() {
+        let (db, _) = camera_library();
+        let ask = |camera: Option<&'static str>| FacetAsk { tag: None, person: None, camera, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
+        let c = db.facet_counts(&PhotoQuery::default(), &ask(None)).unwrap();
+        assert_eq!(c.cameras, [("Pixel 7".to_string(), 2), ("Samsung SM-G930A".to_string(), 1)], "most first; no camera is not listed");
+        // choosing a camera narrows the other counts but not the Cameras list itself
+        let c = db.facet_counts(&PhotoQuery::default(), &ask(Some("Samsung SM-G930A"))).unwrap();
+        assert_eq!(c.cameras.len(), 2);
+        assert_eq!(c.photos, 1);
     }
 
     #[test]
@@ -2698,7 +2816,7 @@ mod tests {
         assert_eq!(db.count_photos_in(&q(Some(UNDATED), None, Some(MediaKind::Video))).unwrap(), 1);
         assert_eq!(db.count_photos_in(&q(Some(0), Some(i64::MAX), None)).unwrap(), 1);
         // The counts beside the tree's entries follow it too.
-        let ask = FacetAsk { tag: None, person: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
+        let ask = FacetAsk { tag: None, person: None, camera: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
         let facets = db.facet_counts(&none, &ask).unwrap();
         assert_eq!((facets.photos, facets.videos), (1, 1));
     }
@@ -2743,7 +2861,7 @@ mod tests {
         let person = person_of(&db, &[p2, p3], [1.0, 0.0]);
         let groups = vec![vec!["beach".to_string(), "dog".to_string()]];
         let windows = [(0, 500), (500, 3000)];
-        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250) };
+        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, camera: None, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250) };
         let tags = |f: &FacetCounts| {
             let mut t = f.tags.clone();
             t.sort();

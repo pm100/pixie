@@ -15,7 +15,7 @@
   import { faceUrl } from './url';
   import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -32,6 +32,8 @@
     /** Some photos have been checked for faces: with nobody named yet, the section says where to name people. */
     facesFound: boolean;
     /** The photo folders, with the item count of each, and the one chosen (if any). */
+    /** The cameras (tidied names) with their counts under the filters in force, and the one chosen. */
+    cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
@@ -96,6 +98,7 @@
     people: people.find((p) => p.id === person) ? personLabel(people.find((p) => p.id === person)!) : '',
     trips: trips.find((t) => t.since === trip) ? tripTitle(trips.find((t) => t.since === trip)!) : '',
     tags: tag !== null ? tagLabel(tag) : '',
+    cameras: camera ?? '',
     when: period !== null ? periodLabel(period) : recent ? recentText : '',
   });
 
@@ -121,11 +124,10 @@
 {/snippet}
 
 <nav>
-  {@render head('library', 'Media types')}
-  {#if !folded('library')}
-    <!-- Like every other filter: click to choose, click again to clear. Nothing chosen shows everything. -->
-    <button class="item" class:active={kind === 'photo'} class:zero={facets && facets.photos === 0 && kind !== 'photo'} aria-pressed={kind === 'photo'} onclick={() => onkind(kind === 'photo' ? null : 'photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span><span class="grow">Photos</span>{#if facets}<span class="n">{facets.photos.toLocaleString()}</span>{/if}</button>
-    <button class="item" class:active={kind === 'video'} class:zero={facets && facets.videos === 0 && kind !== 'video'} aria-pressed={kind === 'video'} onclick={() => onkind(kind === 'video' ? null : 'video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span><span class="grow">Videos</span>{#if facets}<span class="n">{facets.videos.toLocaleString()}</span>{/if}</button>
+  {@render head('when', 'When')}
+  {#if !folded('when')}
+    <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow">{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
+    <WhenNav {groups} {period} {onperiod} />
   {/if}
 
   {#if people.length === 0 && facesFound}
@@ -148,6 +150,26 @@
       {#if shownPeople.hidden > 0 || allPeople}
         <button class="item more" onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${plural(people.length, 'person', 'people')}`}</button>
       {/if}
+    {/if}
+  {/if}
+
+  {#if tags.length > 0}
+    {@render head('tags', 'Auto tags')}
+    {#if !folded('tags')}
+      {#each tree as g (g.category)}
+        {@const held = countOf(facets?.categories, g.category, g.photos)}
+        <button class="item cat" class:zero={facets && held === 0} aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
+          <Chevron open={isOpen(g.category)} /><span class="grow">{g.category}</span><span class="n">{held.toLocaleString()}</span>
+        </button>
+        {#if isOpen(g.category)}
+          {#each g.tags as t (t.tag)}
+            {@const n = countOf(facets?.tags, t.tag, t.count)}
+            <button class="item sub" class:active={tag === t.tag} class:zero={facets && n === 0 && tag !== t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
+              <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{n.toLocaleString()}</span>
+            </button>
+          {/each}
+        {/if}
+      {/each}
     {/if}
   {/if}
 
@@ -189,30 +211,23 @@
     {/if}
   {/if}
 
-  {#if tags.length > 0}
-    {@render head('tags', 'Auto tags')}
-    {#if !folded('tags')}
-      {#each tree as g (g.category)}
-        {@const held = countOf(facets?.categories, g.category, g.photos)}
-        <button class="item cat" class:zero={facets && held === 0} aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
-          <Chevron open={isOpen(g.category)} /><span class="grow">{g.category}</span><span class="n">{held.toLocaleString()}</span>
-        </button>
-        {#if isOpen(g.category)}
-          {#each g.tags as t (t.tag)}
-            {@const n = countOf(facets?.tags, t.tag, t.count)}
-            <button class="item sub" class:active={tag === t.tag} class:zero={facets && n === 0 && tag !== t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
-              <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow">{tagLabel(t.tag)}</span><span class="n">{n.toLocaleString()}</span>
-            </button>
-          {/each}
-        {/if}
-      {/each}
-    {/if}
+  {@render head('library', 'Media types')}
+  {#if !folded('library')}
+    <!-- Like every other filter: click to choose, click again to clear. Nothing chosen shows everything. -->
+    <button class="item" class:active={kind === 'photo'} class:zero={facets && facets.photos === 0 && kind !== 'photo'} aria-pressed={kind === 'photo'} onclick={() => onkind(kind === 'photo' ? null : 'photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span><span class="grow">Photos</span>{#if facets}<span class="n">{facets.photos.toLocaleString()}</span>{/if}</button>
+    <button class="item" class:active={kind === 'video'} class:zero={facets && facets.videos === 0 && kind !== 'video'} aria-pressed={kind === 'video'} onclick={() => onkind(kind === 'video' ? null : 'video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span><span class="grow">Videos</span>{#if facets}<span class="n">{facets.videos.toLocaleString()}</span>{/if}</button>
   {/if}
 
-  {@render head('when', 'When')}
-  {#if !folded('when')}
-    <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow">{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
-    <WhenNav {groups} {period} {onperiod} />
+  <!-- A list of one camera is no choice: the section appears with two or more (or while one is chosen, to clear it). -->
+  {#if cameras.length >= 2 || camera !== null}
+    {@render head('cameras', 'Cameras')}
+    {#if !folded('cameras')}
+      {#each cameras as [name, n] (name)}
+        <button class="item" class:active={camera === name} aria-pressed={camera === name} onclick={() => oncamera(camera === name ? null : name)}>
+          <span class="mark">{#if camera === name}<Check />{/if}</span><span class="grow">{name}</span><span class="n">{n.toLocaleString()}</span>
+        </button>
+      {/each}
+    {/if}
   {/if}
 
   {#if folders.length > 0}

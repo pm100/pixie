@@ -14,6 +14,8 @@ export type FacetCounts = {
   trips: number[];
   /** Items taken in the last N days (the Last 30 days row). */
   recent: number;
+  /** Each camera by its tidied name with its count, most first. */
+  cameras: [string, number][];
 };
 
 /** The same, ready to look up by what the tree shows. An entry that is not in a map matches nothing (0). */
@@ -27,6 +29,8 @@ export type Facets = {
   /** By the trip's `since`. */
   trips: Map<number, number>;
   recent: number;
+  /** Each camera by its tidied name with its count, most first. */
+  cameras: [string, number][];
 };
 
 /** `trips` are the trips whose windows were asked for, in that order. */
@@ -40,6 +44,7 @@ export function indexFacets(f: FacetCounts, trips: Pick<Trip, 'since'>[]): Facet
     people: new Map(f.people),
     trips: new Map(trips.map((t, i) => [t.since, f.trips[i] ?? 0])),
     recent: f.recent ?? 0, // an older backend does not send it
+    cameras: f.cameras ?? [],
   };
 }
 

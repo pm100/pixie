@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -173,9 +173,10 @@
   async function syncFilters(): Promise<boolean> {
     try {
       const f = await activeFilters();
-      const changed = f.tag !== activeTag || f.person !== activePerson;
+      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera;
       activeTag = f.tag;
       activePerson = f.person;
+      activeCamera = f.camera;
       return changed;
     } catch { return false; }
   }
@@ -183,7 +184,7 @@
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(next, activePerson) };
+    view = { ...view, search: hitsActive(next, activePerson, activeCamera) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
@@ -191,6 +192,17 @@
 
   // People: faces grouped by who they are, as a filter. It combines with a tag.
   let peopleList = $state<PersonInfo[]>([]), activePerson = $state<number | null>(null);
+  /** The camera chosen in the tree, by its tidied name ("Pixel 7"). */
+  let activeCamera = $state<string | null>(null);
+
+  async function setCamera(next: string | null) {
+    try { await setCameraFilter(next); } catch (e) { message = String(e); return; }
+    await syncFilters();
+    view = { ...view, search: hitsActive(activeTag, activePerson, next) };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') { fitMap++; loadPoints(); }
+  }
   let peopleState = $state<PeopleStatus | null>(null);
   let dupState = $state<DupStatus | null>(null);
   /** How many duplicates Browse is hiding, as of the list on screen. */
@@ -222,7 +234,7 @@
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
     if (await syncFilters()) { // a filter was on that the screen did not show: show it now
-      view = { ...view, search: hitsActive(activeTag, activePerson) };
+      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera) };
       refresh(true).catch((e) => (message = String(e)));
     }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
@@ -235,7 +247,7 @@
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, next) };
+    view = { ...view, search: hitsActive(activeTag, next, activeCamera) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
@@ -383,13 +395,13 @@
   /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
     try {
-      await Promise.all([setTagFilter(null), setPersonFilter(null)]);
+      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null)]);
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
     tripKey = null;
     areaOnly = false;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson), since: null, until: null, folderId: null, kind: null, bounds: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -456,6 +468,7 @@
   const activeNames = $derived(filterNames({
     tag: activeTag === null ? null : tagLabel(activeTag),
     person: activeInfo === null ? null : personLabel(activeInfo),
+    camera: activeCamera,
     folder: view.folderId === null ? null : (folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'),
     trip: tripKey === null ? null : (trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'),
     date: periodKey !== null ? `Showing only ${periodLabel(periodKey)}` : recentOn ? recentLabel(recentDays) : null,
@@ -676,11 +689,11 @@
   $effect(() => {
     // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
     // refresh of the listing (a scan added photos, a duplicate was hidden...).
-    const v = view, tag = activeTag, person = activePerson, list = trips, chosenTrip = tripKey, days = recentDays;
+    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, list = trips, chosenTrip = tripKey, days = recentDays;
     version;
     const token = facetsLatest.next();
     const timer = setTimeout(() => {
-      facetCounts(v, tag, person, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
+      facetCounts(v, tag, person, camera, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
         .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
         .catch(() => { /* the entries keep the counts they came with */ });
     }, 120);
@@ -1043,6 +1056,10 @@
           <span class="filter">Person “{personLabel(activeInfo)}”
             <button onclick={() => setPerson(null)} aria-label="Clear person" title="Clear person">✕</button></span>
         {/if}
+        {#if activeCamera !== null}
+          <span class="filter">Camera “{activeCamera}”
+            <button onclick={() => setCamera(null)} aria-label="Clear camera" title="Clear camera">✕</button></span>
+        {/if}
         {#if view.kind !== null}
           <span class="filter">{view.kind === 'photo' ? 'Photos only' : 'Videos only'}
             <button onclick={() => setKind(null)} aria-label="Show photos and videos" title="Show photos and videos">✕</button></span>
@@ -1091,6 +1108,7 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
+               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
