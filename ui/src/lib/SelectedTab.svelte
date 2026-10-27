@@ -1,12 +1,15 @@
 <script lang="ts">
   /** The Selected tab: the photos picked with the marker on the grid, shown together, with what can be done with them. */
-  import { emailPhotos, listPicked, type Photo, type View } from './api';
+  import { listPicked, type Photo, type View } from './api';
+  import EmailButton from './EmailButton.svelte';
   import { plural } from './format';
   import { posterUrl, thumbUrl } from './url';
   import Viewer from './Viewer.svelte';
 
-  let { active, picks, onunpick, onclear }: {
+  let { active, picks, onunpick, onclear, emailLimitMb }: {
     active: boolean;
+    /** The email size limit (Settings, Email). */
+    emailLimitMb: number;
     /** The picked photos' ids: the list is read again when they change. */
     picks: ReadonlySet<number>;
     onunpick: (id: number) => void;
@@ -15,7 +18,6 @@
 
   let photos = $state<Photo[]>([]);
   let error = $state('');
-  let sending = $state(false);
   let broken = $state<Record<number, boolean>>({});
   /** The photo open in the viewer (its position among the selected photos), if any. Double-click or Enter opens it. */
   let viewing = $state<number | null>(null);
@@ -33,13 +35,6 @@
     return () => { live = false; };
   });
 
-  async function email() {
-    if (sending || photos.length === 0) return;
-    sending = true;
-    error = '';
-    try { await emailPhotos(photos.map((p) => p.id)); } catch (e) { error = String(e); }
-    sending = false;
-  }
 </script>
 
 <div class="selected">
@@ -79,7 +74,7 @@
   {/if}
   <aside class="actions" aria-label="Actions">
     <h3>Actions</h3>
-    <button onclick={email} disabled={sending || photos.length === 0} title="Open a new email with all of them attached">{sending ? 'Opening…' : 'Email'}</button>
+    <EmailButton ids={photos.map((p) => p.id)} limitMb={emailLimitMb} />
   </aside>
   </div>
 </div>

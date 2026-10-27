@@ -91,21 +91,36 @@ pub fn build_eml(subject: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// The folder for temporary messages and smaller copies of pictures. Things in it older than a day are cleared away
+/// each time it is asked for (a mail program reads what it was given in its own time, so nothing is removed at once).
+pub fn mail_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("pixie-mail");
+    std::fs::create_dir_all(&dir)?;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > std::time::Duration::from_secs(86_400));
+            if old {
+                let _ = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+            }
+        }
+    }
+    Ok(dir)
+}
+
+/// A new folder inside it, for one set of smaller copies (so two copies with the same name never meet).
+pub fn new_copy_dir() -> std::io::Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let dir = mail_temp_dir()?.join(format!("copies-{stamp}"));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// Open the file in a new message in new Outlook: the message is written to a temporary `.eml` and handed to `olk.exe`.
 /// The `.eml` stays (Outlook reads it in its own time); ones older than a day are cleared away each time.
 #[cfg(windows)]
 fn new_outlook(paths: &[std::path::PathBuf], subject: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
-    let dir = std::env::temp_dir().join("pixie-mail");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > std::time::Duration::from_secs(86_400));
-            if old {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-    }
+    let dir = mail_temp_dir().map_err(|e| e.to_string())?;
     let mut loaded: Vec<(String, Vec<u8>)> = Vec::new();
     for path in paths {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "photo".into());

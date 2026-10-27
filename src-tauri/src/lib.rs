@@ -1,5 +1,6 @@
 mod autoscan;
 mod drives;
+mod emailsize;
 mod outlook;
 mod placement;
 mod sniff;
@@ -1118,10 +1119,58 @@ fn route_name(r: outlook::Route) -> String {
     .to_string()
 }
 
-/// Opens a new email with these photos attached (Outlook, Mail). One photo gets the subject built from who is in it,
-/// where and when; several get a subject that counts them and says when. Returns which way it was done, for the message
-/// to the person.
-fn email_items(app: tauri::AppHandle, db: Db, places: Arc<PlaceService>, ids: Vec<i64>, lang: String) -> Result<String, String> {
+/// How much is about to be emailed, from the library (no file is read), so the screen can say whether it is too big.
+#[derive(Serialize)]
+struct EmailInfo {
+    count: usize,
+    photos: usize,
+    videos: usize,
+    total_bytes: i64,
+    largest_bytes: i64,
+}
+
+#[tauri::command]
+fn email_info(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<EmailInfo, PixieError> {
+    let mut info = EmailInfo { count: 0, photos: 0, videos: 0, total_bytes: 0, largest_bytes: 0 };
+    for id in ids {
+        if let Some(p) = state.db.get_photo(id)? {
+            if p.missing {
+                continue;
+            }
+            info.count += 1;
+            if p.meta.kind == MediaKind::Video { info.videos += 1 } else { info.photos += 1 }
+            info.total_bytes += p.size;
+            info.largest_bytes = info.largest_bytes.max(p.size);
+        }
+    }
+    Ok(info)
+}
+
+/// What was done, for the message to the person: which program, and how many messages were opened.
+#[derive(Serialize)]
+struct EmailResult {
+    route: String,
+    emails: usize,
+}
+
+/// A file name for a smaller copy that is not already taken in `dir` ("IMG_1.jpg", then "IMG_1-2.jpg").
+fn free_name(dir: &std::path::Path, original: &str) -> PathBuf {
+    let stem = std::path::Path::new(original).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "photo".into());
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { format!("{stem}.jpg") } else { format!("{stem}-{n}.jpg") };
+        if !dir.join(&name).exists() {
+            return dir.join(name);
+        }
+        n += 1;
+    }
+}
+
+/// Opens new emails with these photos attached (Outlook, Mail). `mode`: "asis" (one message, the files as they are),
+/// "smaller" (pictures as smaller copies, then as many messages as the limit needs) or "split" (the files as they are,
+/// in as many messages as the limit needs). One photo gets the subject built from who is in it, where and when; several
+/// get a subject that counts them and says when.
+fn email_items(app: tauri::AppHandle, db: Db, places: Arc<PlaceService>, ids: Vec<i64>, lang: String, mode: &str, limit_mb: u32) -> Result<EmailResult, String> {
     let mut photos = Vec::new();
     for id in &ids {
         match db.get_photo(*id) {
@@ -1132,37 +1181,70 @@ fn email_items(app: tauri::AppHandle, db: Db, places: Arc<PlaceService>, ids: Ve
     if photos.is_empty() {
         return Err("Those photos are not in the library any more.".into());
     }
-    let subject = if photos.len() == 1 {
-        let photo = &photos[0];
-        // Who is in the photo, where it was taken and when, as far as is known (a place needs the network; without it
-        // the subject simply has no place).
-        let people: Vec<String> = db.faces_of(photo.id).unwrap_or_default().into_iter().filter_map(|f| f.person_name).collect();
-        let place = match (photo.meta.gps_lat, photo.meta.gps_lon) {
-            (Some(lat), Some(lon)) => places.place_for_background(lat, lon, &lang).ok().flatten().and_then(|p| p.landmark.or(p.locality)),
-            _ => None,
+    if photos.len() > 1 {
+        photos.sort_by_key(|p| (p.meta.taken_at.unwrap_or(i64::MAX), p.id)); // in date order, so each message covers a stretch of time
+    }
+    // The files to attach: the originals, or smaller copies of the pictures (a video cannot be made smaller this way).
+    let copy_dir = if mode == "smaller" { Some(outlook::new_copy_dir().map_err(|e| e.to_string())?) } else { None };
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
+    for p in &photos {
+        let original = PathBuf::from(&p.path);
+        let size = std::fs::metadata(&original).map(|m| m.len()).unwrap_or(0);
+        let mut chosen = (original.clone(), size);
+        if let (Some(dir), MediaKind::Photo) = (&copy_dir, p.meta.kind) {
+            let long_side = p.meta.width.unwrap_or(0).max(p.meta.height.unwrap_or(0));
+            // Smaller only when the picture is bigger than the copy would be; a small picture is sent as it is.
+            if long_side == 0 || long_side > emailsize::SMALLER_EDGE {
+                let dst = free_name(dir, &p.path.rsplit(['/', '\\']).next().unwrap_or("photo").to_string());
+                if pixie_image::thumbs::email_copy(&original, &dst, emailsize::SMALLER_EDGE, emailsize::SMALLER_QUALITY).is_ok() {
+                    let made = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(u64::MAX);
+                    if made < size {
+                        chosen = (dst, made);
+                    } else {
+                        let _ = std::fs::remove_file(&dst);
+                    }
+                }
+            }
+        }
+        files.push(chosen);
+    }
+    let limit = u64::from(limit_mb.clamp(1, 500)) * 1024 * 1024;
+    let messages: Vec<Vec<usize>> = if mode == "asis" { vec![(0..files.len()).collect()] } else { emailsize::pack(&files.iter().map(|f| f.1).collect::<Vec<_>>(), limit) };
+    let count = messages.len();
+    let mut route = String::new();
+    for (k, message) in messages.iter().enumerate() {
+        let subject = if photos.len() == 1 {
+            let photo = &photos[0];
+            // Who is in the photo, where it was taken and when, as far as is known (a place needs the network; without it
+            // the subject simply has no place).
+            let people: Vec<String> = db.faces_of(photo.id).unwrap_or_default().into_iter().filter_map(|f| f.person_name).collect();
+            let place = match (photo.meta.gps_lat, photo.meta.gps_lon) {
+                (Some(lat), Some(lon)) => places.place_for_background(lat, lon, &lang).ok().flatten().and_then(|p| p.landmark.or(p.locality)),
+                _ => None,
+            };
+            let file_name = std::path::Path::new(&photo.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            subject::email_subject(&people, place.as_deref(), photo.meta.taken_at, &file_name)
+        } else {
+            let taken: Vec<i64> = message.iter().filter_map(|&i| photos[i].meta.taken_at).collect();
+            emailsize::part_subject(&subject::many_subject(message.len(), &taken), k + 1, count)
         };
-        let file_name = std::path::Path::new(&photo.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        subject::email_subject(&people, place.as_deref(), photo.meta.taken_at, &file_name)
-    } else {
-        let taken: Vec<i64> = photos.iter().filter_map(|p| p.meta.taken_at).collect();
-        subject::many_subject(photos.len(), &taken)
-    };
-    let paths: Vec<PathBuf> = photos.iter().map(|p| PathBuf::from(&p.path)).collect();
-    outlook::email_files(&app, &paths, &subject).map(route_name)
+        let paths: Vec<PathBuf> = message.iter().map(|&i| files[i].0.clone()).collect();
+        let r = outlook::email_files(&app, &paths, &subject)?;
+        if k == 0 {
+            if r == outlook::Route::ShareSheet && count > 1 {
+                return Err(format!("Your email program can only take one message at a time here, so the {count} messages could not all be opened. Make the pictures smaller, or email fewer at once."));
+            }
+            route = route_name(r);
+        }
+    }
+    Ok(EmailResult { route, emails: count })
 }
 
-/// Opens a new email with the photo attached.
+/// Opens new emails with these photos attached (see `email_items`); the Email buttons of the Selected tab and the details pane.
 #[tauri::command]
-async fn email_photo(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: i64, lang: String) -> Result<String, String> {
+async fn email_photos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, ids: Vec<i64>, lang: String, mode: String, limit_mb: u32) -> Result<EmailResult, String> {
     let (db, places) = (state.db.clone(), state.places.clone());
-    tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, vec![id], lang)).await.map_err(|e| e.to_string())?
-}
-
-/// Opens a new email with these photos attached (the Selected tab's Email).
-#[tauri::command]
-async fn email_photos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, ids: Vec<i64>, lang: String) -> Result<String, String> {
-    let (db, places) = (state.db.clone(), state.places.clone());
-    tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, ids, lang)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, ids, lang, &mode, limit_mb)).await.map_err(|e| e.to_string())?
 }
 
 /// Quick pick: pick a photo, or take it off the picked ones.
@@ -1550,7 +1632,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, email_photo, email_photos, pick_photo, pick_many, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, email_photos, email_info, pick_photo, pick_many, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

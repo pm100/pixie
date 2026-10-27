@@ -74,12 +74,8 @@ export const placeFor = (lat: number, lon: number, background = false) => invoke
 
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
-/** Opens a new email with the photo attached. 'outlook': a message is open in classic Outlook; 'share': the Windows Share sheet is. */
-export const emailPhoto = (id: number) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photo', { id, lang: userLang() });
 /** Whether each watched folder can be reached right now. */
 export const folderStates = () => invoke<{ id: number; state: FolderStateName }[]>('folder_states');
-/** Opens a new email with these photos attached. */
-export const emailPhotos = (ids: number[]) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photos', { ids, lang: userLang() });
 /** Quick pick: pick a photo, or take it off the picked ones. */
 export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_photo', { id, picked });
 /** Quick pick: pick all of these photos at once. */
@@ -90,6 +86,12 @@ export const pickIds = () => invoke<number[]>('pick_ids');
 export const listPicked = () => invoke<Photo[]>('list_picked');
 /** Nothing is picked. */
 export const clearPicks = () => invoke<void>('clear_picks');
+/** How much is about to be emailed (read from the library, no file is opened). */
+export const emailInfo = (ids: number[]) => invoke<{ count: number; photos: number; videos: number; total_bytes: number; largest_bytes: number }>('email_info', { ids });
+/** Opens new emails with these photos attached. `mode`: 'asis' (one message, the files as they are), 'smaller' (pictures as smaller
+ *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. */
+export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number) =>
+  invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb });
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----

@@ -51,6 +51,7 @@
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
   import SelectedTab from './lib/SelectedTab.svelte';
+  import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
   import Nav from './lib/Nav.svelte';
   import Viewer from './lib/Viewer.svelte';
@@ -124,6 +125,9 @@
   });
   let tab = $state<TabId>('browse');
   let viewerMode = $state<ViewerMode>(parseViewerMode(loadPref<unknown>('viewerMode', null)));
+  /** The most an email may carry, in megabytes (Settings, Email): what is bigger is offered smaller or split. */
+  let emailLimitMb = $state(parseLimit(loadPref<unknown>('emailLimitMb', null)));
+  function setEmailLimit(mb: number) { emailLimitMb = parseLimit(mb); savePref('emailLimitMb', emailLimitMb); }
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
   // Whether, and how often, folders on the network are scanned again (folders on this computer are watched, so need no
   // setting). The backend keeps the timer; it is told at start and whenever this changes.
@@ -1189,7 +1193,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} count={selection.picked.size} />
+          <Details photo={selectedPhoto} count={selection.picked.size} {emailLimitMb} />
         {/snippet}
       </Shell>
         {/if}
@@ -1202,7 +1206,7 @@
     {/if}
     {#if tab === 'selected'}
       <div class="page-over">
-        <SelectedTab active={tab === 'selected'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} />
+        <SelectedTab active={tab === 'selected'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} />
       </div>
     {/if}
     {#if tab === 'dupes'}
@@ -1212,7 +1216,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />

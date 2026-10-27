@@ -1,29 +1,22 @@
 <script lang="ts">
-  import { emailPhoto, facesFor, placeFor, tagsFor, type Photo, type PhotoTag, type Place } from './api';
+  import { facesFor, placeFor, tagsFor, type Photo, type PhotoTag, type Place } from './api';
   import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
   import { placeLines } from './placeLines';
+  import EmailButton from './EmailButton.svelte';
   import LocationMap from './LocationMap.svelte';
 
-  let { photo, count }: { photo: Photo | null; count: number } = $props();
+  let { photo, count, emailLimitMb }: {
+    photo: Photo | null; count: number;
+    /** The email size limit (Settings, Email). */
+    emailLimitMb: number;
+  } = $props();
   const gps = $derived(photo ? formatGps(photo.gps_lat, photo.gps_lon) : null);
   const lat = $derived(photo?.gps_lat ?? null);
   const lon = $derived(photo?.gps_lon ?? null);
-
-  // Email: opens a new message with this photo attached (the person finishes and sends it there).
-  let emailing = $state(false);
-  let emailError = $state('');
-  async function email() {
-    if (!photo || emailing) return;
-    emailing = true;
-    emailError = '';
-    try { await emailPhoto(photo.id); } catch (e) { emailError = String(e); }
-    emailing = false;
-  }
-  $effect(() => { photoId; emailError = ''; });
 
   let place = $state<Place | null>(null);
   const latest = createLatest();
@@ -79,8 +72,7 @@
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
-    <p class="actions"><button onclick={email} disabled={emailing}>{emailing ? 'Opening…' : 'Email'}</button></p>
-    {#if emailError}<p class="err" role="alert">{emailError}</p>{/if}
+    <p class="actions"><EmailButton ids={photo ? [photo.id] : []} limitMb={emailLimitMb} /></p>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
@@ -105,6 +97,5 @@
   .face img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
   .hint { color: #777; }
   .actions { margin: 0 0 12px; }
-  .err { color: #b00020; margin: 0 0 12px; }
   .place { margin: 0 0 16px; }
 </style>

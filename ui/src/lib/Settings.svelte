@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'about' | 'developer';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import { isDebugBuild, openDataFolder, type FolderInfo } from './api';
   import AnalysisSettings from './AnalysisSettings.svelte';
+  import EmailSettings from './EmailSettings.svelte';
   import type { AnalysisView } from './analysisView';
   import PhotoFolders from './PhotoFolders.svelte';
   import TripSettings from './TripSettings.svelte';
@@ -17,7 +18,9 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, emailLimitMb, onemaillimit }: {
+    /** The email size limit in megabytes, and how it is changed. */
+    emailLimitMb: number; onemaillimit: (mb: number) => void;
     folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean;
     /** The folders just added, and how far their analysis has got (null: nothing newly added is still being analysed). */
     analysing?: { ids: number[]; fraction: number | null } | null;
@@ -32,7 +35,7 @@
 
   const pages: { id: SettingsPage; label: string }[] = [
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
-    { id: 'analysis', label: 'Picture analysis' }, { id: 'about', label: 'About' },
+    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
   ];
   let version = $state('');
   // Debug builds only: a Developer page.
@@ -75,6 +78,8 @@
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
       <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} />
+    {:else if page === 'email'}
+      <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>

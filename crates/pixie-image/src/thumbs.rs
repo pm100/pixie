@@ -86,10 +86,66 @@ fn write_thumbnail(img: &image::DynamicImage, class: ThumbClass, dst: &Path) -> 
     Ok(())
 }
 
+/// A smaller copy of a picture to send by email: the whole picture (nothing cropped), turned upright, at most `edge` pixels
+/// on its longest side, as a JPEG of `quality` (1 to 100). The copy carries no metadata (no date taken and no location).
+/// Written to `dst` through a temporary file, so a half-written copy is never left behind.
+pub fn email_copy(src: &Path, dst: &Path, edge: u32, quality: u8) -> Result<()> {
+    let img = decode_scaled(src, edge)?;
+    let (w, h) = img.dimensions();
+    let img = if w <= edge && h <= edge { img } else { img.thumbnail(edge, edge) };
+    std::fs::create_dir_all(dst.parent().expect("a copy has a folder"))?;
+    let tmp = dst.with_extension(format!("{}.tmp", TMP_COUNTER.fetch_add(1, Ordering::Relaxed)));
+    let written = (|| -> Result<()> {
+        let file = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality.clamp(1, 100));
+        image::DynamicImage::ImageRgb8(img.to_rgb8()).write_with_encoder(encoder).map_err(|e| PixieError::Image(e.to_string()))
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, dst)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pixie_testutil::{jpeg, jpeg_with_exif};
+
+    #[test]
+    fn an_email_copy_is_the_whole_picture_smaller_and_upright() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("big.jpg");
+        std::fs::write(&src, jpeg(1200, 600)).unwrap();
+        let dst = dir.path().join("out").join("copy.jpg");
+        email_copy(&src, &dst, 400, 85).unwrap();
+        let (w, h) = image::open(&dst).unwrap().dimensions();
+        assert_eq!((w, h), (400, 200), "the same shape, nothing cropped, longest side 400");
+        assert!(std::fs::metadata(&dst).unwrap().len() < std::fs::metadata(&src).unwrap().len());
+        assert_eq!(std::fs::read_dir(dst.parent().unwrap()).unwrap().count(), 1, "no temporary file left behind");
+    }
+
+    #[test]
+    fn a_picture_already_small_enough_is_copied_at_its_own_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("small.jpg");
+        std::fs::write(&src, jpeg(100, 80)).unwrap();
+        let dst = dir.path().join("copy.jpg");
+        email_copy(&src, &dst, 400, 85).unwrap();
+        assert_eq!(image::open(&dst).unwrap().dimensions(), (100, 80));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_picture_makes_no_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("x.jpg");
+        std::fs::write(&src, b"not a picture").unwrap();
+        let dst = dir.path().join("copy.jpg");
+        assert!(email_copy(&src, &dst, 400, 85).is_err());
+        assert!(!dst.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temporary file left behind");
+    }
 
     #[test]
     fn thumbnail_is_downscaled_cached_and_keyed_by_mtime() {
