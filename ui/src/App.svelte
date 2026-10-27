@@ -983,7 +983,7 @@
 
   /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
   // (an analysis that is switched off is not part of the work, whatever its last numbers were)
-  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis: analysisOptions.tags ? analysis : null, people: analysisOptions.faces ? peopleState : null, dupes: analysisOptions.dupes ? dupPass(dupState) : null, load: trackActive ? { fraction: trackView.fraction } : null, loading: { ...loadState, peak: loadPeak } }));
+  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis: analysisOptions.tags ? analysis : null, people: analysisOptions.faces ? peopleState : null, dupes: analysisOptions.dupes ? dupPass(dupState) : null, load: { fraction: settingsView.fraction }, loading: { ...loadState, peak: loadPeak } }));
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,

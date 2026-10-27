@@ -15,9 +15,20 @@ describe('backgroundProgress', () => {
     expect([p.state, p.text, p.fraction]).toEqual(['working', 'Loading photos 75%', 0.75]);
     expect(backgroundProgress({ ...off, loading: { pending: 0, peak: 100, paused: false } })).toBeNull(); // loaded, and nothing else on
   });
-  it('says loading paused, not analysis paused, while the Pause is on with files still to load', () => {
-    const p = backgroundProgress({ ...idle, analysis: status({ done: 1, total: 2, paused: true }), people: status({ done: 1, total: 2, paused: true }), loading: { pending: 3, peak: 10, paused: true } })!;
+  it('says loading paused when every analysis is off and the Pause is on with files still to load', () => {
+    const off = { ...idle, analysis: status({ models: 'off' }), people: status({ models: 'off' }) };
+    const p = backgroundProgress({ ...off, loading: { pending: 3, peak: 10, paused: true } })!;
     expect([p.state, p.text]).toEqual(['paused', 'Loading paused']);
+  });
+  it('says analysing, with the same figure as Settings, while files are still being read and an analysis is on', () => {
+    const p = backgroundProgress({ ...idle, analysis: status({ done: 1, total: 2 }), people: status({ done: 1, total: 2 }), load: { fraction: 0.4 }, loading: { pending: 7000, peak: 7200, paused: false } })!;
+    expect([p.state, p.text, p.fraction]).toEqual(['working', 'Analysing photos 40%', 0.4]);
+    const q = backgroundProgress({ ...idle, analysis: status({ done: 1, total: 2, paused: true }), people: status({ done: 1, total: 2, paused: true }), loading: { pending: 3, peak: 10, paused: true } })!;
+    expect([q.state, q.text]).toEqual(['paused', 'Analysis paused']);
+  });
+  it('keeps saying analysing, with no figure yet, when everything read so far is analysed but more files are coming', () => {
+    const p = backgroundProgress({ ...idle, analysis: status({ done: 5, total: 5 }), people: status({ done: 5, total: 5 }), loading: { pending: 100, peak: 100, paused: false } })!;
+    expect([p.state, p.text, p.fraction]).toEqual(['working', 'Analysing photos', null]);
   });
   it('shows how far the folders just added have got, not the whole library', () => {
     const whole = { ...idle, analysis: status({ done: 900, total: 1000 }), people: status({ done: 900, total: 1000 }) };

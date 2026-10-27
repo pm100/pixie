@@ -42,8 +42,9 @@ export function backgroundProgress(o: {
     return { state: 'working', text: scanText(o.scan), fraction: readFraction(o.scan), detail: 'Reading your photo folders' };
   }
 
-  // Files are being read and given their thumbnails: that is "loading", and it is what the pill says (analysing comes after).
-  if (o.loading && o.loading.pending > 0) {
+  // With every analysis switched off the only work is reading the files and making their thumbnails: that is "loading".
+  // With any analysis on, the pill says "Analysing" and shows the same figure as Settings, Picture analysis.
+  if (passes.length === 0 && o.loading && o.loading.pending > 0) {
     const { pending, peak, paused } = o.loading;
     if (paused) return { state: 'paused', text: 'Loading paused', fraction: null, detail: 'Loading the photos is paused. Click to resume.' };
     const fraction = peak > 0 ? Math.min(1, (peak - pending) / peak) : null;
@@ -58,7 +59,14 @@ export function backgroundProgress(o: {
   }
 
   const left = passes.filter((p) => p.s.models === 'ready' && p.s.total > 0 && p.s.done < p.s.total);
-  if (left.length === 0) return null;
+  if (left.length === 0) {
+    // Nothing stored is waiting for analysis, but files are still being read and more will arrive: no number to give yet.
+    const reading = o.loading && o.loading.pending > 0 ? o.loading : null;
+    if (!reading) return null;
+    return reading.paused
+      ? { state: 'paused', text: 'Analysis paused', fraction: null, detail: 'Paused. Click to resume.' }
+      : { state: 'working', text: 'Analysing photos', fraction: null, detail: 'Reading the photos Pixie found; they are analysed as they arrive' };
+  }
   // The overall percentage is the whole story here; the counts for each step are in Settings, Picture analysis.
   const detail = `Still working on: ${left.map((p) => p.name).join(', ')}`;
   if (left.every((p) => p.s.paused)) {
