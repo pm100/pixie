@@ -6,10 +6,11 @@
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, activeFilters,
-    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore,
+    facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, suggestMore, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
   import type { AnalysisStatus } from './lib/analysis';
+  import { toStates, type FolderStates } from './lib/folderState';
   import { cleanCollapsed, toggleSection, type SectionId } from './lib/sections';
   import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
@@ -254,7 +255,18 @@
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
+    void refreshFolderStates();
   }
+
+  /** Which folders can be reached right now; asked again every 30 seconds while the window is showing. */
+  let folderStateMap = $state<FolderStates>({});
+  async function refreshFolderStates() {
+    try { folderStateMap = toStates(await folderStates()); } catch { /* the next time */ }
+  }
+  $effect(() => {
+    const t = setInterval(() => { if (document.visibilityState === 'visible') void refreshFolderStates(); }, 30_000);
+    return () => clearInterval(t);
+  });
 
   /** Tabs only choose what is drawn: selection, scroll and filters live here and survive a switch. */
   function pickTab(id: TabId) {
@@ -923,6 +935,7 @@
         if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
         else refresh().catch((e) => (message = String(e)));
         if (mode === 'map') loadPoints();
+        void refreshFolderStates();
         if (phase === 'scanning') void finishScanPhase(e.payload.found);
       }),
       listen(POPOUT_READY, () => sendShow(false)),
@@ -936,6 +949,7 @@
       }),
       listen<{ message: string }>('scan-error', (e) => {
         message = e.payload.message; // scan-done always follows
+        void refreshFolderStates();
         if (phase !== 'off' && !flowProblems.includes(e.payload.message)) flowProblems = [...flowProblems, e.payload.message];
       }),
     ];
@@ -1011,7 +1025,7 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
-               folders={folderInfos} folderId={view.folderId} onfolder={setFolder}
+               folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
                scanLine={scanning ? scanText({ seen, indexed, toIndex }) : null}
@@ -1065,7 +1079,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings folders={folderInfos} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings folders={folderInfos} folderStates={folderStateMap} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />

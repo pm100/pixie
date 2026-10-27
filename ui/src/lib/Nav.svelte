@@ -2,6 +2,7 @@
   import type { DayGroup, FolderInfo, MediaKind, Trip } from './api';
   import { untrack } from 'svelte';
   import Check from './Check.svelte';
+  import { folderNote, type FolderStates } from './folderState';
   import Chevron from './Chevron.svelte';
   import WhenNav from './WhenNav.svelte';
   import { folderName } from './format';
@@ -13,7 +14,7 @@
   import { faceUrl } from './url';
   import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, folders, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, scanLine, period, recentText, tags, tag, people, facesFound, person, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -31,6 +32,8 @@
     facesFound: boolean;
     /** The photo folders, with the item count of each, and the one chosen (if any). */
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
+    /** Which folders cannot be reached right now (their drive is unplugged, say). */
+    folderStates?: FolderStates;
     /** Trips away from home. `tripsReady` is false until the user has confirmed where home is. `trip` is the chosen one's `since`. */
     trips: Trip[]; tripsReady: boolean; trip: number | null; ontrip: (t: Trip | null) => void;
     /** Where each trip went (by its `since`), once known. `onvisibletrips` says which trips are showing, so those are named first. */
@@ -216,8 +219,9 @@
     {#if !folded('folders')}
       {#each folders as f (f.id)}
         {@const n = countOf(facets?.folders, f.id, f.count)}
-        <button class="item" class:active={folderId === f.id} class:zero={facets && n === 0 && folderId !== f.id} aria-pressed={folderId === f.id} title={f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
-          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span><span class="n">{n.toLocaleString()}</span>
+        {@const note = folderNote(folderStates[f.id])}
+        <button class="item" class:active={folderId === f.id} class:zero={facets && n === 0 && folderId !== f.id} class:offline={note !== null} aria-pressed={folderId === f.id} title={note ? `${f.path} — ${note}` : f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
+          <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span>{#if note}<span class="offnote">{note}</span>{/if}<span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}
     {/if}
@@ -244,6 +248,8 @@
   .avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: #dde2ee; flex: none; margin-right: 6px; }
   .mark { width: 14px; flex: none; display: inline-flex; }
   .item:hover { background: #eef2fb; }
+  .item.offline .grow, .item.offline .n { opacity: .55; }
+  .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }
   .hint { margin: 2px 12px 4px; font-size: 12px; color: #777; }
   .scan { margin: 16px 12px 0; font-size: 12px; color: #777; }

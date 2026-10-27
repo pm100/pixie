@@ -284,6 +284,52 @@ fn scan_error_message(e: &PixieError, folder: Option<&str>) -> String {
     scan_error_message_with(e, folder, |p| std::path::Path::new(p).exists())
 }
 
+/// Whether a folder can be reached: "ok", "disconnected" (its drive or share is not there) or "missing" (the drive is
+/// there and the folder is not). `exists` says whether a path exists.
+fn folder_state_with(path: &str, exists: impl Fn(&str) -> bool) -> &'static str {
+    if let Some((root, _)) = removable_root(path) {
+        if !exists(&root) {
+            return "disconnected";
+        }
+    }
+    if exists(path) { "ok" } else { "missing" }
+}
+
+#[derive(Serialize)]
+struct FolderState {
+    id: i64,
+    state: &'static str,
+}
+
+/// How long a folder gets to answer. A network share that is gone can take a long time to say so; one that has not
+/// answered by then counts as not connected.
+const FOLDER_PROBE_WAIT: Duration = Duration::from_millis(1500);
+
+/// Can each watched folder be reached right now? Folders are asked at the same time, each on its own thread.
+#[tauri::command]
+async fn folder_states(state: tauri::State<'_, AppState>) -> Result<Vec<FolderState>, String> {
+    let folders = state.db.list_folders().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let asked: Vec<(i64, std::sync::mpsc::Receiver<&'static str>)> = folders
+            .into_iter()
+            .map(|f| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(folder_state_with(&f.path, |p| std::path::Path::new(p).exists()));
+                });
+                (f.id, rx)
+            })
+            .collect();
+        let deadline = std::time::Instant::now() + FOLDER_PROBE_WAIT;
+        asked
+            .into_iter()
+            .map(|(id, rx)| FolderState { id, state: rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).unwrap_or("disconnected") })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Run one scan job on its own thread: `ids` first, then any folders added to the queue while it runs. The caller
 /// holds the gate; it is released when the job ends.
 fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids: Vec<i64>, mode: ScanMode) {
@@ -1440,7 +1486,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, suggest_more, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, email_photo, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, email_photo, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())
@@ -1469,6 +1515,18 @@ mod scan_message_tests {
         let m = scan_error_message_with(&nf(), Some("/Volumes/photo/2019"), all);
         assert_eq!(m, "Pixie can't find /Volumes/photo/2019. It may have been moved, renamed or deleted.");
         assert_eq!(scan_error_message_with(&nf(), Some("/Users/me/Pictures"), |_| false), "Pixie can't find /Users/me/Pictures. It may have been moved, renamed or deleted.");
+    }
+
+    #[test]
+    fn a_folder_is_ok_disconnected_or_missing() {
+        let up = |p: &str| p == "/Volumes/photo" || p == "/Volumes/photo/2019" || p == "/Users/me/Pictures";
+        assert_eq!(folder_state_with("/Volumes/photo/2019", up), "ok");
+        assert_eq!(folder_state_with("/Volumes/photo/gone", up), "missing");
+        assert_eq!(folder_state_with("/Volumes/other/2019", up), "disconnected");
+        assert_eq!(folder_state_with("/Users/me/Pictures", up), "ok");
+        assert_eq!(folder_state_with("/Users/me/Nope", up), "missing");
+        assert_eq!(folder_state_with("p:\\joan", |_| false), "disconnected");
+        assert_eq!(folder_state_with("p:\\joan", |p| p == "P:\\"), "missing");
     }
 
     #[test]

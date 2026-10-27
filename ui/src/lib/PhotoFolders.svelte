@@ -1,11 +1,14 @@
 <script lang="ts">
   import type { FolderInfo } from './api';
+  import { folderNote, type FolderStates } from './folderState';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
   import { readFraction, scanText, type ScanState } from './scanProgress';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
+  let { folders, folderStates = {}, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
+    /** Which folders cannot be reached right now (their drive is unplugged, say). */
+    folderStates?: FolderStates;
     /** The folder the running scan is on, and what it has reported so far. */
     scanFolder: number | null; scan: ScanState; onstop: () => void;
     onremove: (id: number) => Promise<void>;
@@ -34,8 +37,10 @@
 <ul>
   {#each folders as f (f.id)}
     {@const busy = scanning && scanFolder === f.id}
-    <li>
+    {@const note = folderNote(folderStates[f.id])}
+    <li class:offline={note !== null}>
       <span class="path" title={f.path}>{f.path}</span>
+      {#if note}<span class="offnote" role="status">{note}</span>{/if}
       {#if busy}
         {@const frac = readFraction(scan)}
         <span class="prog" role="status">
@@ -78,6 +83,8 @@
   li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #e4e4e8; border-radius: 6px; }
   .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #777; font-size: 12px; }
+  li.offline .path, li.offline .n { opacity: .55; }
+  .offnote { font-size: 12px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
   .prog { display: flex; flex-direction: column; gap: 3px; width: 190px; flex: none; }
   .prog .txt { color: #555; font-size: 12px; }
   .prog progress { width: 100%; height: 6px; }

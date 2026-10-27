@@ -1,8 +1,13 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { FolderStateName } from './folderState';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { untilReady } from './startupRetry';
 import { listen } from '@tauri-apps/api/event';
 import type { Bounds, GeoPoint } from './geo';
 
 export type { Bounds, GeoPoint } from './geo';
+
+/** Every call to the backend goes through here: one made before the backend is ready is tried again, not failed. */
+const invoke = <T>(cmd: string, args?: Record<string, unknown>) => untilReady(() => tauriInvoke<T>(cmd, args));
 
 export interface Photo {
   id: number; folder_id: number; path: string; size: number; mtime: number;
@@ -71,6 +76,8 @@ export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
 /** Opens a new email with the photo attached. 'outlook': a message is open in classic Outlook; 'share': the Windows Share sheet is. */
 export const emailPhoto = (id: number) => invoke<'outlook' | 'newoutlook' | 'mail' | 'share'>('email_photo', { id, lang: userLang() });
+/** Whether each watched folder can be reached right now. */
+export const folderStates = () => invoke<{ id: number; state: FolderStateName }[]>('folder_states');
 export const openInDefaultPlayer = (id: number) => invoke<void>('open_in_default_player', { id });
 
 // ---- email ----

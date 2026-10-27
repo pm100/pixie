@@ -15,9 +15,10 @@
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
   import type { NetworkRescan } from './networkRescan';
+  import type { FolderStates } from './folderState';
 
-  let { folders, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
-    folders: FolderInfo[]; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
+  let { folders, folderStates = {}, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry }: {
+    folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     recentDays: number; onrecentdays: (n: number) => void;
@@ -55,7 +56,7 @@
   </nav>
   <div class="page">
     {#if page === 'folders'}
-      <PhotoFolders {folders} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {networkRescan} {onnetworkrescan} />
+      <PhotoFolders {folders} {folderStates} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {networkRescan} {onnetworkrescan} />
     {:else if page === 'viewing'}
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>
