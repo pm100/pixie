@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DayGroup, FolderInfo, MediaKind, Trip } from './api';
+  import type { DayGroup, FolderInfo, MediaKind, Trip, UserTagCount } from './api';
   import { untrack } from 'svelte';
   import Check from './Check.svelte';
   import { plural } from './format';
@@ -16,7 +16,7 @@
   import { faceUrl } from './url';
   import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -37,6 +37,8 @@
     analysisOn?: { tags: boolean; faces: boolean }; onopenanalysis?: () => void;
     /** The cameras (tidied names) with their counts under the filters in force, and the one chosen. */
     cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
+    /** Your own tags with their photo counts, and the one chosen (`tag:<name>`; Picked is chosen in Browse's top line). */
+    userTags?: UserTagCount[]; utag?: string | null; onutag?: (key: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
@@ -100,6 +102,7 @@
     folders: folders.find((f) => f.id === folderId) ? folderName(folders.find((f) => f.id === folderId)!.path) : '',
     people: people.find((p) => p.id === person) ? personLabel(people.find((p) => p.id === person)!) : '',
     trips: trips.find((t) => t.since === trip) ? tripTitle(trips.find((t) => t.since === trip)!) : '',
+    mytags: utag === null || utag === 'picked' ? '' : utag.replace(/^tag:/, ''),
     tags: tag !== null ? tagLabel(tag) : '',
     cameras: camera ?? '',
     when: period !== null ? periodLabel(period) : recent ? recentText : '',
@@ -160,6 +163,17 @@
         <button class="item more" onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${plural(people.length, 'person', 'people')}`}</button>
       {/if}
     {/if}
+  {/if}
+
+  {@render head('mytags', 'Tags')}
+  {#if !folded('mytags')}
+    {#each userTags as t (t.name)}
+      {@const key = `tag:${t.name}`}
+      <button class="item" class:active={utag === key} aria-pressed={utag === key} onclick={() => onutag(utag === key ? null : key)}>
+        <span class="mark">{#if utag === key}<Check />{/if}</span><span class="grow" use:clipTitle>{t.name}</span><span class="n">{t.count.toLocaleString()}</span>
+      </button>
+    {/each}
+    {#if userTags.length === 0}<p class="hint">Tag photos in the details panel on the right and your tags are listed here.</p>{/if}
   {/if}
 
   {#if !analysisOn.tags}

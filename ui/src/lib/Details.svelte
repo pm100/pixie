@@ -1,18 +1,23 @@
 <script lang="ts">
-  import { facesFor, placeFor, tagsFor, type Photo, type PhotoTag, type Place } from './api';
+  import { facesFor, placeFor, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
   import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
   import { placeLines } from './placeLines';
-  import EmailButton from './EmailButton.svelte';
+  import TagAs from './TagAs.svelte';
+  import { tagsOnAll } from './userTags';
   import LocationMap from './LocationMap.svelte';
 
-  let { photo, count, emailLimitMb }: {
-    photo: Photo | null; count: number;
-    /** The email size limit (Settings, Email). */
-    emailLimitMb: number;
+  let { photo, ontagschange, onemail, onprint }: {
+    photo: Photo | null;
+    /** The Email button was pressed: the Tools tab has the email form. */
+    onemail: () => void;
+    /** The Print button was pressed: the Tools tab has the print setup. */
+    onprint: () => void;
+    /** Tags were added or removed here (the tag named): the tag list in the tree needs reading again. */
+    ontagschange: (tag: string) => void;
   } = $props();
   const gps = $derived(photo ? formatGps(photo.gps_lat, photo.gps_lon) : null);
   const lat = $derived(photo?.gps_lat ?? null);
@@ -32,6 +37,25 @@
     if (photoId === null) return;
     tagsFor(photoId).then((t) => { if (tagsLatest.isCurrent(token)) tags = t; }).catch(() => {});
   });
+
+  // Your own tags on the photo. Read again when the photo or its tags change.
+  let usage = $state<TagUse[]>([]);
+  let tagsRev = $state(0);
+  const usageLatest = createLatest();
+  $effect(() => {
+    tagsRev;
+    const id = photoId;
+    const token = usageLatest.next();
+    if (id === null) { usage = []; return; }
+    tagUsage([id]).then((u) => { if (usageLatest.isCurrent(token)) usage = u; }).catch(() => {});
+  });
+  const onPhoto = $derived(tagsOnAll(usage, photoId === null ? 0 : 1));
+  const tagsChanged = (tag: string) => { tagsRev++; ontagschange(tag); };
+  async function removeTag(name: string) {
+    if (photoId === null) return;
+    try { await untagPhotos([photoId], name); } catch { /* shown again as it was */ }
+    tagsChanged(name);
+  }
 
   // The people in the photo. Re-read when the selection changes; a slow answer for an old selection is dropped.
   let faces = $state<FaceInfo[]>([]);
@@ -57,9 +81,7 @@
 </script>
 
 <div class="details">
-  {#if count > 1}
-    <p class="hint"><strong>{count.toLocaleString()}</strong> photos selected</p>
-  {:else if photo}
+  {#if photo}
     <h3 title={photo.path}>{basename(photo.path)}</h3>
     <dl>
       <dt>Taken</dt><dd>{formatDateTime(photo.taken_at)}</dd>
@@ -70,9 +92,13 @@
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
+      <dt>Tags</dt><dd class="chips">
+        {#each onPhoto as t (t)}<span class="chip utag">{t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
+        <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
+      </dd>
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
-    <p class="actions"><EmailButton ids={photo ? [photo.id] : []} limitMb={emailLimitMb} /></p>
+    <p class="actions"><button onclick={onemail} title="Email this photo (opens the Email tool)">Email</button> <button onclick={onprint} title="Print this photo (opens the Print tool)">Print</button></p>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
@@ -96,6 +122,9 @@
   .face { display: inline-flex; align-items: center; gap: 4px; padding-left: 2px; }
   .face img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
   .hint { color: #777; }
+  .chip.utag { background: #e3ecff; border-radius: 4px; }
+  .x { border: 0; background: none; padding: 0 0 0 5px; color: inherit; opacity: .7; cursor: pointer; line-height: 1; }
+  .x:hover { opacity: 1; }
   .actions { margin: 0 0 12px; }
   .place { margin: 0 0 16px; }
 </style>

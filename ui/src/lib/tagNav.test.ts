@@ -46,3 +46,11 @@ describe('hitsActive', () => {
     expect(hitsActive(null, null, null)).toBe(false);
   });
 });
+
+describe('hitsActive with Picked or one of your tags', () => {
+  it('is on when Picked or a tag of your own is chosen', () => {
+    expect(hitsActive(null, null, null, 'picked')).toBe(true);
+    expect(hitsActive(null, null, null, 'tag:Holiday')).toBe(true);
+    expect(hitsActive(null, null, null, null)).toBe(false);
+  });
+});

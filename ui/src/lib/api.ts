@@ -83,16 +83,33 @@ export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_pho
 export const pickMany = (ids: number[]) => invoke<void>('pick_many', { ids });
 /** The ids of the picked photos, in the order picked. */
 export const pickIds = () => invoke<number[]>('pick_ids');
-/** The picked photos themselves, newest first (the Selected tab). */
+/** The picked photos themselves, newest first (the Tools tab). */
 export const listPicked = () => invoke<Photo[]>('list_picked');
+
+/** The user's own tags (not the Auto tags): a tag and how many photos in Browse have it. */
+export interface UserTagCount { name: string; count: number }
+/** A tag and how many of some chosen photos have it. */
+export interface TagUse { name: string; on: number }
+/** Give all of these photos the tag; returns the name it is stored under (the first spelling used). */
+export const tagPhotos = (ids: number[], tag: string) => invoke<string>('tag_photos', { ids, tag });
+export const untagPhotos = (ids: number[], tag: string) => invoke<void>('untag_photos', { ids, tag });
+export const userTags = () => invoke<UserTagCount[]>('user_tags');
+/** Every tag with how many of these photos have it. */
+export const tagUsage = (ids: number[]) => invoke<TagUse[]>('tag_usage', { ids });
+export const listTagged = (tag: string) => invoke<Photo[]>('list_tagged', { tag });
+/** Show only the picked photos (`"picked"`) or those with a tag (`"tag:<name>"`); null turns it off. List with the `search` flag. */
+export const setUserTagFilter = (key: string | null) => invoke<void>('set_user_tag_filter', { filter: key });
 /** Nothing is picked. */
 export const clearPicks = () => invoke<void>('clear_picks');
 /** How much is about to be emailed (read from the library, no file is opened). */
-export const emailInfo = (ids: number[]) => invoke<{ count: number; photos: number; videos: number; total_bytes: number; largest_bytes: number }>('email_info', { ids });
+/** What is about to be emailed, with the subject Pixie proposes for it. */
+export const emailInfo = (ids: number[]) =>
+  invoke<{ count: number; photos: number; videos: number; total_bytes: number; largest_bytes: number; subject: string }>('email_info', { ids, lang: userLang() });
 /** Opens new emails with these photos attached. `mode`: 'asis' (one message, the files as they are), 'smaller' (pictures as smaller
- *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. */
-export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number) =>
-  invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb });
+ *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. `draft`: the subject
+ *  (null: Pixie's own), the addresses to put in To, and some text for the body (both may be empty). */
+export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number, draft: { subject: string | null; to: string; body: string }) =>
+  invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb, subject: draft.subject, to: draft.to, body: draft.body });
 /** Which background analyses are on (kept in the library). */
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */
@@ -202,7 +219,7 @@ export const tripRoute = (since: number, until: number, homeLat: number, homeLon
 export const suggestHome = () => invoke<[number, number] | null>('suggest_home');
 export const renameTrip = (since: number, until: number, name: string) => invoke<void>('rename_trip', { since, until, name });
 /** The tag and person the listings are really restricted to. */
-export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null }>('active_filters');
+export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null; utag: string | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 /** Show only photos taken with this camera, by its tidied name (null turns it off). */
 export const setCameraFilter = (camera: string | null) => invoke<void>('set_camera_filter', { camera });
@@ -247,8 +264,8 @@ import type { LoadProgress } from './analysisView';
 import type { FacetCounts } from './facets';
 /** The counts for the left-hand tree under the filters in force (see `facets.ts`). */
 export const facetCounts = (
-  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number,
-) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, tripDates, tripWindows, recentSince });
+  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, utag: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number,
+) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, utag, tripDates, tripWindows, recentSince });
 /** How far the analysis has got for the photos of these folders (the load screen's counters). */
 export const loadProgress = (folderIds: number[]) => invoke<LoadProgress>('load_progress', { folderIds });
 export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');

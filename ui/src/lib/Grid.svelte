@@ -14,7 +14,8 @@
     groups: DayGroup[];
     version: number;
     view: View;
-    selected: ReadonlySet<number>;
+    /** The photo chosen (its position), if any. */
+    selected: number | null;
     scrollTo: { group: number; n: number } | null;
     onopen: (index: number) => void;
     onselect: (index: number, mods: { ctrl: boolean; shift: boolean }) => void;
@@ -127,11 +128,11 @@
         {#each { length: row.n } as _, k (row.first + k)}
           {@const i = row.first + k}
           {@const p = item(i, tick)}
-          <button class="cell" class:sel={selected.has(i)}
+          <button class="cell" class:sel={selected === i}
                   style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
                   onclick={(e) => onselect(i, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                   ondblclick={() => onopen(i)} onkeydown={(e) => key(e, i)}
-                  aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) : 'photo'} aria-pressed={selected.has(i)}>
+                  aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) : 'photo'} aria-pressed={selected === i}>
             {#if p && p.kind === 'video'}
               {#if noPoster[p.id]}
                 <span class="ph dark cam"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h9A1.5 1.5 0 0 1 15 6.5v2.6l5.2-3a.5.5 0 0 1 .8.4v11a.5.5 0 0 1-.8.4l-5.2-3v2.6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 17.5z"/></svg></span>
@@ -149,9 +150,9 @@
           <!-- The pick marker is its own button beside the photo (a button cannot hold another), over its top-left corner. -->
           {#if p}
             <button class="pick" class:on={picks.has(p.id)} style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
-                    aria-label={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'} aria-pressed={picks.has(p.id)} title={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'}
+                    aria-label={picks.has(p.id) ? 'Take off Picked' : 'Pick'} aria-pressed={picks.has(p.id)} title={picks.has(p.id) ? 'Take off Picked' : 'Pick'}
                     onclick={() => onpick(p.id)}>
-              <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
+              <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5 6 20.9l1.3-6.7-5-4.7 6.8-.8z" /></svg></span>
             </button>
           {/if}
         {/each}

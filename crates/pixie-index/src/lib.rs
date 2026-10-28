@@ -6,6 +6,7 @@ pub mod queue;
 pub mod scanner;
 pub mod suggest;
 pub mod trips;
+pub mod utags;
 
 pub use db::{Db, FacetAsk, PhotoStat, WorkItem};
 pub use dupes::DupeService;

@@ -3,8 +3,10 @@ use std::path::Path;
 
 pub mod camera;
 pub mod mail;
+pub mod usertags;
 pub use camera::normalize_camera;
 pub use mail::*;
+pub use usertags::*;
 
 pub type PhotoId = i64;
 pub type FolderId = i64;
