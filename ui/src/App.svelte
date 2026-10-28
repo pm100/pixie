@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
-    listTags, removeFolder, setTagFilter, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
+    listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
@@ -49,7 +49,8 @@
   import Shell from './lib/Shell.svelte';
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
-  import SelectedTab from './lib/SelectedTab.svelte';
+  import ToolsTab from './lib/ToolsTab.svelte';
+  import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
@@ -178,18 +179,45 @@
   async function syncFilters(): Promise<boolean> {
     try {
       const f = await activeFilters();
-      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera;
+      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera || f.utag !== activeUtag;
       activeTag = f.tag;
+      activeUtag = f.utag;
       activePerson = f.person;
       activeCamera = f.camera;
       return changed;
     } catch { return false; }
   }
 
+  // Picked and your own tags: one of them can be chosen in the tree, and it combines with the others. `activeUtag` is `picked` or `tag:<name>`.
+  let userTagList = $state<UserTagCount[]>([]), activeUtag = $state<string | null>(null);
+  async function loadUserTags() {
+    try { userTagList = await fetchUserTags(); } catch { /* the list just stays as it was */ }
+  }
+  async function setUtag(next: string | null) {
+    try { await setUserTagFilter(next); } catch (e) { message = String(e); return; }
+    await syncFilters();
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
+    selection = emptySelection;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') { fitMap++; loadPoints(); }
+  }
+  /** Picks or tags changed: read the tag list again, and if Picked or a tag is chosen, what it lists changed too (a tag
+   *  that lost its last photo is gone from the library, so the chip goes with it). */
+  async function utagChanged(touched?: string) {
+    await loadUserTags();
+    if (activeUtag === null) return;
+    const before = activeUtag;
+    await syncFilters();
+    if (!listingAffected(before, touched, activeUtag === before)) return; // the listing is as it was: keep what is selected
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
+    refresh().catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(next, activePerson, activeCamera) };
+    view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
@@ -203,7 +231,7 @@
   async function setCamera(next: string | null) {
     try { await setCameraFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, activePerson, next) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
@@ -239,7 +267,7 @@
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
     if (await syncFilters()) { // a filter was on that the screen did not show: show it now
-      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera) };
+      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
       refresh(true).catch((e) => (message = String(e)));
     }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
@@ -252,7 +280,7 @@
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, next, activeCamera) };
+    view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag) };
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
@@ -266,7 +294,7 @@
 
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
-  // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Selected tab holds them.
+  // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Tools tab holds them.
   let picked = $state<ReadonlySet<number>>(new Set());
   async function loadPicks() {
     try { picked = new Set(await pickIds()); } catch { /* the next time */ }
@@ -277,6 +305,7 @@
     if (on) next.add(id); else next.delete(id);
     picked = next;
     try { await pickPhoto(id, on); } catch (e) { message = String(e); await loadPicks(); }
+    if (activeUtag === 'picked') void utagChanged();
   }
   /** A click on a photo in Browse. A Shift or Ctrl click selects several, and every photo now selected is picked too. */
   function selectItem(i: number, mods: { ctrl: boolean; shift: boolean }) {
@@ -300,6 +329,7 @@
       if (fresh.length === 0) return;
       picked = new Set([...picked, ...fresh]);
       await pickMany(fresh);
+      if (activeUtag === 'picked') void utagChanged();
     } catch (e) {
       message = String(e);
       await loadPicks();
@@ -308,6 +338,7 @@
   async function clearAllPicks() {
     picked = new Set();
     try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
+    if (activeUtag === 'picked') void utagChanged(); else void loadUserTags();
   }
   // The loading (files found and not yet stored, which get their thumbnails as they are): it goes on whatever analyses are on.
   // `loadPeak` is the most files waiting at once since it was last idle, which is what the pill's percentage is measured from.
@@ -332,7 +363,7 @@
   }
   // A tab whose analysis was switched off is gone: leave it.
   $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
-  const tabs = $derived(visibleTabs({ create: false, share: false, selected: picked.size, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
+  const tabs = $derived(visibleTabs({ create: false, share: false, picked: picked.size, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -466,13 +497,13 @@
   /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
     try {
-      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null)]);
+      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null), setUserTagFilter(null)]);
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
     tripKey = null;
     areaOnly = false;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera), since: null, until: null, folderId: null, kind: null, bounds: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selection = emptySelection;
     refresh(true).catch((e) => (message = String(e)));
@@ -533,11 +564,12 @@
   let trips = $state<Trip[]>([]);
 
   /** What the grid says when nothing matches. */
-  const emptyMessage = $derived(view.search ? (activeTag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+  const emptyMessage = $derived(view.search ? (activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
 
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
     tag: activeTag === null ? null : tagLabel(activeTag),
+    utag: activeUtag,
     person: activeInfo === null ? null : personLabel(activeInfo),
     camera: activeCamera,
     folder: view.folderId === null ? null : (folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'),
@@ -759,11 +791,11 @@
   $effect(() => {
     // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
     // refresh of the listing (a scan added photos, a duplicate was hidden...).
-    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, list = trips, chosenTrip = tripKey, days = recentDays;
+    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, utag = activeUtag, list = trips, chosenTrip = tripKey, days = recentDays;
     version;
     const token = facetsLatest.next();
     const timer = setTimeout(() => {
-      facetCounts(v, tag, person, camera, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
+      facetCounts(v, tag, person, camera, utag, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
         .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
         .catch(() => { /* the entries keep the counts they came with */ });
     }, 120);
@@ -1028,6 +1060,7 @@
     void loadPicks(); // picks in it went with it
     closePopout(); // its photos may be gone
     loadTags();
+    void loadUserTags();
     loadPeople();
     folders = await listFolders();
     await loadFolderInfos();
@@ -1059,6 +1092,7 @@
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
     duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {});
     loadTags();
+    void loadUserTags();
     loadPeople();
     // Re-scan all known folders on launch to pick up changes.
     listFolders().then((fs) => {
@@ -1126,14 +1160,18 @@
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
-      <span>{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'selected'}>
+    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools'}>
       <div class="tools">
+        <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
         {#if activeTag !== null}
-          <span class="filter">Tagged “{tagLabel(activeTag)}”
+          <span class="filter">Auto tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
+        {/if}
+        {#if activeUtag !== null}
+          <span class="filter">{activeUtag === 'picked' ? '★ Picked' : `Tagged “${activeUtag.replace(/^tag:/, '')}”`}
+            <button onclick={() => setUtag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
         {/if}
         {#if activeInfo !== null}
           <span class="filter">Person “{personLabel(activeInfo)}”
@@ -1189,7 +1227,7 @@
         {#snippet left()}
           <Nav groups={navGroups} kind={view.kind} recent={recentOn}
                period={periodKey} recentText={recentLabel(recentDays)}
-               {facets} {tags} tag={activeTag} ontag={setTag}
+               {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} pickedCount={picked.size} utag={activeUtag} onutag={setUtag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
@@ -1226,7 +1264,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} count={selection.picked.size} {emailLimitMb} />
+          <Details photo={selectedPhoto} count={selection.picked.size} {emailLimitMb} picks={picked} onpicksclear={clearAllPicks} ontagschange={(t) => void utagChanged(t)} ontools={() => pickTab('tools')} />
         {/snippet}
       </Shell>
         {/if}
@@ -1237,9 +1275,9 @@
         <PeopleTab active={tab === 'faces'} status={peopleState} onchange={peopleTabChanged} />
       </div>
     {/if}
-    {#if tab === 'selected'}
+    {#if tab === 'tools'}
       <div class="page-over">
-        <SelectedTab active={tab === 'selected'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} />
+        <ToolsTab active={tab === 'tools'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
       </div>
     {/if}
     {#if tab === 'dupes'}
@@ -1293,6 +1331,7 @@
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
   .content { flex: 1; min-height: 0; }
+  .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */

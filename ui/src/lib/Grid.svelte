@@ -149,7 +149,7 @@
           <!-- The pick marker is its own button beside the photo (a button cannot hold another), over its top-left corner. -->
           {#if p}
             <button class="pick" class:on={picks.has(p.id)} style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
-                    aria-label={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'} aria-pressed={picks.has(p.id)} title={picks.has(p.id) ? 'Take off Selected' : 'Add to Selected'}
+                    aria-label={picks.has(p.id) ? 'Take off Picked' : 'Pick'} aria-pressed={picks.has(p.id)} title={picks.has(p.id) ? 'Take off Picked' : 'Pick'}
                     onclick={() => onpick(p.id)}>
               <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
             </button>

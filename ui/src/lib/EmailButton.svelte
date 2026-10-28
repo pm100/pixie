@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** The Email button for some photos, used by the Selected tab and the details pane. It always asks how to send first: it says
+  /** The Email button for some photos, used by the Tools tab and the details pane. It always asks how to send first: it says
    *  what is being sent, whether it thinks that fits in an email, and offers the ways (smaller copies, several emails, as it
    *  is). Pixie cannot tell when a message was refused; the person tries again and chooses another way. */
   import { emailInfo, emailPhotos } from './api';

@@ -13,3 +13,7 @@ describe('cleanCollapsed', () => {
   });
   it('drops sections that do not exist and repeats', () => expect(cleanCollapsed(['tags', 'nope', 'tags', 7, 'people'])).toEqual(['people', 'tags']));
 });
+
+describe('the tags section', () => {
+  it('is a section of its own, listed before Auto tags', () => expect(cleanCollapsed(['tags', 'mytags'])).toEqual(['mytags', 'tags']));
+});
