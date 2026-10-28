@@ -1183,14 +1183,15 @@
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
     <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools'}>
+      <div class="topbars">
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
         {#if activeTag !== null}
           <span class="filter">Auto tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
         {/if}
-        {#if activeUtag !== null}
-          <span class="filter">{activeUtag === 'picked' ? '★ Picked' : `Tagged “${activeUtag.replace(/^tag:/, '')}”`}
+        {#if activeUtag !== null && activeUtag !== 'picked'}
+          <span class="filter">Tagged “{activeUtag.replace(/^tag:/, '')}”
             <button onclick={() => setUtag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
         {/if}
         {#if activeInfo !== null}
@@ -1226,6 +1227,14 @@
             <button onclick={() => setPeriod(periodKey!)} aria-label="Show all dates" title="Show all dates">✕</button></span>
         {/if}
         {#if offerClearAll(activeNames)}<button class="linkbtn" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
+      </div>
+      <div class="tools second">
+        <!-- Picked: always here. Pressing it shows only the picked photos (and again, all); Clear takes everything off Picked. -->
+        <span class="pickedbox">
+          <button class="pickedbtn" class:on={activeUtag === 'picked'} aria-pressed={activeUtag === 'picked'} onclick={() => setUtag(activeUtag === 'picked' ? null : 'picked')}
+                  title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>★ Picked {picked.size.toLocaleString()}</button>
+          <button class="linkbtn" onclick={clearAllPicks} disabled={picked.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear</button>
+        </span>
         <div class="viewctl">
           <label class="check" title="Show a map above the photos">
             <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Map
@@ -1235,6 +1244,7 @@
             <input type="checkbox" checked={areaOnly} disabled={mode !== 'map'} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter by map
           </label>
         </div>
+      </div>
       </div>
       <div class="content">
         {#if folders.length === 0 && total === 0 && !scanning}
@@ -1247,7 +1257,7 @@
         {#snippet left()}
           <Nav groups={navGroups} kind={view.kind} recent={recentOn}
                period={periodKey} recentText={recentLabel(recentDays)}
-               {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} pickedCount={picked.size} utag={activeUtag} onutag={setUtag}
+               {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} utag={activeUtag} onutag={setUtag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
@@ -1349,12 +1359,18 @@
   :global(:where(input[type='checkbox'], input[type='radio'])) { width: 16px; height: 16px; vertical-align: -3px; }
   main { display: flex; flex-direction: column; height: 100vh; }
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; }
+  .topbars { border-bottom: 1px solid #eee; }
+  .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; }
+  .tools.second { padding-top: 0; }
   .content { flex: 1; min-height: 0; }
   .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */
+  .pickedbox { display: inline-flex; align-items: center; gap: 2px; }
+  .pickedbtn { padding: 2px 10px; border-radius: 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .pickedbtn.on { background: #e3ecff; border-color: #2f6fed; color: #1a3f9a; }
+  .linkbtn:disabled { opacity: .5; cursor: default; text-decoration: none; }
   .linkbtn { border: 0; background: none; padding: 2px 4px; font: inherit; font-size: 13px; color: #1a3f9a; cursor: pointer; }
   .linkbtn:hover { text-decoration: underline; }
   .viewctl { margin-left: auto; display: flex; gap: 16px; align-items: center; }

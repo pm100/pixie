@@ -34,7 +34,7 @@
 <p class="hint">Changes here apply to all {plural(ids.length, 'photo')}.</p>
 <div class="chips">
   <span class="label">Common tags:</span>
-  {#each onAll as t (t)}<span class="chip"># {t}<button class="x" aria-label="Take {t} off all of them" onclick={() => remove(t)}>×</button></span>{/each}
+  {#each onAll as t (t)}<span class="chip">{t}<button class="x" aria-label="Take {t} off all of them" onclick={() => remove(t)}>×</button></span>{/each}
   {#if onAll.length === 0}<span class="hint">none</span>{/if}
   <TagAs {ids} onchange={changed} />
 </div>

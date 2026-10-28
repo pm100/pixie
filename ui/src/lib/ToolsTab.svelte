@@ -87,7 +87,7 @@
     <select id="working-with" bind:value={source}>
       <option value="picked">★ Picked ({picks.size.toLocaleString()})</option>
       {#if current}<option value="current">Current photo</option>{/if}
-      {#each userTags as t (t.name)}<option value="tag:{t.name}"># {t.name} ({t.count.toLocaleString()})</option>{/each}
+      {#each userTags as t (t.name)}<option value="tag:{t.name}">{t.name} ({t.count.toLocaleString()})</option>{/each}
     </select>
     <span class="count">{plural(photos.length, 'photo')}</span>
     {#if isPicked}
@@ -146,7 +146,7 @@
             {/if}
             {#if isPicked}
               <button class="pick on" aria-label="Take off Picked" title="Take off Picked" onclick={() => onunpick(p.id)}>
-                <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
+                <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5 6 20.9l1.3-6.7-5-4.7 6.8-.8z" /></svg></span>
               </button>
             {/if}
           </div>

@@ -16,7 +16,7 @@
   import { faceUrl } from './url';
   import { countOf, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, userTags = [], pickedCount = 0, utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -37,8 +37,8 @@
     analysisOn?: { tags: boolean; faces: boolean }; onopenanalysis?: () => void;
     /** The cameras (tidied names) with their counts under the filters in force, and the one chosen. */
     cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
-    /** Your own tags with their photo counts, how many photos are picked, and the one chosen (`picked` or `tag:<name>`). */
-    userTags?: UserTagCount[]; pickedCount?: number; utag?: string | null; onutag?: (key: string | null) => void;
+    /** Your own tags with their photo counts, and the one chosen (`tag:<name>`; Picked is chosen in Browse's top line). */
+    userTags?: UserTagCount[]; utag?: string | null; onutag?: (key: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
@@ -130,10 +130,6 @@
 {/snippet}
 
 <nav>
-  <!-- Picked is a node of its own at the top of the list, not inside a section: it is always there, and always one click away. -->
-  <button class="item pick" class:active={utag === 'picked'} class:zero={pickedCount === 0 && utag !== 'picked'} aria-pressed={utag === 'picked'} onclick={() => onutag(utag === 'picked' ? null : 'picked')}>
-    <span class="mark">{#if utag === 'picked'}<Check />{/if}</span><span class="grow">★ Picked</span><span class="n">{pickedCount.toLocaleString()}</span>
-  </button>
   {@render head('when', 'When')}
   {#if !folded('when')}
     <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow" use:clipTitle>{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
@@ -296,8 +292,6 @@
   .avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: #dde2ee; flex: none; margin-right: 6px; }
   .mark { width: 14px; flex: none; display: inline-flex; }
   .item:hover { background: #eef2fb; }
-  .item.pick .grow { font-weight: 600; }
-  .item.pick:first-child { margin-top: 6px; }
   .item.offline .grow, .item.offline .n { opacity: .55; }
   .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }

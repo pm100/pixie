@@ -93,7 +93,7 @@
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
       <dt>Tags</dt><dd class="chips">
-        {#each onPhoto as t (t)}<span class="chip utag"># {t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
+        {#each onPhoto as t (t)}<span class="chip utag">{t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
         <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
       </dd>
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}

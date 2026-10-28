@@ -85,7 +85,7 @@
       {#if error}<p class="err" role="alert">{error}</p>{/if}
       <ul>
         {#each list.rows as r (r.name)}
-          <li><button class="row" disabled={r.all} onclick={() => void apply(r.name)}><span class="name"># {r.name}</span><span class="note">{r.all ? 'on all' : r.on > 0 ? `on ${r.on}` : ''}</span></button></li>
+          <li><button class="row" disabled={r.all} onclick={() => void apply(r.name)}><span class="name">{r.name}</span><span class="note">{r.all ? 'on all' : r.on > 0 ? `on ${r.on}` : ''}</span></button></li>
         {/each}
         {#if list.more > 0}<li class="more">{list.more} more. Keep typing to narrow the list.</li>{/if}
         {#if list.create}<li><button class="row create" onclick={() => void apply(list.create!)}>+ Create tag “{list.create}”</button></li>{/if}
@@ -98,9 +98,9 @@
 <style>
   .tagas { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .tagas.floating .drop { position: fixed; z-index: 50; box-sizing: border-box; }
-  /* A round + that sits in the row of tag pills, shaped like one. */
-  .plus { width: 22px; height: 22px; padding: 0; border: 1px dashed #9aa3b8; border-radius: 11px; background: none; color: #5a6378; font: inherit; line-height: 1; cursor: pointer; }
-  .plus:hover:not(:disabled), .plus[aria-expanded="true"] { border-color: #2f6fed; color: #2f6fed; }
+  /* A + that sits in the row of tag pills, shaped and coloured like one. */
+  .plus { padding: 1px 8px; border: 0; border-radius: 4px; background: #e3ecff; color: #2a3f7a; font: inherit; font-size: 12px; line-height: normal; cursor: pointer; }
+  .plus:hover:not(:disabled), .plus[aria-expanded="true"] { background: #cddcff; }
   .plus:disabled { opacity: .5; cursor: default; }
   .drop { align-self: stretch; border: 1px solid #d6d9e2; border-radius: 6px; padding: 6px; background: #fff; box-shadow: 0 4px 16px rgba(20, 28, 50, .14); display: flex; flex-direction: column; gap: 4px; }
   input { width: 100%; box-sizing: border-box; padding: 5px 8px; }
