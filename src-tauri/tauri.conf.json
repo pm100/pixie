@@ -20,7 +20,8 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "Pixie",
+    "publisher": "JollyGoodSW LLC",
+    "copyright": "Copyright (c) 2026 JollyGoodSW LLC and Paul Moore",
     "shortDescription": "A simple photo and video manager",
     "longDescription": "Browse your photos and videos, find them by Auto tag and by the people in them. Everything stays on your computer.",
     "licenseFile": "../LICENSE",

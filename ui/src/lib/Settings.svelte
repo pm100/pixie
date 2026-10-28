@@ -3,10 +3,10 @@
 </script>
 
 <script lang="ts">
-  import { getVersion } from '@tauri-apps/api/app';
   import { onMount } from 'svelte';
   import { isDebugBuild, openDataFolder, resetLibrary, type FolderInfo, type LoadStatus } from './api';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import AboutPage from './AboutPage.svelte';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import EmailSettings from './EmailSettings.svelte';
   import type { AnalysisOptions } from './analysisOptions';
@@ -43,12 +43,10 @@
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
     { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
   ];
-  let version = $state('');
   // Debug builds only: a Developer page.
   let debug = $state(false);
   let devError = $state('');
   onMount(() => {
-    getVersion().then((v) => (version = v)).catch(() => {});
     isDebugBuild().then((d) => (debug = d)).catch(() => {});
   });
   // The one Pause covers Auto tags, faces and the duplicate check; the menu says so when it is on.
@@ -115,9 +113,7 @@
           onconfirm={startAgain} oncancel={() => (confirmReset = false)} />
       {/if}
     {:else}
-      <h2>About</h2>
-      <p>Pixie {version}</p>
-      <p>A simple photo and video manager. MIT licence.</p>
+      <AboutPage />
     {/if}
   </div>
 </div>

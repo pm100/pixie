@@ -1,0 +1,16 @@
+# cargo-about settings for THIRD-PARTY-NOTICES (see `just notices`): the licences we accept for what ships in Pixie.
+# Anything else makes the generator stop, so a new dependency with an unexpected licence is looked at before it is released.
+accepted = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib",
+    "MPL-2.0", "Unlicense", "CC0-1.0", "BSL-1.0", "0BSD", "CDLA-Permissive-2.0",
+]
+# What ships on each platform (a crate used on only one still has to be listed).
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+# Our own crates are not third-party, and neither are things used only to build or test.
+private = { ignore = true }
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# A crate whose Cargo.toml names a licence file instead of a licence (checked: the file is the MIT licence).
+[nom-exif]
+accepted = ["MIT"]

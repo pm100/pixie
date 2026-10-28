@@ -1,6 +1,8 @@
 {
   "name": "pixie-ui",
   "private": true,
+  "author": "JollyGoodSW LLC and Paul Moore",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -183,6 +183,8 @@ export const scanFolders = (paths: string[]) => invoke<ScanStart>('scan_folders'
 
 /** Debug builds only: whether the Developer page is offered. */
 export const isDebugBuild = () => invoke<boolean>('is_debug_build');
+/** The commit this was built from (empty if unknown) and whether it had uncommitted changes. */
+export const buildInfo = () => invoke<{ commit: string; modified: boolean }>('build_info');
 /** Debug builds only: show the data folder in the file manager. */
 export const openDataFolder = () => invoke<void>('open_data_folder');
 

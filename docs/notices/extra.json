@@ -1,0 +1,44 @@
+[
+  {
+    "name": "libheif",
+    "license": "LGPL-3.0-or-later",
+    "url": "https://github.com/strukturag/libheif",
+    "note": "Reads HEIC photos. Shipped as a separate library file (heif.dll on Windows) that you may replace with your own build. Source code: the link above. Built without the GPL x265 encoder.",
+    "textFile": "libheif-copyright.txt"
+  },
+  {
+    "name": "libde265",
+    "license": "LGPL-3.0-or-later",
+    "url": "https://github.com/strukturag/libde265",
+    "note": "Decodes the video format inside HEIC photos. Shipped as a separate library file (libde265.dll on Windows) that you may replace with your own build. Source code: the link above.",
+    "textFile": "libde265-copyright.txt"
+  },
+  {
+    "name": "ONNX Runtime",
+    "license": "MIT",
+    "url": "https://github.com/microsoft/onnxruntime",
+    "note": "Runs the picture-analysis and face models on your computer.",
+    "textFile": "onnxruntime-LICENSE.txt"
+  },
+  {
+    "name": "CLIP ViT-B/32 model (OpenAI), ONNX conversion by Xenova",
+    "license": "MIT",
+    "url": "https://huggingface.co/Xenova/clip-vit-base-patch32",
+    "note": "Downloaded once on first use. Used for Auto tags.",
+    "textFile": "clip-LICENSE.txt"
+  },
+  {
+    "name": "YuNet face detection model (OpenCV Zoo)",
+    "license": "MIT",
+    "url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+    "note": "Downloaded once on first use. Used to find faces.",
+    "textFile": "yunet-LICENSE.txt"
+  },
+  {
+    "name": "OpenStreetMap map data",
+    "license": "ODbL-1.0",
+    "url": "https://www.openstreetmap.org/copyright",
+    "note": "The map tiles are fetched from OpenStreetMap. Map data © OpenStreetMap contributors, available under the Open Database Licence.",
+    "textFile": "openstreetmap-NOTICE.txt"
+  }
+]

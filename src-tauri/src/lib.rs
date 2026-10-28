@@ -902,6 +902,18 @@ fn save_mail_account(state: tauri::State<AppState>, account: MailAccount, passwo
     Ok(())
 }
 
+/// Which commit this was built from (empty if unknown) and whether the tree had uncommitted changes: Settings, About.
+#[derive(serde::Serialize)]
+struct BuildInfo {
+    commit: &'static str,
+    modified: bool,
+}
+
+#[tauri::command]
+fn build_info() -> BuildInfo {
+    BuildInfo { commit: env!("PIXIE_COMMIT"), modified: env!("PIXIE_MODIFIED") == "true" }
+}
+
 /// Whether this is a debug build: the Developer page in Settings exists only there.
 #[tauri::command]
 fn is_debug_build() -> bool {
@@ -1715,7 +1727,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
@@ -1762,5 +1774,18 @@ mod scan_message_tests {
     #[test]
     fn other_problems_keep_their_usual_message() {
         assert_eq!(scan_error_message_with(&nf(), None, |_| false), nf().user_message());
+    }
+}
+
+#[cfg(test)]
+mod build_info_tests {
+    use super::*;
+
+    #[test]
+    fn the_build_says_which_commit_it_came_from() {
+        // In a checkout (as here) that is a short hash; with no git it is empty and never "modified".
+        let b = build_info();
+        assert!(b.commit.is_empty() || (b.commit.len() == 7 && b.commit.chars().all(|c| c.is_ascii_hexdigit())), "{}", b.commit);
+        assert!(!b.commit.is_empty() || !b.modified);
     }
 }

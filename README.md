@@ -133,4 +133,4 @@ Issues and pull requests are welcome. See [`AGENTS.md`](AGENTS.md) for working r
 
 ## License
 
-[MIT](LICENSE). HEIC support uses libheif and libde265 (both LGPL-3.0). On Windows they ship as separate DLLs beside the program, so you can replace them with your own build; they are built without the GPL x265 encoder (hence `libheif[core]`) because Pixie only decodes HEIC. HEVC, the codec inside HEIC, is also covered by patents that a code licence does not address; review that before distributing binaries.
+Copyright (c) 2026 JollyGoodSW LLC and Paul Moore. [MIT](LICENSE). The licences of the other software Pixie uses are listed in Settings, About (and in `THIRD-PARTY-NOTICES.md`). HEIC support uses libheif and libde265 (both LGPL-3.0). On Windows they ship as separate DLLs beside the program, so you can replace them with your own build; they are built without the GPL x265 encoder (hence `libheif[core]`) because Pixie only decodes HEIC. HEVC, the codec inside HEIC, is also covered by patents that a code licence does not address; review that before distributing binaries.

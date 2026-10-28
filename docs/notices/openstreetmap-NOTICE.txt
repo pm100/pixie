@@ -1,0 +1,5 @@
+Map data © OpenStreetMap contributors.
+
+OpenStreetMap data is made available under the Open Database Licence (ODbL) 1.0.
+Licence text and attribution rules: https://www.openstreetmap.org/copyright
+https://opendatacommons.org/licenses/odbl/1-0/

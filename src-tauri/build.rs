@@ -62,7 +62,23 @@ fn gather_dylibs() {
     }
 }
 
+/// The commit this was built from and whether the tree had uncommitted changes, for Settings, About (`PIXIE_COMMIT` is
+/// empty when there is no git checkout, such as a source archive).
+fn git_info() {
+    for p in ["../.git/HEAD", "../.git/refs/heads", "../.git/index", "src", "../crates", "../ui/src"] {
+        println!("cargo:rerun-if-changed={p}");
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let commit = git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_default();
+    let modified = !commit.is_empty() && git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    println!("cargo:rustc-env=PIXIE_COMMIT={commit}");
+    println!("cargo:rustc-env=PIXIE_MODIFIED={modified}");
+}
+
 fn main() {
+    git_info();
     if cfg!(windows) {
         gather_dlls();
     }
