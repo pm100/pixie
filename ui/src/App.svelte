@@ -1080,6 +1080,16 @@
     if (mode === 'map') loadPoints();
   }
 
+  /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
+  let toolsStart = $state<{ photo: Photo; page: 'email' | 'print' } | null>(null);
+  function workOn(page: 'email' | 'print') {
+    if (!selectedPhoto) return;
+    toolsStart = { photo: selectedPhoto, page };
+    tab = 'tools';
+  }
+  // Opening Tools any other way starts it as usual.
+  $effect(() => { if (tab !== 'tools') toolsStart = null; });
+
   // Details for the chosen photo (fetched by index in the current view).
   $effect(() => {
     const i = selected;
@@ -1274,7 +1284,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} {emailLimitMb} ontagschange={(t) => void utagChanged(t)} />
+          <Details photo={selectedPhoto} onemail={() => workOn('email')} onprint={() => workOn('print')} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}
@@ -1287,7 +1297,7 @@
     {/if}
     {#if tab === 'tools'}
       <div class="page-over">
-        <ToolsTab active={tab === 'tools'} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
+        <ToolsTab active={tab === 'tools'} start={toolsStart} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
       </div>
     {/if}
     {#if tab === 'dupes'}

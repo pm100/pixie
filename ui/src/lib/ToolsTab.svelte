@@ -1,6 +1,7 @@
 <script lang="ts">
   /** The Tools tab, laid out like Settings: the tools down the left, the options of the chosen tool (by default the details of the photo chosen on the right) in the middle, and
    *  the photos of Picked (or of one of your tags) on the right. */
+  import { untrack } from 'svelte';
   import { listPicked, listTagged, type Photo, type UserTagCount, type View } from './api';
   import Details from './Details.svelte';
   import EmailForm from './EmailForm.svelte';
@@ -12,8 +13,10 @@
   import { posterUrl, thumbUrl } from './url';
   import Viewer from './Viewer.svelte';
 
-  let { active, picks, onunpick, onclear, emailLimitMb, userTags, onchange }: {
+  let { active, picks, onunpick, onclear, emailLimitMb, userTags, onchange, start = null }: {
     active: boolean;
+    /** Given when the tab is opened to work on one photo (the Email and Print buttons in Browse): that photo, and the tool. */
+    start?: { photo: Photo; page: 'email' | 'print' } | null;
     /** The email size limit (Settings, Email). */
     emailLimitMb: number;
     /** The picked photos' ids: the list is read again when they change. */
@@ -33,17 +36,27 @@
   // What the middle column shows. Each tool is added to this list when it has been built.
   type Page = 'details' | 'email' | 'print' | 'tags';
   const pages: { id: Page; label: string }[] = [{ id: 'details', label: 'Photo details' }, { id: 'email', label: 'Email' }, { id: 'print', label: 'Print' }, { id: 'tags', label: 'Tags' }];
-  let page = $state<Page>('details');
+  let page = $state<Page>(untrack(() => start?.page ?? 'details'));
 
-  /** Which photos the tools work on: `picked`, or the name of one of your tags. */
-  let source = $state('picked');
+  /** One photo the tools can work on by itself (the Current photo choice): the one the tab was opened for, or one whose Email
+   *  or Print button was pressed here. */
+  let current = $state<Photo | null>(untrack(() => start?.photo ?? null));
+  /** Which photos the tools work on: `picked`, `current`, or `tag:<name>` for one of your tags. */
+  let source = $state(untrack(() => (start ? 'current' : 'picked')));
   // A tag that has no photos left is gone from the list: go back to Picked.
-  $effect(() => { if (source !== 'picked' && !userTags.some((t) => t.name === source)) source = 'picked'; });
+  $effect(() => { if (source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'picked'; });
   const isPicked = $derived(source === 'picked');
 
   let photos = $state<Photo[]>([]);
   let error = $state('');
   let broken = $state<Record<number, boolean>>({});
+  /** The Email or Print button of the photo chosen here: work on that one photo with that tool. */
+  function workOn(tool: 'email' | 'print') {
+    if (!chosenPhoto) return;
+    current = chosenPhoto;
+    source = 'current';
+    page = tool;
+  }
   /** The photo chosen in the middle (one click); its details are what the right pane shows by default. */
   let chosen = $state<number | null>(null);
   const chosenPhoto = $derived(photos.find((p) => p.id === chosen) ?? null);
@@ -59,8 +72,9 @@
     picks; userTags; // read again whenever the picks or the tags change
     const from = source;
     if (!active) return;
+    if (from === 'current') { photos = current ? [current] : []; return; }
     let live = true;
-    (from === 'picked' ? listPicked() : listTagged(from)).then((l) => { if (live) photos = l; }).catch((e) => { if (live) error = String(e); });
+    (from === 'picked' ? listPicked() : listTagged(from.slice(4))).then((l) => { if (live) photos = l; }).catch((e) => { if (live) error = String(e); });
     return () => { live = false; };
   });
 
@@ -72,7 +86,8 @@
     <label for="working-with">Working on:</label>
     <select id="working-with" bind:value={source}>
       <option value="picked">★ Picked ({picks.size.toLocaleString()})</option>
-      {#each userTags as t (t.name)}<option value={t.name}># {t.name} ({t.count.toLocaleString()})</option>{/each}
+      {#if current}<option value="current">Current photo</option>{/if}
+      {#each userTags as t (t.name)}<option value="tag:{t.name}"># {t.name} ({t.count.toLocaleString()})</option>{/each}
     </select>
     <span class="count">{plural(photos.length, 'photo')}</span>
     {#if isPicked}
@@ -90,7 +105,7 @@
 
   <aside class="side" aria-label={page === 'details' ? 'Photo details' : pages.find((x) => x.id === page)?.label}>
     {#if page === 'details'}
-      <Details photo={chosenPhoto} {emailLimitMb} ontagschange={onchange} />
+      <Details photo={chosenPhoto} onemail={() => workOn('email')} onprint={() => workOn('print')} ontagschange={onchange} />
     {:else if page === 'email'}
       <div class="tool wide">
         <EmailForm {ids} limitMb={emailLimitMb} />

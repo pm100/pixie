@@ -6,17 +6,18 @@
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
   import { placeLines } from './placeLines';
-  import EmailButton from './EmailButton.svelte';
   import TagAs from './TagAs.svelte';
   import { tagsOnAll } from './userTags';
   import LocationMap from './LocationMap.svelte';
 
-  let { photo, emailLimitMb, ontagschange }: {
+  let { photo, ontagschange, onemail, onprint }: {
     photo: Photo | null;
+    /** The Email button was pressed: the Tools tab has the email form. */
+    onemail: () => void;
+    /** The Print button was pressed: the Tools tab has the print setup. */
+    onprint: () => void;
     /** Tags were added or removed here (the tag named): the tag list in the tree needs reading again. */
     ontagschange: (tag: string) => void;
-    /** The email size limit (Settings, Email). */
-    emailLimitMb: number;
   } = $props();
   const gps = $derived(photo ? formatGps(photo.gps_lat, photo.gps_lon) : null);
   const lat = $derived(photo?.gps_lat ?? null);
@@ -97,7 +98,7 @@
       </dd>
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
-    <p class="actions"><EmailButton ids={photo ? [photo.id] : []} limitMb={emailLimitMb} /></p>
+    <p class="actions"><button onclick={onemail} title="Email this photo (opens the Email tool)">Email</button> <button onclick={onprint} title="Print this photo (opens the Print tool)">Print</button></p>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
