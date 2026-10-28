@@ -131,7 +131,7 @@
     <p class="hint">Select a photo to see its details.</p>
   {/if}
   {#if picks.size > 0}
-    <p class="foot">Use the <button class="link" onclick={ontools}>Tools tab</button> to work with these pics.</p>
+    <p class="foot">To work with these pics: <button class="link" onclick={ontools}>open the Tools tab</button></p>
   {/if}
 </div>
 
