@@ -102,11 +102,14 @@ export const setUserTagFilter = (key: string | null) => invoke<void>('set_user_t
 /** Nothing is picked. */
 export const clearPicks = () => invoke<void>('clear_picks');
 /** How much is about to be emailed (read from the library, no file is opened). */
-export const emailInfo = (ids: number[]) => invoke<{ count: number; photos: number; videos: number; total_bytes: number; largest_bytes: number }>('email_info', { ids });
+/** What is about to be emailed, with the subject Pixie proposes for it. */
+export const emailInfo = (ids: number[]) =>
+  invoke<{ count: number; photos: number; videos: number; total_bytes: number; largest_bytes: number; subject: string }>('email_info', { ids, lang: userLang() });
 /** Opens new emails with these photos attached. `mode`: 'asis' (one message, the files as they are), 'smaller' (pictures as smaller
- *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. */
-export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number) =>
-  invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb });
+ *  copies) or 'split' (the files as they are, in as many messages as the limit needs). `limitMb` is the size limit. `draft`: the subject
+ *  (null: Pixie's own), the addresses to put in To, and some text for the body (both may be empty). */
+export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number, draft: { subject: string | null; to: string; body: string }) =>
+  invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb, subject: draft.subject, to: draft.to, body: draft.body });
 /** Which background analyses are on (kept in the library). */
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */

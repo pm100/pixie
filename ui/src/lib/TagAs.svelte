@@ -21,7 +21,19 @@
 
   const list = $derived(tagAsRows(usage, ids.length, query));
 
+  /** Where the floating box goes. It is fixed to the window (so the pane it sits in cannot clip it or scroll sideways) and opens to
+   *  the left of the +, over the divider and the photos, since the + is near the right edge of the window. */
+  let dropStyle = $state('');
+  let plus = $state<HTMLButtonElement | null>(null);
+  const BOX_WIDTH = 240;
+  function place() {
+    if (!plus) return;
+    const r = plus.getBoundingClientRect();
+    dropStyle = `top:${Math.round(r.bottom + 4)}px;left:${Math.max(8, Math.round(r.right - BOX_WIDTH))}px;width:${BOX_WIDTH}px`;
+  }
+
   async function show() {
+    place();
     open = true;
     query = '';
     error = '';
@@ -53,14 +65,21 @@
     if (!open) return;
     const away = (e: MouseEvent) => { if (box && !box.contains(e.target as Node)) close(); };
     window.addEventListener('mousedown', away);
-    return () => window.removeEventListener('mousedown', away);
+    // The box is fixed to the window, so it would be left behind if the pane scrolled or the window changed size.
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('mousedown', away);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
   });
 </script>
 
 <div class="tagas" class:floating bind:this={box}>
-  <button class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
+  <button bind:this={plus} class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
   {#if open}
-    <div class="drop">
+    <div class="drop" style={floating ? dropStyle : undefined}>
       <input bind:this={field} type="text" autocomplete="off" placeholder="Find or create a tag" aria-label="Find or create a tag" bind:value={query}
              onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); enter(); } else if (e.key === 'Escape') { e.stopPropagation(); close(); } }} />
       {#if error}<p class="err" role="alert">{error}</p>{/if}
@@ -78,8 +97,7 @@
 
 <style>
   .tagas { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-  .tagas.floating { position: relative; }
-  .tagas.floating .drop { position: absolute; z-index: 5; top: 100%; left: 0; width: 240px; margin-top: 4px; }
+  .tagas.floating .drop { position: fixed; z-index: 50; box-sizing: border-box; }
   /* A round + that sits in the row of tag pills, shaped like one. */
   .plus { width: 22px; height: 22px; padding: 0; border: 1px dashed #9aa3b8; border-radius: 11px; background: none; color: #5a6378; font: inherit; line-height: 1; cursor: pointer; }
   .plus:hover:not(:disabled), .plus[aria-expanded="true"] { border-color: #2f6fed; color: #2f6fed; }

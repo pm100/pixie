@@ -9,9 +9,8 @@ describe('visibleTabs', () => {
     expect(visibleTabs({ create: true, share: true }).map((t) => t.id)).toEqual(['browse', 'tools', 'faces', 'dupes', 'create', 'share', 'settings']);
     expect(visibleTabs({ create: false, share: true }).map((t) => t.id)).toEqual(['browse', 'tools', 'faces', 'dupes', 'share', 'settings']);
   });
-  it('always has Tools right after Browse, with its count once something is picked', () => {
-    expect(visibleTabs({ create: false, share: false, picked: 0 })[1]).toEqual({ id: 'tools', label: 'Tools' });
-    expect(visibleTabs({ create: false, share: false, picked: 12 })[1]).toEqual({ id: 'tools', label: 'Tools (12)' });
+  it('always has Tools right after Browse, without a count', () => {
+    expect(visibleTabs({ create: false, share: false })[1]).toEqual({ id: 'tools', label: 'Tools' });
   });
   it('has People and Duplicates only while those analyses are on', () => {
     expect(visibleTabs({ create: false, share: false, people: false }).map((t) => t.id)).toEqual(['browse', 'tools', 'dupes', 'settings']);

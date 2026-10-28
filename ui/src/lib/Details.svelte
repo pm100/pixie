@@ -8,18 +8,13 @@
   import { placeLines } from './placeLines';
   import EmailButton from './EmailButton.svelte';
   import TagAs from './TagAs.svelte';
-  import { plural } from './format';
   import { tagsOnAll } from './userTags';
   import LocationMap from './LocationMap.svelte';
 
-  let { photo, count, emailLimitMb, picks, onpicksclear, ontagschange, ontools }: {
-    photo: Photo | null; count: number;
-    /** The picked photos (Quick pick), and taking them all off. */
-    picks: ReadonlySet<number>; onpicksclear: () => void;
+  let { photo, emailLimitMb, ontagschange }: {
+    photo: Photo | null;
     /** Tags were added or removed here (the tag named): the tag list in the tree needs reading again. */
     ontagschange: (tag: string) => void;
-    /** Go to the Tools tab. */
-    ontools: () => void;
     /** The email size limit (Settings, Email). */
     emailLimitMb: number;
   } = $props();
@@ -42,25 +37,22 @@
     tagsFor(photoId).then((t) => { if (tagsLatest.isCurrent(token)) tags = t; }).catch(() => {});
   });
 
-  // Your own tags, for the photo shown or for every picked photo. Read again when the photos or the tags change.
-  const pickIds = $derived([...picks]);
-  let showGroup = $state(false); // with both a photo and picks, which one the panel is about
-  const group = $derived(picks.size > 0 && (photo === null || count > 1 || showGroup));
-  const subjectIds = $derived(group ? pickIds : photoId === null ? [] : [photoId]);
+  // Your own tags on the photo. Read again when the photo or its tags change.
   let usage = $state<TagUse[]>([]);
   let tagsRev = $state(0);
   const usageLatest = createLatest();
   $effect(() => {
     tagsRev;
-    const ids = subjectIds;
+    const id = photoId;
     const token = usageLatest.next();
-    if (ids.length === 0) { usage = []; return; }
-    tagUsage(ids).then((u) => { if (usageLatest.isCurrent(token)) usage = u; }).catch(() => {});
+    if (id === null) { usage = []; return; }
+    tagUsage([id]).then((u) => { if (usageLatest.isCurrent(token)) usage = u; }).catch(() => {});
   });
-  const onAll = $derived(tagsOnAll(usage, subjectIds.length));
+  const onPhoto = $derived(tagsOnAll(usage, photoId === null ? 0 : 1));
   const tagsChanged = (tag: string) => { tagsRev++; ontagschange(tag); };
   async function removeTag(name: string) {
-    try { await untagPhotos(subjectIds, name); } catch { /* shown again as it was */ }
+    if (photoId === null) return;
+    try { await untagPhotos([photoId], name); } catch { /* shown again as it was */ }
     tagsChanged(name);
   }
 
@@ -88,24 +80,7 @@
 </script>
 
 <div class="details">
-  {#if photo && count <= 1 && picks.size > 0}
-    <div class="seg" role="group" aria-label="Show details for">
-      <button aria-pressed={!group} onclick={() => (showGroup = false)}>This photo</button>
-      <button aria-pressed={group} onclick={() => (showGroup = true)}>Picked ({picks.size.toLocaleString()})</button>
-    </div>
-  {/if}
-  {#if group}
-    <div class="gtitle"><b>{plural(picks.size, 'picked photo')}</b><button class="link" onclick={onpicksclear}>Clear</button></div>
-    <p class="hint">Changes here apply to all of them.</p>
-    <h4>Tags on all of them</h4>
-    <div class="chips">
-      {#each onAll as t (t)}<span class="chip utag"># {t}<button class="x" aria-label="Take {t} off all of them" onclick={() => removeTag(t)}>×</button></span>{/each}
-      {#if onAll.length === 0}<span class="hint">No tag is on all of them.</span>{/if}
-      <TagAs ids={pickIds} onchange={tagsChanged} />
-    </div>
-  {:else if count > 1}
-    <p class="hint"><strong>{count.toLocaleString()}</strong> photos selected</p>
-  {:else if photo}
+  {#if photo}
     <h3 title={photo.path}>{basename(photo.path)}</h3>
     <dl>
       <dt>Taken</dt><dd>{formatDateTime(photo.taken_at)}</dd>
@@ -117,8 +92,8 @@
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
       <dt>Tags</dt><dd class="chips">
-        {#each onAll as t (t)}<span class="chip utag"># {t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
-        <TagAs ids={subjectIds} onchange={tagsChanged} />
+        {#each onPhoto as t (t)}<span class="chip utag"># {t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
+        <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
       </dd>
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
@@ -129,9 +104,6 @@
     {/if}
   {:else}
     <p class="hint">Select a photo to see its details.</p>
-  {/if}
-  {#if picks.size > 0}
-    <p class="foot">To work with these pics: <button class="link" onclick={ontools}>open the Tools tab</button></p>
   {/if}
 </div>
 
@@ -149,13 +121,6 @@
   .face { display: inline-flex; align-items: center; gap: 4px; padding-left: 2px; }
   .face img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
   .hint { color: #777; }
-  .foot { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #e4e4e8; color: #777; font-size: 13px; }
-  h4 { margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: #777; text-transform: uppercase; letter-spacing: .04em; }
-  .gtitle { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .link { border: 0; background: none; padding: 0; color: #2b5fd9; cursor: pointer; font: inherit; font-size: 13px; }
-  .seg { display: flex; border: 1px solid #d6d9e2; border-radius: 6px; overflow: hidden; margin-bottom: 10px; }
-  .seg button { flex: 1; border: 0; background: #fff; padding: 5px; font: inherit; cursor: pointer; }
-  .seg button[aria-pressed="true"] { background: #2f6fed; color: #fff; font-weight: 600; }
   .chip.utag { background: #e3ecff; border-radius: 4px; }
   .x { border: 0; background: none; padding: 0 0 0 5px; color: inherit; opacity: .7; cursor: pointer; line-height: 1; }
   .x:hover { opacity: 1; }

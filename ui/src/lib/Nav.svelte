@@ -102,7 +102,7 @@
     folders: folders.find((f) => f.id === folderId) ? folderName(folders.find((f) => f.id === folderId)!.path) : '',
     people: people.find((p) => p.id === person) ? personLabel(people.find((p) => p.id === person)!) : '',
     trips: trips.find((t) => t.since === trip) ? tripTitle(trips.find((t) => t.since === trip)!) : '',
-    mytags: utag === null ? '' : utag === 'picked' ? 'Picked' : utag.replace(/^tag:/, ''),
+    mytags: utag === null || utag === 'picked' ? '' : utag.replace(/^tag:/, ''),
     tags: tag !== null ? tagLabel(tag) : '',
     cameras: camera ?? '',
     when: period !== null ? periodLabel(period) : recent ? recentText : '',
@@ -130,6 +130,10 @@
 {/snippet}
 
 <nav>
+  <!-- Picked is a node of its own at the top of the list, not inside a section: it is always there, and always one click away. -->
+  <button class="item pick" class:active={utag === 'picked'} class:zero={pickedCount === 0 && utag !== 'picked'} aria-pressed={utag === 'picked'} onclick={() => onutag(utag === 'picked' ? null : 'picked')}>
+    <span class="mark">{#if utag === 'picked'}<Check />{/if}</span><span class="grow">★ Picked</span><span class="n">{pickedCount.toLocaleString()}</span>
+  </button>
   {@render head('when', 'When')}
   {#if !folded('when')}
     <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow" use:clipTitle>{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
@@ -167,9 +171,6 @@
 
   {@render head('mytags', 'Tags')}
   {#if !folded('mytags')}
-    <button class="item pick" class:active={utag === 'picked'} class:zero={pickedCount === 0 && utag !== 'picked'} aria-pressed={utag === 'picked'} onclick={() => onutag(utag === 'picked' ? null : 'picked')}>
-      <span class="mark">{#if utag === 'picked'}<Check />{/if}</span><span class="grow">★ Picked</span><span class="n">{pickedCount.toLocaleString()}</span>
-    </button>
     {#each userTags as t (t.name)}
       {@const key = `tag:${t.name}`}
       <button class="item" class:active={utag === key} aria-pressed={utag === key} onclick={() => onutag(utag === key ? null : key)}>
@@ -296,6 +297,7 @@
   .mark { width: 14px; flex: none; display: inline-flex; }
   .item:hover { background: #eef2fb; }
   .item.pick .grow { font-weight: 600; }
+  .item.pick:first-child { margin-top: 6px; }
   .item.offline .grow, .item.offline .n { opacity: .55; }
   .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }

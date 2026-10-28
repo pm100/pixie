@@ -1,8 +1,14 @@
 <script lang="ts">
-  /** The Tools tab: the photos of Picked (or of one of your tags), shown together, with the tools that work on all of them. */
+  /** The Tools tab, laid out like Settings: the tools down the left, the options of the chosen tool (by default the details of the photo chosen on the right) in the middle, and
+   *  the photos of Picked (or of one of your tags) on the right. */
   import { listPicked, listTagged, type Photo, type UserTagCount, type View } from './api';
-  import EmailButton from './EmailButton.svelte';
-  import TagAs from './TagAs.svelte';
+  import Details from './Details.svelte';
+  import EmailForm from './EmailForm.svelte';
+  import { loadPref, savePref } from './prefs';
+  import Resizer from './Resizer.svelte';
+  import { plural } from './format';
+  import GroupTags from './GroupTags.svelte';
+  import PrintTool from './PrintTool.svelte';
   import { posterUrl, thumbUrl } from './url';
   import Viewer from './Viewer.svelte';
 
@@ -20,6 +26,15 @@
     onchange: (tag: string) => void;
   } = $props();
 
+  // The widths of the tools list and of the options column; the photos take the rest. Remembered, as Browse's panes are.
+  let navW = $state(loadPref('tools.nav', 230));
+  let sideW = $state(loadPref('tools.side', 300));
+
+  // What the middle column shows. Each tool is added to this list when it has been built.
+  type Page = 'details' | 'email' | 'print' | 'tags';
+  const pages: { id: Page; label: string }[] = [{ id: 'details', label: 'Photo details' }, { id: 'email', label: 'Email' }, { id: 'print', label: 'Print' }, { id: 'tags', label: 'Tags' }];
+  let page = $state<Page>('details');
+
   /** Which photos the tools work on: `picked`, or the name of one of your tags. */
   let source = $state('picked');
   // A tag that has no photos left is gone from the list: go back to Picked.
@@ -29,6 +44,9 @@
   let photos = $state<Photo[]>([]);
   let error = $state('');
   let broken = $state<Record<number, boolean>>({});
+  /** The photo chosen in the middle (one click); its details are what the right pane shows by default. */
+  let chosen = $state<number | null>(null);
+  const chosenPhoto = $derived(photos.find((p) => p.id === chosen) ?? null);
   /** The photo open in the viewer (its position among these photos), if any. Double-click or Enter opens it. */
   let viewing = $state<number | null>(null);
   // The viewer pages through these photos as they are listed here (it does not use Browse's listing).
@@ -47,62 +65,80 @@
   });
 
   const ids = $derived(photos.map((p) => p.id));
-
 </script>
 
-<div class="tools">
+<div class="page">
   <div class="bar">
-    <label for="working-with"><b>Working with</b></label>
+    <label for="working-with">Working on:</label>
     <select id="working-with" bind:value={source}>
       <option value="picked">★ Picked ({picks.size.toLocaleString()})</option>
       {#each userTags as t (t.name)}<option value={t.name}># {t.name} ({t.count.toLocaleString()})</option>{/each}
     </select>
-    {#if error}<span class="err" role="alert">{error}</span>{/if}
+    <span class="count">{plural(photos.length, 'photo')}</span>
     {#if isPicked}
       <button class="clear" onclick={onclear} disabled={picks.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear picks</button>
     {/if}
+    {#if error}<span class="err" role="alert">{error}</span>{/if}
   </div>
-  <div class="body">
-  {#if photos.length === 0}
-    <div class="none">
-      {#if isPicked}
-        <p><b>Nothing is picked yet.</b></p>
-        <p>In Browse, move the mouse over the top-left corner of a photo and click the circle that appears. Shift-click or Ctrl-click to pick several at once.</p>
-        <p>The photos you pick are listed here, and can be emailed or tagged together.</p>
-      {:else}
-        <p><b>No photos have this tag yet.</b></p>
-      {/if}
-    </div>
-  {:else}
-  <div class="grid">
-    {#each photos as p, i (p.id)}
-      <div class="tile">
-        <!-- The whole photo is the button that opens it; the unpick marker is a separate button over its corner. -->
-        <button class="open" aria-label={p.kind === 'video' ? `Open video ${p.path}` : `Open ${p.path}`} ondblclick={() => (viewing = i)}
-                onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); viewing = i; } }}></button>
-        {#if p.kind === 'video' && !broken[p.id]}
-          <img alt="" loading="lazy" src={posterUrl(p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
-        {:else if p.kind === 'photo' && !broken[p.id]}
-          <img alt="" loading="lazy" src={thumbUrl('grid', p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
-        {:else}
-          <span class="ph" aria-hidden="true">{p.kind === 'video' ? '▶' : '⚠︎'}</span>
-        {/if}
+  <div class="body" style:grid-template-columns="{navW}px 5px {sideW}px 5px minmax(0, 1fr)">
+  <nav aria-label="Tools">
+    {#each pages as p (p.id)}
+      <button class:on={page === p.id} aria-current={page === p.id ? 'page' : undefined} onclick={() => (page = p.id)}>{p.label}</button>
+    {/each}
+  </nav>
+  <Resizer bind:width={navW} min={160} max={360} side="left" onchange={(w) => savePref('tools.nav', w)} />
+
+  <aside class="side" aria-label={page === 'details' ? 'Photo details' : pages.find((x) => x.id === page)?.label}>
+    {#if page === 'details'}
+      <Details photo={chosenPhoto} {emailLimitMb} ontagschange={onchange} />
+    {:else if page === 'email'}
+      <div class="tool wide">
+        <EmailForm {ids} limitMb={emailLimitMb} />
+      </div>
+    {:else if page === 'print'}
+      <PrintTool {photos} />
+    {:else}
+      <div class="tool"><GroupTags {ids} {onchange} /></div>
+    {/if}
+  </aside>
+  <Resizer bind:width={sideW} min={240} max={560} side="left" onchange={(w) => savePref('tools.side', w)} />
+
+  <div class="mid">
+    {#if photos.length === 0}
+      <div class="none">
         {#if isPicked}
-          <button class="pick on" aria-label="Take off Picked" title="Take off Picked" onclick={() => onunpick(p.id)}>
-            <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
-          </button>
+          <p><b>Nothing is picked yet.</b></p>
+          <p>In Browse, move the mouse over the top-left corner of a photo and click the circle that appears. Ctrl-click a photo to pick it, or Shift-click to pick everything from the photo you chose last.</p>
+          <p>The photos you pick are listed here, and can be emailed or tagged together.</p>
+        {:else}
+          <p><b>No photos have this tag yet.</b></p>
         {/if}
       </div>
-    {/each}
+    {:else}
+      <div class="grid">
+        {#each photos as p, i (p.id)}
+          <div class="tile" class:chosen={chosen === p.id}>
+            <!-- The whole photo is the button: one click chooses it (its details show), a double click or Enter opens it. The unpick marker is a separate button over its corner. -->
+            <button class="open" aria-label={p.kind === 'video' ? `Video ${p.path}` : `Photo ${p.path}`} aria-pressed={chosen === p.id}
+                    onclick={() => { chosen = p.id; if (page !== 'details') page = 'details'; }} ondblclick={() => (viewing = i)}
+                    onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); viewing = i; } }}></button>
+            {#if p.kind === 'video' && !broken[p.id]}
+              <img alt="" loading="lazy" src={posterUrl(p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
+            {:else if p.kind === 'photo' && !broken[p.id]}
+              <img alt="" loading="lazy" src={thumbUrl('grid', p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
+            {:else}
+              <span class="ph" aria-hidden="true">{p.kind === 'video' ? '▶' : '⚠︎'}</span>
+            {/if}
+            {#if isPicked}
+              <button class="pick on" aria-label="Take off Picked" title="Take off Picked" onclick={() => onunpick(p.id)}>
+                <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></svg></span>
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
-  {/if}
-  <!-- What can be done with these photos; each tool is added here when it has been built. -->
-  <aside class="actions" aria-label="Tools">
-    <h3>Tools</h3>
-    <EmailButton {ids} limitMb={emailLimitMb} />
-    <h3>Tags</h3>
-    <TagAs {ids} {onchange} floating={false} />
-  </aside>
   </div>
 </div>
 
@@ -111,20 +147,29 @@
 {/if}
 
 <style>
-  /* Fills the page over Browse, as the other tabs do. */
-  .tools { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fff; }
-  .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e4e4e8; flex-wrap: wrap; }
-  .bar select { padding: 4px 6px; }
-  .clear { margin-left: auto; }
-  .none { flex: 1; min-width: 0; padding: 40px 28px; color: #555; max-width: 520px; line-height: 1.5; }
+  /* Fills the page over Browse, as the other tabs do; the three columns are laid out like Settings (menu, then the page). */
+  .page { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fff; }
+  /* The line across the top, like Browse's: which photos the tools work on. */
+  .bar { display: flex; gap: 12px; align-items: center; padding: 6px 14px; border-bottom: 1px solid #eee; font-size: 14px; }
+  .bar select { padding: 3px 6px; }
+  .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
+  .clear { border: 1px solid #c9ceda; background: #fff; border-radius: 4px; padding: 3px 10px; font: inherit; cursor: pointer; }
+  .clear:disabled { opacity: .5; cursor: default; }
+  .body { flex: 1; min-height: 0; display: grid; }
+  nav { background: #fafafb; border-right: 1px solid #e4e4e8; padding: 6px 4px 16px; font-size: 14px; display: grid; align-content: start; gap: 1px; overflow-y: auto; }
+  nav button { text-align: left; border: 0; background: none; font: inherit; padding: 4px 12px; border-radius: 4px; cursor: pointer; }
+  nav button:hover:not(.on) { background: #eef2fb; }
+  nav button.on { background: #e3ecff; font-weight: 600; }
+  .mid { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .none { padding: 40px 28px; color: #555; max-width: 520px; line-height: 1.5; }
   .none p { margin: 0 0 12px; }
-  .body { flex: 1; min-height: 0; display: flex; }
-  .actions { flex: none; width: 200px; box-sizing: border-box; padding: 12px 14px; border-left: 1px solid #e4e4e8; display: flex; flex-direction: column; align-items: stretch; gap: 8px; overflow-y: auto; }
-  .actions h3 { margin: 6px 0 2px; font-size: 13px; color: #777; font-weight: 600; }
-  .actions h3:first-child { margin-top: 0; }
+  .side { min-width: 0; overflow-y: auto; overflow-x: hidden; border-right: 1px solid #e4e4e8; background: #fafafb; }
+  .tool { padding: 12px 14px; font-size: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .tool.wide { align-items: stretch; }
   .err { color: #b00020; font-size: 13px; }
   .grid { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 12px 14px; }
   .tile { position: relative; width: 180px; height: 180px; border-radius: 6px; overflow: hidden; background: #e8e8ec; flex: none; }
+  .tile.chosen { outline: 3px solid #2f6fed; outline-offset: -3px; }
   .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .ph { display: grid; place-items: center; height: 100%; color: #888; font-size: 28px; }
   .open { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: none; cursor: pointer; }

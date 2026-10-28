@@ -20,6 +20,34 @@ pub enum Route {
     ShareSheet,
 }
 
+/// What goes in the new message besides the files.
+#[derive(Clone, Default, Debug)]
+pub struct Draft {
+    pub subject: String,
+    /// Addresses to put in To (may be none: the person addresses it).
+    pub to: Vec<String>,
+    /// Text for the body (may be empty).
+    pub body: String,
+}
+
+/// The addresses typed in the Email box, separated by commas, semicolons or spaces. Each must look like `name@host`: the
+/// text goes into a mail header and into scripts, so nothing else (quotes, brackets, line breaks) gets through.
+pub fn clean_to(text: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|a| !a.is_empty()) {
+        let ok = a.len() <= 254
+            && a.bytes().all(|b| b.is_ascii_graphic() && !b"<>()[]\\\",:;".contains(&b))
+            && a.split_once('@').is_some_and(|(n, h)| !n.is_empty() && h.contains('.') && !h.starts_with('.') && !h.ends_with('.') && !h.contains('@'));
+        if !ok {
+            return Err(format!("\u{201c}{a}\u{201d} is not an email address."));
+        }
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(a)) {
+            out.push(a.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// Biggest file attached through an `.eml` (it is held in memory and grows by a third when encoded); bigger ones go
 /// through the Share sheet.
 #[cfg(windows)]
@@ -63,13 +91,21 @@ fn content_type(name: &str) -> &'static str {
 /// An unsent message (`X-Unsent: 1`: a mail program opens it as a draft to finish and send) with the files attached:
 /// each is its name and its bytes.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn build_eml(subject: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
-    let subject = header_text(subject);
+pub fn build_eml(draft: &Draft, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let subject = header_text(&draft.subject);
     let mut out = String::new();
     out.push_str("X-Unsent: 1\r\n");
+    if !draft.to.is_empty() {
+        out.push_str(&format!("To: {}\r\n", draft.to.join(", ")));
+    }
     out.push_str(&format!("Subject: {subject}\r\n"));
     out.push_str("MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"pixie-boundary\"\r\n\r\n");
-    out.push_str("--pixie-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n\r\n");
+    out.push_str("--pixie-boundary\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
+    for line in base64::engine::general_purpose::STANDARD.encode(draft.body.as_bytes()).as_bytes().chunks(76) {
+        out.push_str(std::str::from_utf8(line).unwrap_or_default());
+        out.push_str("\r\n");
+    }
+    out.push_str("\r\n");
     for (name, bytes) in files {
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
         let shown = header_text(name);
@@ -118,7 +154,7 @@ pub fn new_copy_dir() -> std::io::Result<std::path::PathBuf> {
 /// Open the file in a new message in new Outlook: the message is written to a temporary `.eml` and handed to `olk.exe`.
 /// The `.eml` stays (Outlook reads it in its own time); ones older than a day are cleared away each time.
 #[cfg(windows)]
-fn new_outlook(paths: &[std::path::PathBuf], subject: &str) -> Result<(), String> {
+fn new_outlook(paths: &[std::path::PathBuf], draft: &Draft) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let dir = mail_temp_dir().map_err(|e| e.to_string())?;
     let mut loaded: Vec<(String, Vec<u8>)> = Vec::new();
@@ -129,7 +165,7 @@ fn new_outlook(paths: &[std::path::PathBuf], subject: &str) -> Result<(), String
     let files: Vec<(&str, &[u8])> = loaded.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let eml = dir.join(format!("{stamp}.eml"));
-    std::fs::write(&eml, build_eml(subject, &files)).map_err(|e| e.to_string())?;
+    std::fs::write(&eml, build_eml(draft, &files)).map_err(|e| e.to_string())?;
     std::process::Command::new("olk.exe").arg(&eml).creation_flags(0x0800_0000).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -144,20 +180,24 @@ if ((Get-Process olk -ErrorAction SilentlyContinue) -and -not (Get-Process OUTLO
 try { $o = New-Object -ComObject Outlook.Application } catch { exit 3 }
 $m = $o.CreateItem(0)
 $m.Subject = $env:PIXIE_MAIL_SUBJECT
+if ($env:PIXIE_MAIL_TO) { $m.To = $env:PIXIE_MAIL_TO }
+if ($env:PIXIE_MAIL_BODY) { $m.Body = $env:PIXIE_MAIL_BODY }
 foreach ($f in $env:PIXIE_MAIL_FILE.Split('|')) { $null = $m.Attachments.Add($f) }
 $m.Display()
 "#;
 
 /// Ok(true): the message is open. Ok(false): classic Outlook is not installed (or cannot be started).
 #[cfg(windows)]
-fn classic(paths: &[std::path::PathBuf], subject: &str) -> Result<bool, String> {
+fn classic(paths: &[std::path::PathBuf], draft: &Draft) -> Result<bool, String> {
     use std::os::windows::process::CommandExt;
     // (a `|` cannot be in a file name on Windows, so it can separate the paths)
     let joined = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("|");
     let mut child = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", CLASSIC_SCRIPT])
         .env("PIXIE_MAIL_FILE", joined)
-        .env("PIXIE_MAIL_SUBJECT", subject)
+        .env("PIXIE_MAIL_SUBJECT", &draft.subject)
+        .env("PIXIE_MAIL_TO", draft.to.join("; "))
+        .env("PIXIE_MAIL_BODY", &draft.body)
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -235,10 +275,10 @@ fn share(hwnd: isize, paths: &[std::path::PathBuf], subject: &str) -> Result<(),
     unsafe { interop.ShowShareUIForWindow(hw) }.map_err(err)
 }
 
-/// Open a new email with the files attached and `subject` as its subject: in classic Outlook if it is there, then new
-/// Outlook, otherwise through the Share sheet.
+/// Open a new email with the files attached, `draft.subject` as its subject, and the address and text if there are any: in
+/// classic Outlook if it is there, then new Outlook, otherwise through the Share sheet (which takes only the files and a title).
 #[cfg(windows)]
-pub fn email_files(app: &tauri::AppHandle, paths: &[std::path::PathBuf], subject: &str) -> Result<Route, String> {
+pub fn email_files(app: &tauri::AppHandle, paths: &[std::path::PathBuf], draft: &Draft) -> Result<Route, String> {
     use tauri::Manager;
     if paths.is_empty() {
         return Err("There is nothing to send.".into());
@@ -246,12 +286,12 @@ pub fn email_files(app: &tauri::AppHandle, paths: &[std::path::PathBuf], subject
     if let Some(gone) = paths.iter().find(|p| !p.is_file()) {
         return Err(format!("{} is not there any more.", gone.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     }
-    if classic(paths, subject)? {
+    if classic(paths, draft)? {
         return Ok(Route::ClassicOutlook);
     }
     // New Outlook is the one in use.
     let total: u64 = paths.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX / 4)).sum();
-    if total <= EML_LIMIT && new_outlook(paths, subject).is_ok() {
+    if total <= EML_LIMIT && new_outlook(paths, draft).is_ok() {
         return Ok(Route::NewOutlook);
     }
     let window = app
@@ -262,7 +302,7 @@ pub fn email_files(app: &tauri::AppHandle, paths: &[std::path::PathBuf], subject
         .ok_or("no window to share from")?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     let (tx, rx) = std::sync::mpsc::channel();
-    let (p, s) = (paths.to_vec(), subject.to_string());
+    let (p, s) = (paths.to_vec(), draft.subject.clone());
     app.run_on_main_thread(move || {
         let _ = tx.send(share(hwnd, &p, &s));
     })
@@ -289,13 +329,21 @@ fn mailto_handler(settings: &serde_json::Value) -> Option<String> {
 const MAIL_SCRIPT: &str = r#"
 on run argv
   set theSubject to item 1 of argv
+  set theTo to item 2 of argv
+  set theBody to item 3 of argv
+  set AppleScript's text item delimiters to ","
+  set addresses to {}
+  if theTo is not "" then set addresses to text items of theTo
   -- (the paths are turned into files out here: inside the tell, "POSIX file" is the mail app's to interpret)
   set theFiles to {}
-  repeat with i from 2 to count of argv
+  repeat with i from 4 to count of argv
     set end of theFiles to POSIX file (item i of argv)
   end repeat
   tell application "Mail"
-    set m to make new outgoing message with properties {subject:theSubject, visible:true}
+    set m to make new outgoing message with properties {subject:theSubject, content:theBody, visible:true}
+    repeat with a in addresses
+      tell m to make new to recipient at end of to recipients with properties {address:(contents of a)}
+    end repeat
     repeat with f in theFiles
       tell content of m to make new attachment with properties {file name:(contents of f)} at after the last paragraph
     end repeat
@@ -309,12 +357,20 @@ end run
 const OUTLOOK_SCRIPT: &str = r#"
 on run argv
   set theSubject to item 1 of argv
+  set theTo to item 2 of argv
+  set theBody to item 3 of argv
+  set AppleScript's text item delimiters to ","
+  set addresses to {}
+  if theTo is not "" then set addresses to text items of theTo
   set theFiles to {}
-  repeat with i from 2 to count of argv
+  repeat with i from 4 to count of argv
     set end of theFiles to POSIX file (item i of argv)
   end repeat
   tell application "Microsoft Outlook"
-    set m to make new outgoing message with properties {subject:theSubject}
+    set m to make new outgoing message with properties {subject:theSubject, content:theBody}
+    repeat with a in addresses
+      make new recipient at m with properties {email address:{address:(contents of a)}}
+    end repeat
     repeat with f in theFiles
       make new attachment at m with properties {file:(contents of f)}
     end repeat
@@ -324,13 +380,16 @@ on run argv
 end run
 "#;
 
-/// Run an AppleScript with the subject and then the files as its arguments (never spliced into the script).
+/// Run an AppleScript with the subject, the addresses (joined with commas), the text and then the files as its arguments
+/// (never spliced into the script).
 #[cfg(target_os = "macos")]
-fn run_script(script: &str, app: &str, paths: &[std::path::PathBuf], subject: &str) -> Result<(), String> {
+fn run_script(script: &str, app: &str, paths: &[std::path::PathBuf], draft: &Draft) -> Result<(), String> {
     use std::io::Write;
     let mut child = std::process::Command::new("osascript")
         .arg("-")
-        .arg(subject)
+        .arg(&draft.subject)
+        .arg(draft.to.join(","))
+        .arg(&draft.body)
         .args(paths)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -358,10 +417,10 @@ fn run_script(script: &str, app: &str, paths: &[std::path::PathBuf], subject: &s
     Err(format!("{app} could not make the message: {}", why.trim()))
 }
 
-/// Open a new email with the file attached and `subject` as its subject, in the Mac's mail app (Outlook if that is what
-/// `mailto:` links open, otherwise Apple Mail).
+/// Open a new email with the files attached, the subject, and the address and text if there are any, in the Mac's mail app
+/// (Outlook if that is what `mailto:` links open, otherwise Apple Mail).
 #[cfg(target_os = "macos")]
-pub fn email_files(_app: &tauri::AppHandle, paths: &[std::path::PathBuf], subject: &str) -> Result<Route, String> {
+pub fn email_files(_app: &tauri::AppHandle, paths: &[std::path::PathBuf], draft: &Draft) -> Result<Route, String> {
     if paths.is_empty() {
         return Err("There is nothing to send.".into());
     }
@@ -373,15 +432,15 @@ pub fn email_files(_app: &tauri::AppHandle, paths: &[std::path::PathBuf], subjec
         .and_then(|p| std::process::Command::new("plutil").args(["-convert", "json", "-o", "-"]).arg(p).output().ok())
         .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok());
     if settings.as_ref().and_then(mailto_handler).is_some_and(|b| b.contains("outlook")) {
-        run_script(OUTLOOK_SCRIPT, "Outlook", paths, subject)?;
+        run_script(OUTLOOK_SCRIPT, "Outlook", paths, draft)?;
         return Ok(Route::MacOutlook);
     }
-    run_script(MAIL_SCRIPT, "Mail", paths, subject)?;
+    run_script(MAIL_SCRIPT, "Mail", paths, draft)?;
     Ok(Route::AppleMail)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn email_files(_app: &tauri::AppHandle, _paths: &[std::path::PathBuf], _subject: &str) -> Result<Route, String> {
+pub fn email_files(_app: &tauri::AppHandle, _paths: &[std::path::PathBuf], _draft: &Draft) -> Result<Route, String> {
     Err("Emailing a photo is only set up for Windows and Mac so far.".into())
 }
 
@@ -393,9 +452,31 @@ mod tests {
         String::from_utf8(b).unwrap()
     }
 
+    fn draft(subject: &str) -> Draft {
+        Draft { subject: subject.into(), ..Draft::default() }
+    }
+
+    #[test]
+    fn the_address_and_text_go_in_the_message() {
+        let d = Draft { subject: "Hi".into(), to: vec!["a@b.com".into(), "c@d.org".into()], body: "Here you are \u{2013} enjoy".into() };
+        let eml = text(build_eml(&d, &[("a.jpg", b"x")]));
+        assert!(eml.contains("To: a@b.com, c@d.org\r\n"), "{eml}");
+        assert!(eml.contains(&base64::engine::general_purpose::STANDARD.encode("Here you are \u{2013} enjoy")), "{eml}");
+        assert!(!text(build_eml(&draft("Hi"), &[])).contains("To:"), "no To header without an address");
+    }
+
+    #[test]
+    fn typed_addresses_are_split_checked_and_made_unique() {
+        assert_eq!(clean_to(" a@b.com; c@d.org,A@B.com  e@f.net ").unwrap(), vec!["a@b.com", "c@d.org", "e@f.net"]);
+        assert!(clean_to("  ").unwrap().is_empty());
+        for bad in ["nobody", "a@b", "@b.com", "a@@b.com", "a\"b@c.com", "<a@b.com>", "zo\u{eb}@b.com", "a@b.com\u{0}"] {
+            assert!(clean_to(bad).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn the_message_is_an_unsent_draft_with_the_file_attached_in_base64() {
-        let eml = text(build_eml("Joan, Lisbon \u{2013} 14 July 2019", &[("IMG_1.JPG", b"hello")]));
+        let eml = text(build_eml(&draft("Joan, Lisbon \u{2013} 14 July 2019"), &[("IMG_1.JPG", b"hello")]));
         assert!(eml.starts_with("X-Unsent: 1\r\n"));
         assert!(eml.contains("Subject: =?UTF-8?B?"), "a subject with a dash is encoded: {eml}");
         assert!(eml.contains("Content-Type: image/jpeg; name=\"IMG_1.JPG\""));
@@ -406,7 +487,7 @@ mod tests {
 
     #[test]
     fn several_files_are_each_attached_under_their_own_name() {
-        let eml = text(build_eml("Photos", &[("a.jpg", b"one"), ("b.png", b"two")]));
+        let eml = text(build_eml(&draft("Photos"), &[("a.jpg", b"one"), ("b.png", b"two")]));
         assert_eq!(eml.matches("Content-Disposition: attachment;").count(), 2);
         assert!(eml.contains("filename=\"a.jpg\"") && eml.contains("filename=\"b.png\""));
         assert!(eml.contains("Content-Type: image/png; name=\"b.png\""));
@@ -419,7 +500,7 @@ mod tests {
     #[test]
     fn long_files_are_wrapped_in_lines_of_76_and_decode_back() {
         let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
-        let eml = text(build_eml("A file", &[("a.bin", &data)]));
+        let eml = text(build_eml(&draft("A file"), &[("a.bin", &data)]));
         assert!(eml.contains("Subject: A file\r\n"));
         let part = eml.split("\r\n\r\n").nth(3).unwrap();
         let body: Vec<&str> = part.lines().take_while(|l| !l.starts_with("--")).collect();
@@ -441,7 +522,7 @@ mod tests {
 
     #[test]
     fn a_name_with_other_characters_is_encoded() {
-        let eml = text(build_eml("Zoë", &[("Zoë \"x\".png", b"1")]));
+        let eml = text(build_eml(&draft("Zoë"), &[("Zoë \"x\".png", b"1")]));
         assert!(eml.contains("Subject: =?UTF-8?B?"), "{eml}");
         assert!(eml.contains("filename*=UTF-8''Zo%C3%AB%20%22x%22.png"), "{eml}");
         assert!(!eml.contains("\"x\""), "no raw quote inside a header");

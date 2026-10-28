@@ -44,7 +44,7 @@
   import { createStripFeed, type StripItem } from './lib/stripFeed';
   import { thumbUrl } from './lib/url';
   import { addFound, applyCount, notInLibrary, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
-  import { click, emptySelection, single } from './lib/selection';
+  import { run } from './lib/selection';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
   import Shell from './lib/Shell.svelte';
   import Tabs from './lib/Tabs.svelte';
@@ -86,7 +86,8 @@
   let tripKey = $state<number | null>(null);
   const recentOn = $derived(view.since !== null && periodKey === null && tripKey === null);
   let folders = $state<Folder[]>([]);
-  let selection = $state(emptySelection);
+  /** The photo chosen in the grid (its position in the listing): its details show on the right. */
+  let selected = $state<number | null>(null);
   let selectedPhoto = $state<Photo | null>(null);
   let scrollTo = $state<{ group: number; n: number } | null>(null);
   let jumps = 0;
@@ -117,9 +118,9 @@
 
   const openItem = (i: number) => { if (viewerMode === 'popout') void popOut(i); else openIndex = i; };
 
-  // Keep the pop-out in step with the grid's selection (the pop-out ignores this while its Follow is off).
+  // Keep the pop-out in step with the photo chosen in the grid (the pop-out ignores this while its Follow is off).
   $effect(() => {
-    const i = single(selection);
+    const i = selected;
     if (!popoutOpen || i === null || total < 1 || i >= total) return;
     if (popoutSnap && popoutSnap.index === i && sameListing(popoutSnap.view, shown)) return;
     popoutSnap = { index: i, total, view: { ...shown } };
@@ -150,7 +151,7 @@
     savePref('recentDays', days);
     if (recentOn) {
       view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
-      selection = emptySelection;
+      selected = null;
       refresh(true).catch((e) => (message = String(e)));
       if (mode === 'map') { fitMap++; loadPoints(); }
     }
@@ -197,7 +198,7 @@
     try { await setUserTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -218,7 +219,7 @@
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag) };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -232,7 +233,7 @@
     try { await setCameraFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag) };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -281,7 +282,7 @@
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
     view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag) };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -307,12 +308,21 @@
     try { await pickPhoto(id, on); } catch (e) { message = String(e); await loadPicks(); }
     if (activeUtag === 'picked') void utagChanged();
   }
-  /** A click on a photo in Browse. A Shift or Ctrl click selects several, and every photo now selected is picked too. */
+  /** A click on a photo in Browse. It chooses the photo (its details show). Ctrl-click also picks it, or takes it off Picked; Shift-click
+   *  picks every photo from the one chosen to this one (the choice stays, for the next Shift-click). */
   function selectItem(i: number, mods: { ctrl: boolean; shift: boolean }) {
-    selection = click(selection, i, mods);
-    if (mods.ctrl || mods.shift) void pickSelection(selection.picked);
+    if (mods.shift) { void pickPositions(run(selected, i)); return; }
+    selected = i;
+    if (mods.ctrl) void togglePickAt(i);
   }
-  async function pickSelection(indexes: ReadonlySet<number>) {
+  async function togglePickAt(i: number) {
+    const v = shown;
+    try {
+      const [p] = await listPhotos(i, 1, v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search);
+      if (p) await togglePick(p.id);
+    } catch (e) { message = String(e); }
+  }
+  async function pickPositions(indexes: number[]) {
     const v = shown; // the listing the positions refer to
     const sorted = [...indexes].sort((a, b) => a - b);
     const ids: number[] = [];
@@ -363,7 +373,7 @@
   }
   // A tab whose analysis was switched off is gone: leave it.
   $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
-  const tabs = $derived(visibleTabs({ create: false, share: false, picked: picked.size, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
+  const tabs = $derived(visibleTabs({ create: false, share: false, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -424,7 +434,7 @@
     groups = g;
     navGroups = ng;
     shown = v;
-    selection = emptySelection;
+    selected = null;
     version++;
     if (toTop) {
       jump(0);
@@ -449,7 +459,7 @@
   }
 
   /** True while the user is looking at or holding something that refers to a position in the list. */
-  const interacting = () => selection.picked.size > 0 || openIndex !== null || soloPhoto !== null;
+  const interacting = () => selected !== null || openIndex !== null || soloPhoto !== null;
 
   /**
    * Live update while a scan runs: new photos appear without resetting scroll. Only while the user is
@@ -487,7 +497,7 @@
     periodKey = null; // Recent, a chosen period and a chosen trip are all a date range: one replaces the others
     tripKey = null;
     view = { ...view, order: 'newest', since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -505,7 +515,7 @@
     areaOnly = false;
     view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -518,7 +528,7 @@
     periodKey = next;
     tripKey = null;
     view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -527,7 +537,7 @@
     if (kind === view.kind) return;
     view = { ...view, kind };
     savePref('kind', kind);
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -536,7 +546,7 @@
   function setFolder(id: number | null) {
     if (id === view.folderId) return;
     view = { ...view, folderId: id };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -554,7 +564,7 @@
       view = { ...view, order: 'oldest', since: t.since, until: t.until };
       void loadRoute(t);
     }
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { fitMap++; loadPoints(); }
   }
@@ -696,7 +706,7 @@
     if (sameBounds(bounds, view.bounds)) return;
 
     view = { ...view, bounds };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
   }
 
@@ -709,14 +719,14 @@
     areaOnly = true; // the grid is now limited to this spot, which is a filter like any other (it shows as a pill)
     const d = 0.00002; // about 2 m
     view = { ...view, bounds: { south: p.gps_lat - d, west: p.gps_lon - d, north: p.gps_lat + d, east: p.gps_lon + d } };
-    selection = emptySelection;
+    selected = null;
     try {
       await refresh(true);
     } catch (e) {
       message = String(e);
       return;
     }
-    if (total > 0) selection = click(emptySelection, 0, { ctrl: false, shift: false });
+    if (total > 0) selected = 0;
   }
 
   // A scan that finishes while the viewer is open must not swap what is on screen: the refresh waits.
@@ -753,7 +763,7 @@
     if (areaOnly) {
       areaOnly = false;
       view = { ...view, bounds: null };
-      selection = emptySelection;
+      selected = null;
       refresh(true).catch((e) => (message = String(e)));
     }
   }
@@ -765,7 +775,7 @@
     areaOnly = on;
     pendingBounds = null;
     view = { ...view, bounds: on ? mapBounds : null };
-    selection = emptySelection;
+    selected = null;
     refresh(true).catch((e) => (message = String(e)));
   }
 
@@ -1065,14 +1075,14 @@
     folders = await listFolders();
     await loadFolderInfos();
     closeViewer();
-    selection = emptySelection;
+    selected = null;
     await refresh(true);
     if (mode === 'map') loadPoints();
   }
 
-  // Details for a single selected photo (fetched by index in the current view).
+  // Details for the chosen photo (fetched by index in the current view).
   $effect(() => {
-    const i = single(selection);
+    const i = selected;
     const { order, folderId, kind, bounds, maxId, since, until, search } = shown;
     if (i === null) { selectedPhoto = null; return; }
     let live = true;
@@ -1141,7 +1151,7 @@
         // Only follow while the main window still shows the listing the pop-out is paging through.
         if (!m || m.total !== total || !sameListing(m.view, shown)) return;
         popoutSnap = { index: m.index, total, view: { ...shown } };
-        selection = click(emptySelection, m.index, { ctrl: false, shift: false });
+        selected = m.index;
       }),
       listen<{ message: string }>('scan-error', (e) => {
         message = e.payload.message; // scan-done always follows
@@ -1249,7 +1259,7 @@
                 {#if total === 0 && !scanning}
                   <p class="empty small">{areaOnly ? 'No photos or videos in this part of the map.' : emptyMessage}</p>
                 {:else}
-                  <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
+                  <Grid {groups} {version} view={shown} {selected} {scrollTo} picks={picked} onpick={togglePick}
                         onopen={openItem}
                         onselect={selectItem} />
                 {/if}
@@ -1258,13 +1268,13 @@
           {:else if total === 0 && !scanning}
             <p class="empty">{emptyMessage}</p>
           {:else}
-            <Grid {groups} {version} view={shown} selected={selection.picked} {scrollTo} picks={picked} onpick={togglePick}
+            <Grid {groups} {version} view={shown} {selected} {scrollTo} picks={picked} onpick={togglePick}
                   onopen={openItem}
                   onselect={selectItem} />
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} count={selection.picked.size} {emailLimitMb} picks={picked} onpicksclear={clearAllPicks} ontagschange={(t) => void utagChanged(t)} ontools={() => pickTab('tools')} />
+          <Details photo={selectedPhoto} {emailLimitMb} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}
