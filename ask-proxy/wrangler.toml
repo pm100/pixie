@@ -1,0 +1,38 @@
+name = "pixie-ask"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+# The Claude SDK (bundled even when another provider is active) imports Node built-ins.
+compatibility_flags = ["nodejs_compat"]
+
+# Daily feedback digest at 08:00 UTC.
+[triggers]
+crons = ["0 8 * * *"]
+
+# Create both namespaces once with `npx wrangler kv namespace create QUOTA` / `... FEEDBACK`
+# and paste the returned ids here.
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "0844bbc7c52b45528a5262d40896eaf8"
+
+[[kv_namespaces]]
+binding = "FEEDBACK"
+id = "7f10e0acaa994c1192fca7c65fcbb01b"
+
+[vars]
+DAILY_LIMIT = "10"
+DIGEST_FROM = "Pixie <onboarding@resend.dev>"
+
+# Which language model answers. Change these (and redeploy) to switch; no app release needed.
+# Active: Claude Haiku (secret ANTHROPIC_API_KEY).
+PROVIDER = "anthropic"
+MODEL = "claude-haiku-4-5"
+# To use an OpenAI-compatible server instead (secret OPENAI_API_KEY):
+#   PROVIDER = "openai"
+#   MODEL = "gpt-4o"
+#   OPENAI_BASE_URL = "https://api.openai.com/v1"
+#   OPENAI_TEMPERATURE = "0.2"   # steadier tool use; remove for models that only accept their default
+#   OPENAI_MAX_TOKENS_FIELD = "max_completion_tokens"   # only if the server rejects "max_tokens"
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+#   ANTHROPIC_API_KEY (provider anthropic) or OPENAI_API_KEY (provider openai), RESEND_API_KEY,
+#   and DIGEST_TO (the address digests go to; a secret so it never lands in the repo)

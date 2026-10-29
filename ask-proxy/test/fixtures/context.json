@@ -1,0 +1,152 @@
+{
+  "platform": "windows",
+  "language": "en-US",
+  "tab": "ask",
+  "today": "2026-10-28",
+  "settings": [
+    {
+      "key": "viewer_mode",
+      "label": "Open photos in",
+      "type": "choice",
+      "description": "Where a photo opens when you double-click it: in its own window, or in a pop-out that follows the photo chosen in the grid.",
+      "options": [
+        {
+          "value": 0,
+          "label": "Its own window"
+        },
+        {
+          "value": 1,
+          "label": "A pop-out"
+        }
+      ],
+      "current": 0,
+      "currentLabel": "Its own window",
+      "default": 0
+    },
+    {
+      "key": "email_limit_mb",
+      "label": "Email size limit",
+      "type": "int",
+      "description": "The most an email may carry, in megabytes. Bigger sets are offered smaller or split into several emails.",
+      "min": 1,
+      "max": 500,
+      "step": 1,
+      "current": 20,
+      "currentLabel": "20 MB",
+      "default": 20
+    },
+    {
+      "key": "recent_days",
+      "label": "Days counted as recent",
+      "type": "int",
+      "description": "How many days \"Recent\" means in Browse.",
+      "min": 1,
+      "max": 3650,
+      "step": 1,
+      "current": 30,
+      "currentLabel": "30 days",
+      "default": 30
+    },
+    {
+      "key": "network_rescan",
+      "label": "Scan network folders again",
+      "type": "bool",
+      "description": "Whether folders on the network are scanned again from time to time (folders on this computer are watched, so need no setting).",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "network_rescan_minutes",
+      "label": "Scan network folders every",
+      "type": "choice",
+      "description": "How often folders on the network are scanned again, when that is on.",
+      "options": [
+        {
+          "value": 5,
+          "label": "5 minutes"
+        },
+        {
+          "value": 15,
+          "label": "15 minutes"
+        },
+        {
+          "value": 30,
+          "label": "30 minutes"
+        },
+        {
+          "value": 60,
+          "label": "1 hour"
+        },
+        {
+          "value": 120,
+          "label": "2 hours"
+        }
+      ],
+      "current": 30,
+      "currentLabel": "30 minutes",
+      "default": 30
+    },
+    {
+      "key": "analysis_tags",
+      "label": "Auto tags",
+      "type": "bool",
+      "description": "Label photos with what is in them (beach, dog, ...), worked out on this computer.",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "analysis_faces",
+      "label": "Find faces",
+      "type": "bool",
+      "description": "Look for faces in photos so people can be named in the People tab.",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "analysis_dupes",
+      "label": "Check for duplicates",
+      "type": "bool",
+      "description": "Look for photos that look the same, for the Duplicates tab.",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "trip_radius_km",
+      "label": "Distance that counts as away (km)",
+      "type": "float",
+      "description": "Photos further than this from home, in kilometres, count as taken away from home. Trips need home to be confirmed first.",
+      "min": 1,
+      "max": 5000,
+      "current": 50,
+      "currentLabel": "50 km",
+      "default": 50
+    },
+    {
+      "key": "trip_min_nights",
+      "label": "Fewest nights in a trip",
+      "type": "int",
+      "description": "A trip needs at least this many nights away; 0 allows a day trip.",
+      "min": 0,
+      "max": 365,
+      "step": 1,
+      "current": 1,
+      "currentLabel": "1 nights",
+      "default": 1
+    },
+    {
+      "key": "trip_stop_km",
+      "label": "Size of a stop (km)",
+      "type": "float",
+      "description": "Photos within this distance of each other, in kilometres, are one stop of a trip.",
+      "min": 1,
+      "max": 500,
+      "current": 25,
+      "currentLabel": "25 km",
+      "default": 25
+    }
+  ]
+}

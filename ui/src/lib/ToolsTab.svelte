@@ -2,7 +2,7 @@
   /** The Tools tab, laid out like Settings: the tools down the left, the options of the chosen tool (by default the details of the photo chosen on the right) in the middle, and
    *  the photos of Picked (or of one of your tags) on the right. */
   import { untrack } from 'svelte';
-  import { listPicked, listTagged, type Photo, type UserTagCount, type View } from './api';
+  import { listPicked, listTagged, photosByIds, type Photo, type UserTagCount, type View } from './api';
   import Details from './Details.svelte';
   import EmailForm from './EmailForm.svelte';
   import { loadPref, savePref } from './prefs';
@@ -13,10 +13,12 @@
   import { posterUrl, thumbUrl } from './url';
   import Viewer from './Viewer.svelte';
 
-  let { active, picks, onunpick, onclear, emailLimitMb, userTags, onchange, start = null }: {
+  let { active, picks, onunpick, onclear, emailLimitMb, userTags, onchange, start = null, results = [] }: {
+    /** Ask Pixie's last search: the photos it found, listed under Working on as Ask Pixie results. */
+    results?: number[];
     active: boolean;
     /** Given when the tab is opened to work on one photo (the Email and Print buttons in Browse): that photo, and the tool. */
-    start?: { photo: Photo; page: 'email' | 'print' } | null;
+    start?: { photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean } | null;
     /** The email size limit (Settings, Email). */
     emailLimitMb: number;
     /** The picked photos' ids: the list is read again when they change. */
@@ -42,8 +44,9 @@
    *  or Print button was pressed here. */
   let current = $state<Photo | null>(untrack(() => start?.photo ?? null));
   /** Which photos the tools work on: `picked`, `current`, or `tag:<name>` for one of your tags. */
-  let source = $state(untrack(() => (start ? 'current' : 'picked')));
+  let source = $state(untrack(() => (start?.results ? 'results' : start?.photo ? 'current' : 'picked')));
   // A tag that has no photos left is gone from the list: go back to Picked.
+  $effect(() => { if (source === 'results' && results.length === 0) source = 'picked'; });
   $effect(() => { if (source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'picked'; });
   const isPicked = $derived(source === 'picked');
 
@@ -69,12 +72,12 @@
   $effect(() => { if (viewing !== null && viewing >= photos.length) viewing = null; });
 
   $effect(() => {
-    picks; userTags; // read again whenever the picks or the tags change
+    picks; userTags; results; // read again whenever the picks, the tags or Ask Pixie's results change
     const from = source;
     if (!active) return;
     if (from === 'current') { photos = current ? [current] : []; return; }
     let live = true;
-    (from === 'picked' ? listPicked() : listTagged(from.slice(4))).then((l) => { if (live) photos = l; }).catch((e) => { if (live) error = String(e); });
+    (from === 'picked' ? listPicked() : from === 'results' ? photosByIds(results) : listTagged(from.slice(4))).then((l) => { if (live) photos = l; }).catch((e) => { if (live) error = String(e); });
     return () => { live = false; };
   });
 
@@ -87,6 +90,7 @@
     <select id="working-with" bind:value={source}>
       <option value="picked">★ Picked ({picks.size.toLocaleString()})</option>
       {#if current}<option value="current">Current photo</option>{/if}
+      {#if results.length > 0}<option value="results">Ask Pixie results ({results.length.toLocaleString()})</option>{/if}
       {#each userTags as t (t.name)}<option value="tag:{t.name}">{t.name} ({t.count.toLocaleString()})</option>{/each}
     </select>
     <span class="count">{plural(photos.length, 'photo')}</span>

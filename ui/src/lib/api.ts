@@ -110,6 +110,14 @@ export const emailInfo = (ids: number[]) =>
  *  (null: Pixie's own), the addresses to put in To, and some text for the body (both may be empty). */
 export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number, draft: { subject: string | null; to: string; body: string }) =>
   invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb, subject: draft.subject, to: draft.to, body: draft.body });
+/** Ask Pixie: sends one question (JSON made by `buildRequest`) to the proxy. `status` is the HTTP status the proxy answered with,
+ *  0 when there was no connection and -1 when this build has no address for the proxy. */
+export const askPixie = (installId: string, body: string) => invoke<{ status: number; body: string }>('ask_pixie', { installId, body });
+/** Ask Pixie's search: the ids matching every part of `spec`. Each of `texts` (things that must be in the picture) is searched for
+ *  on its own by content, best match first; a photo must match all of them. The content search which covers only the photos analysed so far (`analysed` says how many). Browse's filters are not touched. */
+export const findPhotos = (texts: string[], spec: FindSpec) => invoke<{ ids: number[]; scores: number[] | null; analysed: number | null }>('find_photos', { texts, spec });
+/** These photos themselves, in the order given. */
+export const photosByIds = (ids: number[]) => invoke<Photo[]>('photos_by_ids', { ids });
 /** Which background analyses are on (kept in the library). */
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */
@@ -169,6 +177,7 @@ export const setTagFilter = (tag: string | null) => invoke<void>('set_tag_filter
 
 // ---- people ----
 import type { FaceInfo, PeopleStatus, PersonInfo } from './people';
+import type { FindSpec } from './askFind';
 export const peopleStatus = () => invoke<PeopleStatus>('people_status');
 export const listPeople = () => invoke<PersonInfo[]>('list_people');
 export const facesFor = (photoId: number) => invoke<FaceInfo[]>('faces_for', { photoId });

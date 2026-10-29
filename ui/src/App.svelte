@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, tagPhotos, untagPhotos, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -52,6 +52,11 @@
   import ToolsTab from './lib/ToolsTab.svelte';
   import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
+  import AskTab from './lib/AskTab.svelte';
+  import { newInstallId } from './lib/ask';
+  import { placeFor as askPlace } from './lib/askGoTo';
+  import { buildLibrary } from './lib/askLibrary';
+  import type { Handlers, SettingValues } from './lib/askSettings';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
@@ -374,6 +379,24 @@
   // A tab whose analysis was switched off is gone: leave it.
   $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
   const tabs = $derived(visibleTabs({ create: false, share: false, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
+
+  // Ask Pixie sends typed questions to a server, so it is off until the person turns it on (here or on the tab itself).
+  let askOn = $state(loadPref<unknown>('askOn', false) === true);
+  /** The random id the proxy counts the day's questions by; made when Ask Pixie is first turned on. */
+  let askInstall = $state(loadPref<unknown>('askInstall', null));
+  function setAskOn(on: boolean) {
+    askOn = on;
+    savePref('askOn', on);
+    if (on && typeof askInstall !== 'string') { askInstall = newInstallId(); savePref('askInstall', askInstall); }
+  }
+  /** Whether Ask Pixie may be told the names in the library (tags, named people, trips); off until the person says so. */
+  let askLibraryOn = $state(loadPref<unknown>('askLibrary', false) === true);
+  function setAskLibrary(on: boolean) { askLibraryOn = on; savePref('askLibrary', on); }
+  /** The Ask Pixie tab is built on first use and then kept, so the conversation survives a visit to another tab. */
+  let askBuilt = $state(false);
+  let askFrom = $state<TabId>('browse');
+  $effect(() => { if (tab === 'ask') askBuilt = true; else askFrom = tab; });
+
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -1081,7 +1104,7 @@
   }
 
   /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
-  let toolsStart = $state<{ photo: Photo; page: 'email' | 'print' } | null>(null);
+  let toolsStart = $state<{ photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean } | null>(null);
   function workOn(page: 'email' | 'print') {
     if (!selectedPhoto) return;
     toolsStart = { photo: selectedPhoto, page };
@@ -1089,6 +1112,46 @@
   }
   // Opening Tools any other way starts it as usual.
   $effect(() => { if (tab !== 'tools') toolsStart = null; });
+
+  const askValues = $derived<SettingValues>({ viewerMode, emailLimitMb, recentDays, networkRescan, analysis: analysisOptions, trips: tripPrefs });
+  const askHandlers: Handlers = {
+    viewer: (m) => setViewerMode(m),
+    emailLimit: (mb) => setEmailLimit(mb),
+    recentDays: (n) => setRecentDays(n),
+    networkRescan: (r) => setNetworkRescanPref(r),
+    analysis: (o) => void applyAnalysisOptions(o),
+    trips: (p) => setTripPrefs(p),
+  };
+  // What Ask Pixie last found (listed in Tools, Working on), and what its buttons do with it.
+  let askResults = $state<number[]>([]);
+  const askKnown = $derived({ tags: userTagList.map((t) => t.name), people: peopleList.map((p) => ({ id: p.id, name: p.name })) });
+  /** What Ask Pixie may be told about the library at this moment: nothing unless the person allowed it. */
+  const askLibraryNow = () => (askLibraryOn ? buildLibrary({ total: folderInfos.reduce((n, f) => n + f.count, 0), picked: picked.size, tags: userTagList, people: peopleList, trips, destinations }) : null);
+  async function askPick(ids: number[]) {
+    const fresh = ids.filter((id) => !picked.has(id));
+    if (fresh.length === 0) return;
+    picked = new Set([...picked, ...fresh]);
+    try { await pickMany(fresh); } catch (e) { await loadPicks(); throw e; }
+    if (activeUtag === 'picked') void utagChanged();
+  }
+  async function askTag(ids: number[], tag: string, undo = false): Promise<string> {
+    if (undo) { await untagPhotos(ids, tag); await utagChanged(tag); return tag; }
+    const stored = await tagPhotos(ids, tag);
+    await utagChanged(stored);
+    return stored;
+  }
+  function askOpen(tool: 'details' | 'email' | 'print') {
+    toolsStart = { photo: null, page: tool, results: true };
+    pickTab('tools');
+  }
+  /** A button Ask Pixie offered: go to that tab, Settings page or tool. */
+  function askGo(target: string) {
+    const place = askPlace(target);
+    if (!place) return;
+    if (place.settings) settingsPage = place.settings;
+    toolsStart = place.tools ? { photo: null, page: place.tools } : null;
+    pickTab(place.tab);
+  }
 
   // Details for the chosen photo (fetched by index in the current view).
   $effect(() => {
@@ -1182,7 +1245,7 @@
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools'}>
+    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools' || tab === 'ask'}>
       <div class="topbars">
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
@@ -1307,7 +1370,7 @@
     {/if}
     {#if tab === 'tools'}
       <div class="page-over">
-        <ToolsTab active={tab === 'tools'} start={toolsStart} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
+        <ToolsTab active={tab === 'tools'} start={toolsStart} results={askResults} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
       </div>
     {/if}
     {#if tab === 'dupes'}
@@ -1315,9 +1378,15 @@
         <DuplicatesTab active={tab === 'dupes'} onchange={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
       </div>
     {/if}
+    {#if askBuilt}
+      <div class="page-over" hidden={tab !== 'ask'}>
+        <AskTab on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers} from={askFrom} language={navigator.language} known={askKnown} getLibrary={askLibraryNow} onresults={(ids) => (askResults = ids)} onopen={askOpen} onpick={askPick} ontag={askTag}
+                ongo={askGo} onturnon={() => setAskOn(true)} ondecline={() => pickTab('browse')} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
+      </div>
+    {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings askOn={askOn} onask={setAskOn} askLibrary={askLibraryOn} onasklibrary={setAskLibrary} loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />

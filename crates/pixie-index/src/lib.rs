@@ -1,5 +1,6 @@
 pub mod db;
 pub mod dupes;
+pub mod find;
 pub mod people;
 pub mod regroup;
 pub mod queue;

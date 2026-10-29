@@ -1,4 +1,4 @@
-export type TabId = 'browse' | 'tools' | 'faces' | 'dupes' | 'create' | 'share' | 'settings';
+export type TabId = 'browse' | 'tools' | 'faces' | 'dupes' | 'create' | 'share' | 'ask' | 'settings';
 export interface TabInfo { id: TabId; label: string }
 
 /** Create and Share are empty until their first feature ships; an empty tab is not shown. Tools is always there. */
@@ -10,6 +10,7 @@ export function visibleTabs(features: { create: boolean; share: boolean; people?
     { id: 'dupes', label: 'Duplicates', on: features.dupes ?? true },
     { id: 'create', label: 'Create', on: features.create },
     { id: 'share', label: 'Share', on: features.share },
+    { id: 'ask', label: 'Ask Pixie', on: true },
     { id: 'settings', label: 'Settings', on: true },
   ];
   return all.filter((t) => t.on).map(({ id, label }) => ({ id, label }));

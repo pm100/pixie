@@ -1,3 +1,4 @@
+mod ask;
 mod autoscan;
 mod drives;
 mod emailsize;
@@ -842,6 +843,46 @@ async fn search_photos(state: tauri::State<'_, AppState>, text: String) -> Resul
 fn cancel_scan(state: tauri::State<AppState>) {
     state.cancel_scan.store(true, Ordering::Relaxed);
     state.pipeline.clear_intake(); // at once, not when the walk notices
+}
+
+/// Ask Pixie's search: the photos matching every part of `spec`, and for `texts` (each a thing that must be in the picture) the ones
+/// the content search ranks as matches for all of them. Reads only: Browse's filters are not touched. Runs on the blocking pool (it embeds the text and scans the vectors).
+#[tauri::command]
+async fn find_photos(state: tauri::State<'_, AppState>, texts: Vec<String>, spec: pixie_core::FindSpec) -> Result<ask::Found, String> {
+    let db = state.db.clone();
+    let analysis = state.analysis.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let queries: Vec<String> = texts.iter().filter(|t| !t.trim().is_empty()).map(|t| ask::content_query(t)).collect();
+        if queries.is_empty() {
+            let ids = db.find(&spec).map_err(|e| e.to_string())?;
+            return Ok(ask::Found { ids, scores: None, analysed: None });
+        }
+        let (lists, analysed) = analysis.rank(&queries)?;
+        let ranked = ask::combine_concepts(lists);
+        let found = db.find(&ask::restricted(spec, &ranked)).map_err(|e| e.to_string())?;
+        let (ids, scores) = ask::ordered_by_rank(found, &ranked);
+        Ok(ask::Found { ids, scores: Some(scores), analysed: Some(analysed) })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// These photos themselves, in the order given (Ask Pixie's results in the Tools tab).
+#[tauri::command]
+fn photos_by_ids(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<Vec<Photo>, PixieError> {
+    state.db.photos_by_ids(&ids)
+}
+
+/// Ask Pixie: sends one typed question (JSON made by the UI) to the proxy and returns what it answered. Whether the build knows
+/// the proxy's address is part of the answer (status -1), so the tab can say it is not set up.
+#[tauri::command]
+async fn ask_pixie(app: tauri::AppHandle, install_id: String, body: String) -> Result<ask::Answer, PixieError> {
+    let Some(url) = ask::configured_endpoint() else {
+        return Ok(ask::Answer { status: -1, body: String::new() });
+    };
+    // Debug builds are not limited to a few questions a day (see `ask::dev_key`).
+    let key = data_dir(app.path()).ok().and_then(|dir| ask::dev_key(cfg!(debug_assertions), std::env::var("PIXIE_ASK_DEV_KEY").ok().as_deref(), &dir.join("ask-dev-key.txt")));
+    tauri::async_runtime::spawn_blocking(move || ask::post(&url, &install_id, &body, key.as_deref())).await.map_err(|e| PixieError::Io(e.to_string()))
 }
 
 #[tauri::command]
@@ -1804,7 +1845,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
-            open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, email_photos, email_info, ask_pixie, find_photos, photos_by_ids, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

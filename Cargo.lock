@@ -3564,6 +3564,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "trash",
+ "ureq 2.12.1",
  "windows 0.61.3",
  "windows-collections 0.2.0",
 ]

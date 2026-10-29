@@ -20,10 +20,23 @@ pub fn run_with(db: &Db, embedder: &dyn Embedder, text: &str, k: usize, floor: f
         db.clear_search_hits().map_err(|e| e.to_string())?;
         return Ok(0);
     }
-    let query = embedder.embed_text(text.trim())?;
-    let ids: Vec<i64> = top_k(&query, items, k, floor).into_iter().map(|h| h.id).collect();
+    let ids = rank(embedder, text, items, k, floor)?;
     db.set_search_hits(&ids).map_err(|e| e.to_string())?;
     Ok(ids.len())
+}
+
+/// The photos that best match `text`, best first, without changing the current search result. Blank text matches nothing.
+pub fn rank(embedder: &dyn Embedder, text: &str, items: &[(i64, Vec<f32>)], k: usize, floor: f32) -> Result<Vec<i64>, String> {
+    Ok(rank_scored(embedder, text, items, k, floor)?.into_iter().map(|(id, _)| id).collect())
+}
+
+/// `rank` with each photo's score (cosine similarity), best first.
+pub fn rank_scored(embedder: &dyn Embedder, text: &str, items: &[(i64, Vec<f32>)], k: usize, floor: f32) -> Result<Vec<(i64, f32)>, String> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = embedder.embed_text(text.trim())?;
+    Ok(top_k(&query, items, k, floor).into_iter().map(|h| (h.id, h.score)).collect())
 }
 
 #[cfg(test)]
@@ -52,6 +65,25 @@ mod tests {
         let (db, cat, _) = library();
         assert_eq!(run(&db, &FakeEmbedder, "cat", SEARCH_LIMIT, SEARCH_FLOOR).unwrap(), 1);
         assert_eq!(hits(&db), vec![cat]);
+    }
+
+    #[test]
+    fn rank_gives_the_matching_ids_and_leaves_the_current_search_alone() {
+        let (db, cat, other) = library();
+        run(&db, &FakeEmbedder, "other", SEARCH_LIMIT, SEARCH_FLOOR).unwrap();
+        let items = db.load_embeddings("fake-1").unwrap();
+        assert_eq!(rank(&FakeEmbedder, "cat", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap(), vec![cat]);
+        assert_eq!(hits(&db), vec![other]);
+        assert!(rank(&FakeEmbedder, "  ", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rank_scored_gives_the_scores_best_first() {
+        let (db, cat, _) = library();
+        let items = db.load_embeddings("fake-1").unwrap();
+        let scored = rank_scored(&FakeEmbedder, "cat", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap();
+        assert_eq!(scored.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![cat]);
+        assert!(scored[0].1 > 0.9);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'about' | 'developer';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'ask' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
@@ -8,6 +8,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import AboutPage from './AboutPage.svelte';
   import AnalysisSettings from './AnalysisSettings.svelte';
+  import AskSettings from './AskSettings.svelte';
   import EmailSettings from './EmailSettings.svelte';
   import type { AnalysisOptions } from './analysisOptions';
   import type { AnalysisView } from './analysisView';
@@ -20,7 +21,11 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit, askOn, onask, askLibrary, onasklibrary }: {
+    /** Whether Ask Pixie may be told the names in the library, and a change to that. */
+    askLibrary: boolean; onasklibrary: (on: boolean) => void;
+    /** Whether Ask Pixie may send questions, and a change to that. */
+    askOn: boolean; onask: (on: boolean) => void;
     /** The loading of the files found, and whether the Pause is on. */
     loading: LoadStatus;
     /** Which analyses are on, and a change to that. */
@@ -41,7 +46,7 @@
 
   const pages: { id: SettingsPage; label: string }[] = [
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
-    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
+    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'ask', label: 'Ask Pixie' }, { id: 'about', label: 'About' },
   ];
   // Debug builds only: a Developer page.
   let debug = $state(false);
@@ -100,6 +105,8 @@
       <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} options={analysisOptions} onoptions={onanalysisoptions} {loading} />
     {:else if page === 'email'}
       <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
+    {:else if page === 'ask'}
+      <AskSettings on={askOn} onchange={onask} library={askLibrary} onlibrary={onasklibrary} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
