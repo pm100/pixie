@@ -36,7 +36,7 @@ describe('openai-compatible provider', () => {
     expect(body.model).toBe('some-model');
     expect(body.max_tokens).toBe(MAX_TOKENS);
     expect(body.tool_choice).toBe('auto');
-    expect(body.tools.map((t: any) => t.function.name)).toEqual(['propose_settings_changes', 'go_to', 'find_photos', 'lookup', 'submit_feedback']);
+    expect(body.tools.map((t: any) => t.function.name)).toEqual(['propose_settings_changes', 'go_to', 'find_photos', 'open_tool', 'lookup', 'submit_feedback']);
     expect(body.tools[0].type).toBe('function');
     expect(body.messages[0].role).toBe('system');
     expect(body.messages[0].content).toContain('analysis_faces');
@@ -84,6 +84,7 @@ describe('openai-compatible provider', () => {
       proposal: [{ setting: 'analysis_faces', value: false }],
       goTo: null,
       find: null,
+      openTool: null,
       lookup: [],
       feedback: [{ category: 'bug', summary: 'It crashed.' }],
     });

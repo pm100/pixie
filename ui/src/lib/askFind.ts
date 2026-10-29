@@ -119,8 +119,8 @@ export function resolveFind(a: FindArgs, known: Known): Resolved {
   };
 }
 
-/** The search in words, for the card: "videos that look like “dog”, with Sam, from 2019-06-01 to 2019-06-30". */
-export function describeFind(a: FindArgs): string {
+/** The search in words, in two parts: what is looked for ("videos") and how ("that look like “dog”, with Sam, from 2019-06-01 to 2019-06-30"). */
+export function describeFindParts(a: FindArgs): { subject: string; tail: string } {
   const subject = `${a.limit !== null ? `the best ${a.limit} ` : ''}${a.pickedOnly ? 'picked ' : ''}${a.kind === 'video' ? 'videos' : 'photos'}`;
   const parts: string[] = [];
   const things = [a.text, ...a.also].filter((t): t is string => t !== null && t.trim() !== '');
@@ -131,7 +131,13 @@ export function describeFind(a: FindArgs): string {
   if (a.from !== null && a.to !== null) parts.push(`from ${a.from} to ${a.to}`);
   else if (a.from !== null) parts.push(`from ${a.from}`);
   else if (a.to !== null) parts.push(`up to ${a.to}`);
-  return parts.length === 0 ? subject : `${subject} ${parts[0]}${parts.slice(1).map((p) => `, ${p}`).join('')}`;
+  return { subject, tail: parts.length === 0 ? '' : `${parts[0]}${parts.slice(1).map((p) => `, ${p}`).join('')}` };
+}
+
+/** The search in words, for the card: "videos that look like “dog”, with Sam, from 2019-06-01 to 2019-06-30". */
+export function describeFind(a: FindArgs): string {
+  const { subject, tail } = describeFindParts(a);
+  return tail === '' ? subject : `${subject} ${tail}`;
 }
 
 /** The weakest score a content search keeps (it matches the backend's floor). CLIP scores a good match around 0.25 to 0.30. */
@@ -152,4 +158,11 @@ export function defaultCut(scores: number[], limit: number | null): number {
 /** The photos at or above the cut (all of them when the search had no scores). Both lists are best match first. */
 export function visibleIds(ids: number[], scores: number[] | null, cut: number): number[] {
   return scores === null ? ids : ids.filter((_, i) => scores[i] >= cut);
+}
+
+/** What to say when a search for several things at once found only weak matches: the photos are good for one thing and poor for the other. */
+export function weakNote(a: FindArgs): string {
+  const things = [a.text, ...a.also].filter((t): t is string => t !== null && t.trim() !== '').map((t) => `“${t}”`);
+  const list = things.length <= 2 ? things.join(' and ') : `${things.slice(0, -1).join(', ')} and ${things[things.length - 1]}`;
+  return `Few photos, if any, look like ${list} together. These are the closest, but many match only one of them.`;
 }

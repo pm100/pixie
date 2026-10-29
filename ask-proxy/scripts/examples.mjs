@@ -30,6 +30,9 @@ const examples = [
   { ask: 'how can i print several pics on one page', expect: 'steps: pick or tag, Tools, Print, photos per page', ok: (r) => /pick|tag/i.test(r.reply) && /tools/i.test(r.reply) && /per page/i.test(r.reply) && r.goTo === 'tools-print' },
   { ask: 'How do I select multiple photos?', expect: 'names the circle, Ctrl-click and Shift-click', ok: (r) => /ctrl|cmd/i.test(r.reply) && /shift/i.test(r.reply) && /circle|corner/i.test(r.reply) },
   { ask: 'Find all my pictures with pink flowers and tag them pink flowers', expect: 'find text about flowers, then tag, tag name', ok: (r) => /flower/i.test(r.find?.text ?? '') && r.find.then.includes('tag') && /pink flowers/i.test(r.find.tag ?? '') },
+  { ask: 'find 20 pics of yellow flowers near castles', expect: 'text yellow flowers, also a castle, limit 20 (a castle is in the picture, not a named place)', ok: (r) => /yellow flower/i.test(r.find?.text ?? '') && (r.find.also ?? []).some((a) => /castle/i.test(a)) && r.find.limit === 20 },
+  { ask: 'find photos of dogs on the beach', expect: 'a search that mentions dog and beach (as one scene or as two things)', ok: (r) => /dog/i.test([r.find?.text, ...(r.find?.also ?? [])].join(' ')) && /beach/i.test([r.find?.text, ...(r.find?.also ?? [])].join(' ')) },
+  { ask: 'find the photos I took in Paris', expect: 'a named place: says it cannot, no find', ok: (r) => !r.find && /place|paris|date/i.test(r.reply) },
   { ask: 'Find 20 pictures with pink flowers and tag them pink flowers', expect: 'find with limit 20, then tag', ok: (r) => r.find?.limit === 20 && r.find.then.includes('tag') && /pink flowers/i.test(r.find.tag ?? '') },
   { ask: 'Find the best 5 sunsets', expect: 'find with limit 5', ok: (r) => r.find?.limit === 5 && /sunset/i.test(r.find.text ?? '') },
   { ask: 'Find yellow flowers with people', expect: 'text yellow flowers, with_people true, people not in the words', ok: (r) => /yellow flower/i.test(r.find?.text ?? '') && r.find.withPeople === true && !/people/i.test(r.find.text ?? '') && !(r.find.also ?? []).some((a) => /people/i.test(a)) },
@@ -42,9 +45,65 @@ const examples = [
   { ask: 'when was my trip to Rome?', library: LIB, expect: 'answers from the library: June 2019', ok: (r) => /2019/.test(r.reply) && /jun/i.test(r.reply) },
   { ask: 'do I have a person called Zed?', library: LIB, expect: 'says no, from the library (no tool needed)', ok: (r) => /no|not|don't|do not/i.test(r.reply) },
   { ask: 'do I have a tag called sunset', library: LIB, expect: 'says no, from the library', ok: (r) => /no|not|don't|do not/i.test(r.reply) },
+  // A conversation as the app sends it: each earlier message of the model ends with a note of what happened, and RESULTS says what the last search found.
+  {
+    ask: 'create a collage using the rose1 pictures',
+    turns: [
+      { role: 'user', text: 'find some pics of rose near flowers' },
+      { role: 'assistant', text: "I'll search for photos of rose near flowers.\n[Found 47 photos that look like “rose” and “flowers”.]" },
+      { role: 'user', text: 'tag them rose1' },
+      { role: 'assistant', text: "I'll search again and offer to tag them rose1.\n[Found 47 photos that look like “rose” and “flowers”. Tagged 47 “rose1”.]" },
+      { role: 'user', text: 'create a collage using the rose1 pictures' },
+    ],
+    results: { count: 47, of: 'photos that look like “rose” and “flowers”' },
+    expect: 'says Pixie has no collage yet (not that it cannot create images), passes it on, and does not suggest tagging again',
+    ok: (r) => !/can't create images|cannot create images/i.test(r.reply) && /does not have|not have|n't have|yet/i.test(r.reply) && r.feedbackSent && !/tag them with rose1|\(or tag/i.test(r.reply),
+  },
+  {
+    ask: 'print them',
+    turns: [
+      { role: 'user', text: 'tag them rose1' },
+      { role: 'assistant', text: "I'll search again and offer to tag them rose1.\n[Found 47 photos that look like “rose” and “flowers”. Tagged 47 “rose1”.]" },
+      { role: 'user', text: 'create a collage using the rose1 pictures' },
+      { role: 'assistant', text: 'Pixie has no collage feature yet; I have passed that on. The nearest thing is Print with several photos per page.\n[Offered a button to open Print on the results.]' },
+      { role: 'user', text: 'print them' },
+    ],
+    results: { count: 47, of: 'photos that look like “rose” and “flowers”' },
+    expect: 'opens Print on the results (or on the rose1 tag); does not ask which photos and does not count anything',
+    ok: (r) => r.openTool?.tool === 'print' && (r.openTool.source === 'results' || (r.openTool.source === 'tag' && /rose1/i.test(r.openTool.tag ?? ''))) && !(r.asked ?? []).length && !r.find,
+  },
+  {
+    ask: 'email those to me',
+    turns: [
+      { role: 'user', text: 'find dogs on the beach' },
+      { role: 'assistant', text: "I'll look for dogs on the beach.\n[Found 12 photos that look like “dog on a beach”.]" },
+      { role: 'user', text: 'email those to me' },
+    ],
+    results: { count: 12, of: 'photos that look like “dog on a beach”' },
+    expect: 'opens Email on the results',
+    ok: (r) => r.openTool?.tool === 'email' && r.openTool.source === 'results',
+  },
+  {
+    ask: 'only the ones with people',
+    turns: [
+      { role: 'user', text: 'find dogs on the beach' },
+      { role: 'assistant', text: "I'll look for dogs on the beach.\n[Found 12 photos that look like “dog on a beach”.]" },
+      { role: 'user', text: 'only the ones with people' },
+    ],
+    results: { count: 12, of: 'photos that look like “dog on a beach”' },
+    expect: 'a new search for dogs on a beach with people in them',
+    ok: (r) => /dog/i.test([r.find?.text, ...(r.find?.also ?? [])].join(' ')) && r.find?.withPeople === true,
+  },
+  {
+    ask: 'print them',
+    turns: [{ role: 'user', text: 'print them' }],
+    expect: 'with nothing found yet, asks which photos (or says how to pick them), and does not open anything',
+    ok: (r) => !r.openTool && r.reply.length > 0,
+  },
+  { ask: 'make me a collage of my dog photos', expect: 'no collage feature yet, passed on, no claim it cannot create images', ok: (r) => !/can't create images|cannot create images/i.test(r.reply) && /collage/i.test(r.reply) && r.feedbackSent },
   { ask: 'Pick all the photos of Joan from 2019', expect: 'find people Joan, dates in 2019, then pick', ok: (r) => (r.find?.people ?? []).includes('Joan') && r.find.from === '2019-01-01' && r.find.to === '2019-12-31' && r.find.then.includes('pick') },
   { ask: 'Show me my videos from last summer', expect: 'find kind video with dates, nothing changed', ok: (r) => r.find?.kind === 'video' && !!r.find.from && !!r.find.to && r.find.then.length === 0 },
-  { ask: 'Email me everything tagged holiday', expect: 'find tags holiday, then email', ok: (r) => (r.find?.tags ?? []).some((t) => /holiday/i.test(t)) && r.find.then.includes('email') },
+  { ask: 'Email me everything tagged holiday', expect: 'find tags holiday, then email', ok: (r) => ((r.find?.tags ?? []).some((t) => /holiday/i.test(t)) && r.find.then.includes('email')) || (r.openTool?.tool === 'email' && r.openTool.source === 'tag' && /holiday/i.test(r.openTool.tag ?? '')) },
   { ask: 'Delete all the photos of dogs', expect: 'no find that changes anything, no deletion', ok: (r) => !r.proposal && (!r.find || r.find.then.length === 0) },
   { ask: 'Remove the holiday tag from all my photos', expect: 'does not remove tags (no then, no proposal)', ok: (r) => !r.proposal && (!r.find || r.find.then.length === 0) },
   { ask: 'Find the photos I took in Paris', expect: 'says it cannot search by place, no tagging or picking', ok: (r) => (!r.find || r.find.then.length === 0) && r.reply.length > 0 },
@@ -81,8 +140,8 @@ for (const example of examples) {
   let res, json;
   for (let turn = 0; turn <= 3; turn++) {
     const body = {
-      messages: [{ role: 'user', text: example.ask }],
-      context: { ...context, today: '2026-10-28', language: example.language ?? context.language, ...(example.library ? { library: example.library } : {}) },
+      messages: example.turns ?? [{ role: 'user', text: example.ask }],
+      context: { ...context, today: '2026-10-28', language: example.language ?? context.language, ...(example.library ? { library: example.library } : {}), ...(example.results ? { results: example.results } : {}) },
       ...(rounds.length > 0 ? { lookups: rounds } : {}),
     };
     res = await fetch(`${base}/v1/ask`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Install-Id': id }, body: JSON.stringify(body) });

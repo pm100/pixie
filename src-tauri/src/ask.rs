@@ -2,6 +2,7 @@
 //! back. Pictures are never part of it: the body is JSON text made by the UI from typed words and settings, and it is
 //! refused here if it is large enough to hold anything else.
 
+use pixie_analysis::search::Ranked;
 use std::io::Read;
 use std::time::Duration;
 
@@ -82,6 +83,27 @@ pub fn post(url: &str, install_id: &str, body: &str, dev_key: Option<&str>) -> A
 }
 
 
+/// With several things that must be in the picture, how strong a match the 20th best photo is for its weakest part, in standard
+/// deviations above the usual photo. In a library where such photos exist this stays at 2.5 or more; where they do not (flowers with
+/// castles) even the 20th best is 2.3 or less, because the photos are good for one part and poor for the other.
+const WEAK_TOGETHER_Z: f32 = 2.3;
+const STRENGTH_PHOTOS: usize = 20;
+
+/// Is a combined search a poor one: probably few, if any, photos really look like all of the things together? Never for a single
+/// thing, and never when nothing was found.
+pub fn together_is_weak(lists: &[Ranked], combined: &[(i64, f32)]) -> bool {
+    if lists.len() < 2 || combined.is_empty() {
+        return false;
+    }
+    let by_id: Vec<std::collections::HashMap<i64, f32>> = lists.iter().map(|l| l.hits.iter().copied().collect()).collect();
+    let weakest = combined
+        .iter()
+        .take(STRENGTH_PHOTOS)
+        .map(|(id, _)| lists.iter().zip(&by_id).filter_map(|(l, m)| m.get(id).map(|s| (s - l.mean) / l.sd)).fold(f32::INFINITY, f32::min))
+        .fold(f32::INFINITY, f32::min);
+    weakest < WEAK_TOGETHER_Z
+}
+
 /// The words for the content search, put the way CLIP was trained on (a caption of a photo): it ranks "a photo of pink flowers"
 /// better than the bare "pink flowers".
 pub fn content_query(text: &str) -> String {
@@ -138,6 +160,8 @@ pub struct Found {
     pub scores: Option<Vec<f32>>,
     /// The photos analysed so far (a content search covers only those); `None` when no content search was asked for.
     pub analysed: Option<usize>,
+    /// Several things were asked for together, and probably few, if any, photos really look like all of them (see `together_is_weak`).
+    pub weak: bool,
 }
 
 #[cfg(test)]
@@ -280,6 +304,30 @@ X: y"] {
         assert!(combine_concepts(vec![flowers.clone(), vec![]]).is_empty());
         assert!(combine_concepts(vec![flowers, vec![(9, 0.3)]]).is_empty());
         assert!(combine_concepts(vec![]).is_empty());
+    }
+
+    #[test]
+    fn a_combination_is_weak_when_even_the_twentieth_photo_is_a_poor_match_for_one_of_the_things() {
+        // two things, each scored over a library where the average photo scores 0.20 with a spread of 0.02
+        let stats = |hits: Vec<(i64, f32)>| Ranked { hits, mean: 0.20, sd: 0.02 };
+        // 25 photos that are strong (z = 3.5 = 0.27) for both things
+        let strong: Vec<(i64, f32)> = (0..25).map(|i| (i, 0.27)).collect();
+        let lists = vec![stats(strong.clone()), stats(strong.clone())];
+        let combined = combine_concepts(lists.iter().map(|l| l.hits.clone()).collect());
+        assert!(!together_is_weak(&lists, &combined));
+        // photos strong for the first thing but only z = 1.5 (0.23) for the second
+        let weak_b: Vec<(i64, f32)> = (0..25).map(|i| (i, 0.23)).collect();
+        let lists = vec![stats(strong), stats(weak_b)];
+        let combined = combine_concepts(lists.iter().map(|l| l.hits.clone()).collect());
+        assert!(together_is_weak(&lists, &combined));
+    }
+
+    #[test]
+    fn one_thing_is_never_called_weak_and_neither_is_nothing_found() {
+        let one = vec![Ranked { hits: vec![(1, 0.21)], mean: 0.20, sd: 0.02 }];
+        assert!(!together_is_weak(&one, &[(1, 0.21)]));
+        let two = vec![Ranked { hits: vec![(1, 0.3)], mean: 0.2, sd: 0.02 }, Ranked { hits: vec![(2, 0.3)], mean: 0.2, sd: 0.02 }];
+        assert!(!together_is_weak(&two, &[]));
     }
 
     #[test]

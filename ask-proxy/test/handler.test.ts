@@ -25,6 +25,7 @@ describe('POST /v1/ask', () => {
       proposal: null,
       goTo: null,
       find: null,
+      openTool: null,
       lookup: null,
       feedbackSent: false,
       quota: { remaining: 9, resetsAt: '2026-10-02T00:00:00.000Z' },

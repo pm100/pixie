@@ -6,10 +6,10 @@ const feedback = (category: unknown, summary: unknown) => ({ name: 'submit_feedb
 
 describe('tool specs', () => {
   it('declares the tools with required fields, as plain JSON Schema', () => {
-    expect(TOOL_SPECS.map((t) => t.name)).toEqual(['propose_settings_changes', 'go_to', 'find_photos', 'lookup', 'submit_feedback']);
+    expect(TOOL_SPECS.map((t) => t.name)).toEqual(['propose_settings_changes', 'go_to', 'find_photos', 'open_tool', 'lookup', 'submit_feedback']);
     expect(TOOL_SPECS[0]?.schema.required).toEqual(['changes']);
     expect(TOOL_SPECS[1]?.schema.required).toEqual(['target', 'say']);
-    expect(TOOL_SPECS[4]?.schema.required).toEqual(['category', 'summary']);
+    expect(TOOL_SPECS[5]?.schema.required).toEqual(['category', 'summary']);
   });
 
   it('leaves the change value untyped, because providers disagree on unions', () => {
@@ -46,7 +46,7 @@ describe('interpret, go_to', () => {
 
 describe('interpret', () => {
   it('returns plain text with no proposal', () => {
-    expect(interpret(['Try a slower tempo.'], [])).toEqual({ reply: 'Try a slower tempo.', proposal: null, goTo: null, find: null, lookup: [], feedback: [] });
+    expect(interpret(['Try a slower tempo.'], [])).toEqual({ reply: 'Try a slower tempo.', proposal: null, goTo: null, find: null, openTool: null, lookup: [], feedback: [] });
   });
 
   it('joins several text blocks and ignores unknown tools', () => {
@@ -55,6 +55,7 @@ describe('interpret', () => {
       proposal: null,
       goTo: null,
       find: null,
+      openTool: null,
       lookup: [],
       feedback: [],
     });
@@ -227,5 +228,34 @@ describe('lookup', () => {
 
   it('is empty when the model asked for nothing', () => {
     expect(interpret(['Hi.'], []).lookup).toEqual([]);
+  });
+});
+
+describe('open_tool', () => {
+  const open = (input: unknown) => ({ name: 'open_tool', input });
+
+  it('is declared, needing the tool, where the photos come from, and the sentence', () => {
+    const spec = TOOL_SPECS.find((t) => t.name === 'open_tool');
+    expect(spec?.schema.required).toEqual(['tool', 'source', 'say']);
+    expect((spec?.schema.properties as any).source.enum).toEqual(['results', 'picked', 'tag']);
+    expect((spec?.schema.properties as any).tool.enum).toEqual(['details', 'email', 'print', 'tags']);
+  });
+
+  it('reads a tool to open on the results, the picked photos, or a tag, and uses the sentence when the model wrote none', () => {
+    const r = interpret([], [open({ tool: 'print', source: 'results', say: 'Opening Print on the photos we found.' })]);
+    expect(r.openTool).toEqual({ tool: 'print', source: 'results', tag: null });
+    expect(r.reply).toBe('Opening Print on the photos we found.');
+    expect(interpret([], [open({ tool: 'email', source: 'tag', tag: ' rose1 ', say: 'x' })]).openTool).toEqual({ tool: 'email', source: 'tag', tag: 'rose1' });
+  });
+
+  it('needs a tag name for a tag, and drops what it does not know', () => {
+    expect(interpret(['ok'], [open({ tool: 'print', source: 'tag', say: 'x' })]).openTool).toBeNull();
+    expect(interpret(['ok'], [open({ tool: 'delete', source: 'results', say: 'x' })]).openTool).toBeNull();
+    expect(interpret(['ok'], [open({ tool: 'print', source: 'everything', say: 'x' })]).openTool).toBeNull();
+  });
+
+  it('forgets a tag name it was not asked for, and takes only the first', () => {
+    expect(interpret(['ok'], [open({ tool: 'tags', source: 'picked', tag: 'x', say: 'x' })]).openTool).toEqual({ tool: 'tags', source: 'picked', tag: null });
+    expect(interpret(['ok'], [open({ tool: 'print', source: 'results', say: 'a' }), open({ tool: 'email', source: 'results', say: 'b' })]).openTool?.tool).toBe('print');
   });
 });

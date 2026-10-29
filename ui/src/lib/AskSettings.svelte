@@ -14,23 +14,29 @@
 <h3>Share the names in my library</h3>
 <label class="opt"><input type="checkbox" checked={library} disabled={!on} onchange={(e) => onlibrary(e.currentTarget.checked)} /> Let Ask Pixie see the names of my tags, the people I have named, and my trips</label>
 <p>Ask Pixie answers many questions better when it can see these. It can tell that “Rose” is a person in your library and not a flower, find “the Italy trip”, and say when a trip was. Without them it has to guess, and Pixie checks the names on this computer after it answers.</p>
-<p>When this is on, each question also carries the names of your tags and of the people you have named, with how many photos each has, the number of photos in the library, and your trips: their dates, names, how long they were and the town they went to. It is off until you turn it on, and it does nothing while Ask Pixie itself is off.</p>
-<h3>What is sent</h3>
+<p>This is off until you turn it on, and it does nothing while Ask Pixie itself is off. The lists below show exactly what it adds.</p>
+<h3>Always sent</h3>
 <ul>
   <li>The words you type, and the last few messages of the conversation.</li>
   <li>Pixie's settings and their current values, and which tab you were on.</li>
-  <li>Your language and your system (Windows or Mac).</li>
+  <li>Today's date, your language and your system (Windows or Mac).</li>
   <li>A random number, made on this computer, that counts how many questions are asked in a day. It is not linked to you.</li>
-  <li>Only if you turn on sharing above: the names and counts described there.</li>
 </ul>
-<h3>What is never sent</h3>
+<h3>Sent only if you turn on sharing</h3>
+<ul>
+  <li>The names of your tags, with how many photos each has.</li>
+  <li>The names of the people you have named, with how many photos each is in.</li>
+  <li>Your trips: their dates, the name you gave them, the town they went to, how many nights, and how many photos and videos.</li>
+  <li>How many photos and videos are in your library, and how many are picked.</li>
+</ul>
+<h3>Never sent, whatever you choose</h3>
 <ul>
   <li>Pictures or videos, thumbnails, or anything made from them, such as faces.</li>
-  <li>File names, folder names or where they are.</li>
-  <li>The names of your tags, people and trips, unless you turn on sharing above. Never where home is, or map coordinates.</li>
+  <li>File names, folder names, or where your files are.</li>
+  <li>Where home is, or any map coordinates.</li>
   <li>Your email address or contacts.</li>
 </ul>
-<p class="hint">Turning this off stops all questions. It is also off after "Start again from a clean slate".</p>
+<p class="hint">Turning Ask Pixie off stops all questions. It is also off after "Start again from a clean slate".</p>
 
 <style>
   .strong { font-weight: 600; }

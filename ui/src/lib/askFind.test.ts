@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CUT_FLOOR, defaultCut, describeFind, parseFindArgs, resolveFind, visibleIds, type FindArgs } from './askFind';
+import { CUT_FLOOR, defaultCut, describeFind, parseFindArgs, resolveFind, visibleIds, weakNote, type FindArgs } from './askFind';
 
 const args = (over: Partial<FindArgs> = {}): FindArgs => ({ text: null, also: [], withPeople: false, tags: [], people: [], from: null, to: null, kind: null, limit: null, pickedOnly: false, then: [], tag: null, ...over });
 const known = {
@@ -80,6 +80,17 @@ describe('resolveFind', () => {
 
   it('is not runnable when it asks for nothing', () => {
     expect(resolveFind(args(), known).runnable).toBe(false);
+  });
+});
+
+describe('weakNote', () => {
+  it('names the things that rarely appear together, and says the rest match only one of them', () => {
+    const note = weakNote(args({ text: 'yellow flowers', also: ['a castle'] }));
+    expect(note).toBe('Few photos, if any, look like “yellow flowers” and “a castle” together. These are the closest, but many match only one of them.');
+  });
+
+  it('works for three things', () => {
+    expect(weakNote(args({ text: 'a', also: ['b', 'c'] }))).toContain('“a”, “b” and “c”');
   });
 });
 

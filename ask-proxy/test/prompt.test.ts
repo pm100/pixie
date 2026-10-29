@@ -141,4 +141,35 @@ describe('systemParts', () => {
     expect(section).toContain('only if the user turned on sharing');
     expect(section).toContain('never sends pictures');
   });
+
+  it('tells the model that a castle or a beach is something in the picture, and that near or next to means the same picture', () => {
+    for (const word of ['castle', 'near', 'same picture', 'named place']) expect(RULES).toContain(word);
+    expect(RULES).not.toContain('You cannot find by place or');
+  });
+
+  describe('the current results', () => {
+    const results = { count: 47, of: 'photos that look like “rose” and “flowers”' };
+
+    it('tells the model what them and those mean, in the per-user part', () => {
+      const { volatile, stable } = systemParts({ ...CONTEXT, results });
+      expect(volatile).toContain('RESULTS');
+      expect(volatile).toContain('47');
+      expect(volatile).toContain('photos that look like “rose” and “flowers”');
+      expect(stable).not.toContain('47 photos');
+      expect(systemParts({ ...CONTEXT, results }).stable).toBe(systemParts(CONTEXT).stable);
+    });
+
+    it('says there are none, so the model does not invent a set', () => {
+      expect(systemParts(CONTEXT).volatile).toContain('RESULTS: no search has found anything yet');
+    });
+  });
+
+  it('tells the model how to follow up on the results, and to read what happened from the notes', () => {
+    for (const word of ['open_tool', 'them', 'those', 'RESULTS', 'square brackets']) expect(RULES).toContain(word);
+  });
+
+  it('tells the model that a collage is a feature Pixie does not have yet, not an image it must not create', () => {
+    for (const word of ['collage', 'does not have', 'feedback']) expect(RULES).toContain(word);
+    expect(RULES).not.toMatch(/I can't create images/i);
+  });
 });

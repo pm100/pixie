@@ -18,7 +18,7 @@
     results?: number[];
     active: boolean;
     /** Given when the tab is opened to work on one photo (the Email and Print buttons in Browse): that photo, and the tool. */
-    start?: { photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean } | null;
+    start?: { photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean; source?: string } | null;
     /** The email size limit (Settings, Email). */
     emailLimitMb: number;
     /** The picked photos' ids: the list is read again when they change. */
@@ -44,7 +44,7 @@
    *  or Print button was pressed here. */
   let current = $state<Photo | null>(untrack(() => start?.photo ?? null));
   /** Which photos the tools work on: `picked`, `current`, or `tag:<name>` for one of your tags. */
-  let source = $state(untrack(() => (start?.results ? 'results' : start?.photo ? 'current' : 'picked')));
+  let source = $state(untrack(() => (start?.results ? 'results' : start?.source ? start.source : start?.photo ? 'current' : 'picked')));
   // A tag that has no photos left is gone from the list: go back to Picked.
   $effect(() => { if (source === 'results' && results.length === 0) source = 'picked'; });
   $effect(() => { if (source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'picked'; });

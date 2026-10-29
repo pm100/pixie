@@ -44,6 +44,7 @@ describe('anthropic provider', () => {
       proposal: [{ setting: 'analysis_faces', value: false }],
       goTo: null,
       find: null,
+      openTool: null,
       lookup: [],
       feedback: [{ category: 'feature_request', summary: 'Wants dark mode.' }],
     });

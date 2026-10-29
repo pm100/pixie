@@ -1,4 +1,4 @@
-import type { AskBody, Context, Library, LookupRound, SettingInfo, Turn } from './types';
+import type { AskBody, Context, Library, LookupRound, Results, SettingInfo, Turn } from './types';
 
 export const MAX_BODY_BYTES = 32_768;
 export const MAX_TURNS = 6;
@@ -99,6 +99,14 @@ function parseLibrary(raw: unknown): Library | null {
   return { photos, picked, tags, people, trips };
 }
 
+/** The current results, rebuilt field by field; null if it is not what it should be. */
+function parseResults(raw: unknown): Results | null {
+  if (!isObject(raw)) return null;
+  const count = num(raw.count);
+  const of = str(raw.of, 300);
+  return count === null || count < 0 || !of ? null : { count, of };
+}
+
 function parseContext(raw: unknown): Context | null {
   if (!isObject(raw)) return null;
   const platform = str(raw.platform, 16);
@@ -113,9 +121,18 @@ function parseContext(raw: unknown): Context | null {
     if (!setting) return null;
     settings.push(setting);
   }
-  if (raw.library === undefined) return { platform, language, tab, today, settings };
-  const library = parseLibrary(raw.library);
-  return library ? { platform, language, tab, today, settings, library } : null;
+  const context: Context = { platform, language, tab, today, settings };
+  if (raw.library !== undefined) {
+    const library = parseLibrary(raw.library);
+    if (!library) return null;
+    context.library = library;
+  }
+  if (raw.results !== undefined) {
+    const results = parseResults(raw.results);
+    if (!results) return null;
+    context.results = results;
+  }
+  return context;
 }
 
 export const MAX_ROUNDS = 3;

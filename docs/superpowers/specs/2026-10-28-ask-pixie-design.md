@@ -224,3 +224,13 @@ Paul's decision: the model may see the library's metadata if the person allows i
 - **To-and-fro:** a `lookup` tool. The model asks, the app answers on the person's computer, the answer goes back, and the model replies (at most three rounds, three questions each). `count` (how many photos match a filter) works without sharing; `tags`, `people` and `trips` (is there one with this name) need sharing. The proxy stays stateless: each request carries the earlier rounds. Every call to the model counts as a question, so a lookup is not a way around the daily limit.
 - **While it waits for an answer the model does nothing else:** a plan (find, settings, button) is decided after the answer.
 - **Unchanged:** the fixed rules, no deleting, no images, nothing changes until a button is pressed.
+
+## Following up (added after a real conversation went wrong)
+
+A conversation ("find some pics of rose near flowers", "tag them rose1", "create a collage", "print them") showed that the model saw only the *words* of earlier messages, so it lost what "them" meant and offered to tag photos that were already tagged.
+
+- **Notes of what happened.** The text of each earlier assistant message ends with a short bracketed note (`memoryNote`): what the search found (and that it was a weak match), whether the photos were picked or tagged, whether a settings change was applied, which button was offered. Computed when the message is sent, so it is current. The prompt tells the model to believe it.
+- **RESULTS.** Each request says what the last search found (count and a description), kept for the person in Tools as Ask Pixie results. "Them", "those" and "the results" mean these.
+- **`open_tool`.** A button that opens Print, Email, Tags or Photo details on the results, the picked photos, or one of the person's tags (checked against their tags on the computer), so "print them" needs no new search and no question.
+- **Collage and the like are not built.** The model says Pixie does not have it yet, passes it on as feedback (#12), and offers Print with several photos per page. It does not say it "cannot create images": arranging the person's own photos is allowed, just not built.
+- Only the last six messages are sent; the notes make them enough.

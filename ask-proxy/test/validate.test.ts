@@ -138,3 +138,29 @@ describe('parseAsk, lookups', () => {
     expect(parseAsk(withRounds(lookups)).ok).toBe(false);
   });
 });
+
+describe('parseAsk, results', () => {
+  const withResults = (results: unknown) => ({ ...askBody(), context: { ...CONTEXT, results } });
+
+  it('is optional, and kept when well formed', () => {
+    const none = parseAsk(askBody());
+    expect(none.ok && none.body.context.results).toBeUndefined();
+    const some = parseAsk(withResults({ count: 47, of: 'photos that look like “rose”' }));
+    expect(some.ok && some.body.context.results).toEqual({ count: 47, of: 'photos that look like “rose”' });
+  });
+
+  it('keeps only the fields it knows, after the library', () => {
+    const parsed = parseAsk(withResults({ count: 1, of: 'x', extra: 1 }));
+    expect(parsed.ok && Object.keys(parsed.body.context.results!)).toEqual(['count', 'of']);
+  });
+
+  it.each([
+    ['not an object', 'x'],
+    ['a count that is not a number', { count: 'many', of: 'x' }],
+    ['a negative count', { count: -1, of: 'x' }],
+    ['no description', { count: 1 }],
+    ['a description that is too long', { count: 1, of: 'x'.repeat(301) }],
+  ])('rejects %s', (_name, results) => {
+    expect(parseAsk(withResults(results)).ok).toBe(false);
+  });
+});

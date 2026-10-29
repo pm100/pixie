@@ -3,10 +3,10 @@
    *  may offer a button to a place in the app or a change to settings, which happens only when Apply is pressed. */
   import { tick } from 'svelte';
   import { askPixie, findPhotos, listTagged, photosByIds } from './api';
-  import { buildRequest, dayOf, errorText, parseReply, platformName, type ChatMessage, type Quota, type Reply } from './ask';
+  import { buildRequest, currentResults, dayOf, errorText, parseReply, platformName, type ChatMessage, type Quota, type Reply } from './ask';
   import { answerLookup, MAX_ROUNDS, type Round } from './askLookup';
   import type { Library } from './askLibrary';
-  import { CUT_FLOOR, defaultCut, describeFind, resolveFind, visibleIds, type FindSpec, type Known } from './askFind';
+  import { CUT_FLOOR, defaultCut, describeFind, resolveFind, visibleIds, weakNote, type FindSpec, type Known } from './askFind';
   import { plural } from './format';
   import { thumbUrl } from './url';
   import { goToLabel } from './askGoTo';
@@ -22,14 +22,14 @@
     /** The tab the person came from (it helps the model answer "here"). */
     from: string;
     language: string;
-    /** The names of the tags and people the person has, to match what the model names against (they are never sent anywhere). */
+    /** The names of the tags and people the person has, to match what the model names against (they are only sent if the person turned on sharing the names, and then through `getLibrary`). */
     known: Known;
     /** The names in the library, when the person has allowed Ask Pixie to see them (null: not allowed). Read at each question. */
     getLibrary: () => Library | null;
     /** Make these photos Ask Pixie's results (listed in Tools, Working on). */
     onresults: (ids: number[]) => void;
     /** Open the Tools tab on Ask Pixie's results, at this tool. */
-    onopen: (tool: 'details' | 'email' | 'print') => void;
+    onopen: (tool: 'details' | 'email' | 'print' | 'tags', source?: 'results' | 'picked' | `tag:${string}`) => void;
     /** Pick these photos. */
     onpick: (ids: number[]) => Promise<void>;
     /** Give these photos a tag (or, with undo, take it off them); resolves with the name it is stored under. */
@@ -74,7 +74,7 @@
       let status = 0;
       for (;;) {
         const library = getLibrary();
-        const body = buildRequest(history, { platform: platformName(globalThis.navigator?.userAgent ?? ''), language, tab: from, today: dayOf(new Date()) }, values, library, rounds);
+        const body = buildRequest(history, { platform: platformName(globalThis.navigator?.userAgent ?? ''), language, tab: from, today: dayOf(new Date()), results: currentResults(history) }, values, library, rounds);
         const answer = await askPixie(installId, body);
         status = answer.status;
         json = null;
@@ -94,9 +94,9 @@
         const checked = checkProposal(reply.proposal, values);
         let said = reply.reply.trim();
         if (said === '') said = reply.proposal.length > 0 && checked.changes.length === 0 ? "I couldn't work out a safe change. Try asking another way." : reply.feedbackSent ? "I've passed that on to the developer." : 'Done.';
-        history.push({ role: 'assistant', text: said, changes: checked.changes.length > 0 ? checked.changes : undefined, card: checked.changes.length > 0 ? 'open' : undefined, goTo: reply.goTo ?? undefined });
+        history.push({ role: 'assistant', text: said, changes: checked.changes.length > 0 ? checked.changes : undefined, card: checked.changes.length > 0 ? 'open' : undefined, goTo: reply.goTo ?? undefined, openTool: reply.openTool ?? undefined });
         if (reply.find) {
-          history[history.length - 1].found = { args: reply.find, status: 'running', problems: [], ids: [], allIds: [], scores: null, cut: CUT_FLOOR, preview: [], analysed: null, done: {} };
+          history[history.length - 1].found = { args: reply.find, status: 'running', problems: [], ids: [], allIds: [], scores: null, cut: CUT_FLOOR, preview: [], analysed: null, weak: false, done: {} };
           void runFind(history[history.length - 1]);
         }
       }
@@ -124,6 +124,7 @@
       f.scores = res.scores;
       f.cut = defaultCut(res.scores ?? [], f.args.limit);
       f.analysed = res.analysed;
+      f.weak = res.weak;
       f.status = 'done';
       await shown(f);
     } catch (e) {
@@ -169,6 +170,24 @@
     } catch (e) { history.push({ role: 'error', text: String(e) }); }
     working = false;
   }
+  /** The button to open a tool on the results, the picked photos or a tag. A tag is checked against the person's own tags first. */
+  function openToolNow(m: ChatMessage) {
+    const o = m.openTool!;
+    if (o.source === 'picked') { onopen(o.tool, 'picked'); return; }
+    if (o.source === 'tag') {
+      const name = known.tags.find((t) => t.toLocaleLowerCase() === (o.tag ?? '').toLocaleLowerCase());
+      if (name === undefined) { history.push({ role: 'error', text: `You have no tag called “${o.tag}”.` }); return; }
+      onopen(o.tool, `tag:${name}`);
+      return;
+    }
+    const last = [...history].reverse().find((h) => h.found?.status === 'done' && h.found.ids.length > 0);
+    if (!last) { history.push({ role: 'error', text: 'There are no results to open yet. Ask me to find some photos first.' }); return; }
+    onresults(last.found!.ids);
+    onopen(o.tool, 'results');
+  }
+  const openToolLabel = (o: NonNullable<ChatMessage['openTool']>) =>
+    `Open ${{ details: 'Photo details', email: 'Email', print: 'Print', tags: 'Tags' }[o.tool]} on ${o.source === 'results' ? 'the results' : o.source === 'picked' ? 'the picked photos' : `“${o.tag}”`}`;
+
   function openIn(m: ChatMessage, tool: 'details' | 'email' | 'print') {
     onresults(m.found!.ids);
     m.found!.done.opened = tool;
@@ -198,8 +217,8 @@
     <div class="intro">
       <h2>Ask Pixie</h2>
       <p>Ask how to do something in Pixie, or ask Pixie to change a setting for you.</p>
-      <p><b>Your pictures never leave this computer.</b> To answer, Ask Pixie sends what you type, and some information about Pixie (its settings, your language and system) to a server, where a language model writes the reply. It never sends pictures, thumbnails, faces, file names, folder names, or the names of your tags and people.</p>
-      <p>Nothing is changed until you press Apply. In Settings, Ask Pixie, you can also let it see the names of your tags, people and trips, which makes its answers better, or leave that off. You can turn Ask Pixie off at any time.</p>
+      <p><b>Your pictures never leave this computer.</b> To answer, Ask Pixie sends what you type, and some information about Pixie (its settings, your language and system) to a server, where a language model writes the reply. It never sends pictures, thumbnails, faces, file names or folder names.</p>
+      <p>Nothing is changed until you press Apply. Unless you choose otherwise, it does not see the names of your tags, people or trips. In Settings, Ask Pixie, you can let it see them, which makes its answers better, or leave that off. You can turn Ask Pixie off at any time.</p>
       <div class="row">
         <button class="primary" onclick={onturnon}>Turn on Ask Pixie</button>
         <button onclick={ondecline}>No thanks</button>
@@ -247,6 +266,7 @@
                 {#if f.scores !== null && f.allIds.length > 1 && f.done.picked === undefined && !f.done.tagged}
                   <label class="cut">More <input type="range" min={CUT_FLOOR} max={f.scores[0]} step="0.002" bind:value={f.cut} oninput={() => void shown(f)} aria-label="How many matches to keep: more or fewer" /> Fewer</label>
                 {/if}
+                {#if f.weak}<div class="warn">{weakNote(f.args)}</div>{/if}
                 {#if f.args.withPeople}<div class="done">“With people” uses the faces Pixie has found so far, so photos not yet scanned for faces are left out.</div>{/if}
                 {#if f.preview.length > 0}
                   <div class="thumbs">{#each f.preview as p (p.id)}<img alt="" src={thumbUrl('grid', p.id, p.mtime, p.size)} />{/each}{#if f.ids.length > f.preview.length}<span class="more">+{(f.ids.length - f.preview.length).toLocaleString()}</span>{/if}</div>
@@ -265,6 +285,7 @@
               {/if}
             </div>
           {/if}
+          {#if m.openTool}<div class="row"><button class="primary" onclick={() => openToolNow(m)}>{openToolLabel(m.openTool)}</button></div>{/if}
           {#if m.goTo}<div class="row"><button onclick={() => ongo(m.goTo!)}>{goToLabel(m.goTo)}</button></div>{/if}
         </div>
       {/each}
@@ -303,6 +324,7 @@
   .thumbs { display: flex; gap: 4px; align-items: center; margin: 6px 0; }
   .thumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; background: #e8e8ec; }
   .more { font-size: 13px; color: #555; padding-left: 4px; }
+  .warn { font-size: 13px; margin: 4px 0; padding: 4px 8px; border-radius: 6px; background: #fff4d6; color: #5c4400; }
   .cut { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #555; margin: 4px 0; }
   .cut input { flex: 1; }
   .row { display: flex; gap: 8px; margin-top: 8px; }

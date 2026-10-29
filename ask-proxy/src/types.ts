@@ -64,6 +64,19 @@ export interface Library {
   trips: { name: string | null; from: string; to: string; nights: number; photos: number; videos: number; where: string | null }[];
 }
 
+/** The last search that found something, as the person has it in Tools (Ask Pixie results): how many, and in words what they are. */
+export interface Results {
+  count: number;
+  of: string;
+}
+
+/** Open a tool on photos the person already has, so a follow-up like "print them" needs no new search. */
+export interface OpenToolArgs {
+  tool: 'details' | 'email' | 'print' | 'tags';
+  source: 'results' | 'picked' | 'tag';
+  tag: string | null;
+}
+
 export interface Context {
   platform: string;
   /** The BCP 47 language of the app, for the reply. */
@@ -75,6 +88,8 @@ export interface Context {
   settings: SettingInfo[];
   /** Present only when the user allowed it. */
   library?: Library;
+  /** Present when a search has found something in this conversation. */
+  results?: Results;
 }
 
 /** One of the model's own calls to `lookup`, kept so it can be put back in front of the model with its answer. */
@@ -153,6 +168,8 @@ export interface ModelResult {
   goTo: string | null;
   /** A search of the user's photos for the app to run (it asks the user before it changes anything). */
   find: FindArgs | null;
+  /** A tool to open on the results, the picked photos or a tag (the user presses a button). */
+  openTool: OpenToolArgs | null;
   /** Questions for the app to answer before the model carries on (empty: none). */
   lookup: LookupRequest[];
   feedback: Feedback[];

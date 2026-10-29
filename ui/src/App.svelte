@@ -1104,7 +1104,7 @@
   }
 
   /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
-  let toolsStart = $state<{ photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean } | null>(null);
+  let toolsStart = $state<{ photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean; source?: string } | null>(null);
   function workOn(page: 'email' | 'print') {
     if (!selectedPhoto) return;
     toolsStart = { photo: selectedPhoto, page };
@@ -1140,8 +1140,8 @@
     await utagChanged(stored);
     return stored;
   }
-  function askOpen(tool: 'details' | 'email' | 'print') {
-    toolsStart = { photo: null, page: tool, results: true };
+  function askOpen(tool: 'details' | 'email' | 'print' | 'tags', source: 'results' | 'picked' | `tag:${string}` = 'results') {
+    toolsStart = { photo: null, page: tool, ...(source === 'results' ? { results: true } : { source }) };
     pickTab('tools');
   }
   /** A button Ask Pixie offered: go to that tab, Settings page or tool. */

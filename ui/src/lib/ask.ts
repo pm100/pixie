@@ -1,6 +1,7 @@
+import { plural } from './format';
 import { settingsSchema, type Change, type Proposed, type SettingValues } from './askSettings';
 import { GO_TO_TARGETS } from './askGoTo';
-import { parseFindArgs, type FindArgs } from './askFind';
+import { describeFind, describeFindParts, parseFindArgs, type FindArgs } from './askFind';
 import type { Photo } from './api';
 import type { Library } from './askLibrary';
 import { parseLookups, type LookupRequest, type Round } from './askLookup';
@@ -22,6 +23,15 @@ export interface ChatMessage {
   goTo?: string;
   /** A search the model asked for, and how it went. */
   found?: FoundState;
+  /** A button the model offered to open a tool on some photos. */
+  openTool?: OpenToolRequest;
+}
+
+/** Open Print, Email or Tags on photos the person already has: the last search's results, the picked photos, or a tag. */
+export interface OpenToolRequest {
+  tool: 'details' | 'email' | 'print' | 'tags';
+  source: 'results' | 'picked' | 'tag';
+  tag: string | null;
 }
 
 /** One search in the chat. `ids` are the photos found; `done` lists what has been done with them. */
@@ -41,19 +51,71 @@ export interface FoundState {
   preview: Photo[];
   /** Photos analysed so far, for a content search: it can only look at those. */
   analysed: number | null;
+  /** Several things were asked for together and few, if any, photos look like all of them. */
+  weak: boolean;
   /** What has been done with them: the buttons already pressed. */
   done: { picked?: number; tagged?: { tag: string; ids: number[] }; opened?: string };
 }
 
-/** The last turns the proxy takes: from the user, to the user, nothing else in them. */
+const TOOL_NAMES = { details: 'Photo details', email: 'Email', print: 'Print', tags: 'Tags' } as const;
+const MAX_NOTE = 250;
+
+/**
+ * What happened as a result of a message, in a few words for the model: what a search found and what was done with it, whether a
+ * settings change was applied, which button was offered. The model sees only the text of earlier messages, so without this it
+ * cannot know that "them" in "print them" means the 47 photos it found and the person tagged. Empty when nothing happened.
+ */
+export function memoryNote(m: ChatMessage): string {
+  const parts: string[] = [];
+  const f = m.found;
+  if (f) {
+    const { subject, tail } = describeFindParts(f.args);
+    if (f.status === 'running') parts.push('The search is still running.');
+    else if (f.status === 'problem') parts.push(`The search did not run: ${f.problems.join(' ')}`);
+    else if (f.status === 'failed') parts.push(`The search failed: ${f.problems.join(' ')}`);
+    else if (f.ids.length === 0) parts.push('The search found nothing.');
+    else {
+      const noun = f.args.kind === 'video' ? 'video' : 'photo';
+      parts.push(`Found ${plural(f.ids.length, noun)}${tail === '' ? '' : ` ${subject.includes('picked') ? 'among the picked ones ' : ''}${tail}`}.`);
+      if (f.weak) parts.push('A weak match.');
+      if (f.done.picked !== undefined) parts.push(`Picked ${f.done.picked.toLocaleString()}.`);
+      if (f.done.tagged) parts.push(`Tagged ${f.ids.length.toLocaleString()} “${f.done.tagged.tag}”.`);
+    }
+  }
+  if (m.changes && m.card) {
+    parts.push(m.card === 'applied' ? `Applied: ${m.changes.map((c) => `${c.label} ${c.from} → ${c.to}`).join('; ')}.` : m.card === 'cancelled' ? 'Not applied.' : 'Waiting for the user to press Apply.');
+  }
+  if (m.openTool) {
+    const on = m.openTool.source === 'results' ? 'the results' : m.openTool.source === 'picked' ? 'the picked photos' : `the photos tagged “${m.openTool.tag ?? ''}”`;
+    parts.push(`Offered a button to open ${TOOL_NAMES[m.openTool.tool]} on ${on}.`);
+  }
+  if (parts.length === 0) return '';
+  const note = `[${parts.join(' ')}]`;
+  return note.length <= MAX_NOTE ? note : `${note.slice(0, MAX_NOTE - 2)}…]`;
+}
+
+/** The last search that found something, as the model should know it: how many, and what they are. Null when there is none. */
+export function currentResults(history: ChatMessage[]): { count: number; of: string } | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const f = history[i].found;
+    if (f && f.status === 'done' && f.ids.length > 0) return { count: f.ids.length, of: describeFind(f.args) };
+  }
+  return null;
+}
+
+/** The last turns the proxy takes: from the user, to the user, nothing else in them. An assistant message carries a note of what
+ *  happened as a result, after its words (the words give way if both do not fit). */
 export function turnsToSend(history: ChatMessage[]): { role: 'user' | 'assistant'; text: string }[] {
   const said = history.filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role !== 'error' && m.text.trim() !== '');
-  let turns = said.slice(-MAX_TURNS).map((m) => ({ role: m.role, text: m.text.slice(0, MAX_TURN_CHARS) }));
+  let turns = said.slice(-MAX_TURNS).map((m) => {
+    const note = m.role === 'assistant' ? memoryNote(m) : '';
+    return { role: m.role, text: note === '' ? m.text.slice(0, MAX_TURN_CHARS) : `${m.text.slice(0, MAX_TURN_CHARS - note.length - 1)}\n${note}` };
+  });
   while (turns.length > 0 && turns[0].role !== 'user') turns = turns.slice(1);
   return turns.length > 0 && turns[turns.length - 1].role === 'user' ? turns : [];
 }
 
-export interface Reply { reply: string; proposal: Proposed[]; goTo: string | null; find: FindArgs | null; lookup: LookupRequest[]; feedbackSent: boolean; quota: Quota | null }
+export interface Reply { reply: string; proposal: Proposed[]; goTo: string | null; find: FindArgs | null; lookup: LookupRequest[]; openTool: OpenToolRequest | null; feedbackSent: boolean; quota: Quota | null }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -68,7 +130,7 @@ export function parseReply(raw: unknown): Reply | null {
     ? raw.proposal.filter((p): p is Proposed => isObject(p) && typeof p.setting === 'string' && 'value' in p).map((p) => ({ setting: p.setting, value: p.value }))
     : [];
   const goTo = typeof raw.goTo === 'string' && (GO_TO_TARGETS as readonly string[]).includes(raw.goTo) ? raw.goTo : null;
-  return { reply: raw.reply, proposal, goTo, find: parseFindArgs(raw.find), lookup: parseLookups(raw.lookup, parseFindArgs), feedbackSent: raw.feedbackSent === true, quota: parseQuota(raw.quota) };
+  return { reply: raw.reply, proposal, goTo, find: parseFindArgs(raw.find), lookup: parseLookups(raw.lookup, parseFindArgs), openTool: parseOpenTool(raw.openTool), feedbackSent: raw.feedbackSent === true, quota: parseQuota(raw.quota) };
 }
 
 /** When the day's questions come back, in the person's own words and clock: "later today at 5:00 PM", "tomorrow at 8:00 AM". */
@@ -80,6 +142,19 @@ export function resetText(resetsAt: string, now: Date): string {
   if (days <= 0) return `later today at ${time}`;
   if (days === 1) return `tomorrow at ${time}`;
   return `${at.toLocaleDateString(undefined, { weekday: 'long' })} at ${time}`;
+}
+
+const OPEN_TOOLS = ['details', 'email', 'print', 'tags'] as const;
+const OPEN_SOURCES = ['results', 'picked', 'tag'] as const;
+
+/** A button to open a tool on some photos, or null if it is not a well-formed one (nothing the model sends is trusted). */
+export function parseOpenTool(raw: unknown): OpenToolRequest | null {
+  if (!isObject(raw)) return null;
+  const tool = (OPEN_TOOLS as readonly unknown[]).includes(raw.tool) ? (raw.tool as OpenToolRequest['tool']) : null;
+  const source = (OPEN_SOURCES as readonly unknown[]).includes(raw.source) ? (raw.source as OpenToolRequest['source']) : null;
+  const tag = typeof raw.tag === 'string' && raw.tag.trim() !== '' ? raw.tag.trim().slice(0, 60) : null;
+  if (tool === null || source === null || (source === 'tag' && tag === null)) return null;
+  return { tool, source, tag: source === 'tag' ? tag : null };
 }
 
 /** What to say when no reply came: `status` is the HTTP status, 0 for no connection and -1 when this build has no address for it. */
@@ -109,10 +184,10 @@ export function platformName(userAgent: string): 'windows' | 'mac' | 'linux' | '
  * The text that goes to the proxy. It is made from the typed turns, the settings, and (only when the person allowed it) the names
  * in the library and the answers to the model's own questions, so there is nowhere for a picture, a file name or a place to be.
  */
-export function buildRequest(history: ChatMessage[], app: { platform: string; language: string; tab: string; today: string }, values: SettingValues, library: Library | null = null, rounds: Round[] = []): string {
+export function buildRequest(history: ChatMessage[], app: { platform: string; language: string; tab: string; today: string; results?: { count: number; of: string } | null }, values: SettingValues, library: Library | null = null, rounds: Round[] = []): string {
   return JSON.stringify({
     messages: turnsToSend(history),
-    context: { platform: app.platform, language: app.language, tab: app.tab, today: app.today, settings: settingsSchema(values), ...(library ? { library } : {}) },
+    context: { platform: app.platform, language: app.language, tab: app.tab, today: app.today, settings: settingsSchema(values), ...(library ? { library } : {}), ...(app.results ? { results: app.results } : {}) },
     ...(rounds.length > 0 ? { lookups: rounds } : {}),
   });
 }

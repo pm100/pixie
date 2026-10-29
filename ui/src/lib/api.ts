@@ -115,7 +115,7 @@ export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', l
 export const askPixie = (installId: string, body: string) => invoke<{ status: number; body: string }>('ask_pixie', { installId, body });
 /** Ask Pixie's search: the ids matching every part of `spec`. Each of `texts` (things that must be in the picture) is searched for
  *  on its own by content, best match first; a photo must match all of them. The content search which covers only the photos analysed so far (`analysed` says how many). Browse's filters are not touched. */
-export const findPhotos = (texts: string[], spec: FindSpec) => invoke<{ ids: number[]; scores: number[] | null; analysed: number | null }>('find_photos', { texts, spec });
+export const findPhotos = (texts: string[], spec: FindSpec) => invoke<{ ids: number[]; scores: number[] | null; analysed: number | null; weak: boolean }>('find_photos', { texts, spec });
 /** These photos themselves, in the order given. */
 export const photosByIds = (ids: number[]) => invoke<Photo[]>('photos_by_ids', { ids });
 /** Which background analyses are on (kept in the library). */

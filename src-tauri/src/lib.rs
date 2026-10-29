@@ -855,13 +855,14 @@ async fn find_photos(state: tauri::State<'_, AppState>, texts: Vec<String>, spec
         let queries: Vec<String> = texts.iter().filter(|t| !t.trim().is_empty()).map(|t| ask::content_query(t)).collect();
         if queries.is_empty() {
             let ids = db.find(&spec).map_err(|e| e.to_string())?;
-            return Ok(ask::Found { ids, scores: None, analysed: None });
+            return Ok(ask::Found { ids, scores: None, analysed: None, weak: false });
         }
         let (lists, analysed) = analysis.rank(&queries)?;
-        let ranked = ask::combine_concepts(lists);
+        let ranked = ask::combine_concepts(lists.iter().map(|l| l.hits.clone()).collect());
+        let weak = ask::together_is_weak(&lists, &ranked);
         let found = db.find(&ask::restricted(spec, &ranked)).map_err(|e| e.to_string())?;
         let (ids, scores) = ask::ordered_by_rank(found, &ranked);
-        Ok(ask::Found { ids, scores: Some(scores), analysed: Some(analysed) })
+        Ok(ask::Found { ids, scores: Some(scores), analysed: Some(analysed), weak })
     })
     .await
     .map_err(|e| e.to_string())?

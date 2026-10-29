@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ALL_ON } from './analysisOptions';
-import { buildRequest, errorText, dayOf, newInstallId, parseReply, platformName, turnsToSend, type ChatMessage } from './ask';
+import { buildRequest, currentResults, dayOf, errorText, memoryNote, newInstallId, parseReply, platformName, turnsToSend, type ChatMessage, type FoundState } from './ask';
 import { type SettingValues } from './askSettings';
 import { DEFAULT_TRIP_PREFS } from './trips';
 
@@ -32,7 +32,7 @@ describe('parseReply', () => {
 
   it('reads a good reply, with the optional parts', () => {
     expect(parseReply({ reply: 'Hi.', proposal: null, goTo: 'browse', feedbackSent: true, quota }))
-      .toEqual({ reply: 'Hi.', proposal: [], goTo: 'browse', find: null, lookup: [], feedbackSent: true, quota });
+      .toEqual({ reply: 'Hi.', proposal: [], goTo: 'browse', find: null, lookup: [], openTool: null, feedbackSent: true, quota });
     expect(parseReply({ reply: 'Ok.', proposal: [{ setting: 'analysis_faces', value: false }], quota }))
       .toMatchObject({ proposal: [{ setting: 'analysis_faces', value: false }], goTo: null, feedbackSent: false });
   });
@@ -41,7 +41,21 @@ describe('parseReply', () => {
     expect(parseReply(null)).toBeNull();
     expect(parseReply({ reply: 5 })).toBeNull();
     const r = parseReply({ reply: 'x', proposal: [{ setting: 3 }, 'no', { setting: 'a', value: 1 }], goTo: 7, quota: 'lots' });
-    expect(r).toEqual({ reply: 'x', proposal: [{ setting: 'a', value: 1 }], goTo: null, find: null, lookup: [], feedbackSent: false, quota: null });
+    expect(r).toEqual({ reply: 'x', proposal: [{ setting: 'a', value: 1 }], goTo: null, find: null, lookup: [], openTool: null, feedbackSent: false, quota: null });
+  });
+});
+
+describe('parseReply, openTool', () => {
+  it('reads a button to open a tool on the results, the picked photos or a tag', () => {
+    expect(parseReply({ reply: 'x', openTool: { tool: 'print', source: 'results', tag: null } })?.openTool).toEqual({ tool: 'print', source: 'results', tag: null });
+    expect(parseReply({ reply: 'x', openTool: { tool: 'email', source: 'tag', tag: 'rose1' } })?.openTool).toEqual({ tool: 'email', source: 'tag', tag: 'rose1' });
+    expect(parseReply({ reply: 'x', openTool: { tool: 'tags', source: 'picked', tag: null } })?.openTool?.source).toBe('picked');
+  });
+
+  it('ignores anything else: an unknown tool or source, or a tag source with no tag', () => {
+    for (const bad of [null, 'x', { tool: 'delete', source: 'results', tag: null }, { tool: 'print', source: 'everything', tag: null }, { tool: 'print', source: 'tag', tag: null }, { tool: 'print', source: 'tag', tag: '  ' }]) {
+      expect(parseReply({ reply: 'x', openTool: bad })?.openTool).toBeNull();
+    }
   });
 });
 
@@ -171,5 +185,94 @@ describe('dayOf', () => {
   it('is the date on the own clock, as YYYY-MM-DD', () => {
     expect(dayOf(new Date(2026, 9, 28, 23, 59))).toBe('2026-10-28');
     expect(dayOf(new Date(2026, 0, 5, 0, 1))).toBe('2026-01-05');
+  });
+});
+
+describe('memoryNote', () => {
+  const found = (over: Partial<FoundState> = {}): FoundState => ({
+    args: { text: 'rose', also: ['flowers'], withPeople: false, tags: [], people: [], from: null, to: null, kind: null, limit: null, pickedOnly: false, then: [], tag: null },
+    status: 'done', problems: [], ids: Array.from({ length: 47 }, (_, i) => i), allIds: [], scores: null, cut: 0.2, preview: [], analysed: null, weak: false, done: {}, ...over,
+  });
+  const said = (over: Partial<ChatMessage>): ChatMessage => ({ role: 'assistant', text: 'ok', ...over });
+
+  it('says what a search found, in the words of the search', () => {
+    expect(memoryNote(said({ found: found() }))).toBe('[Found 47 photos that look like “rose” and “flowers”.]');
+    expect(memoryNote(said({ found: found({ ids: [1] }) }))).toContain('Found 1 photo ');
+  });
+
+  it('says what was done with them: picked, tagged, and that the match was weak', () => {
+    const f = found({ weak: true, done: { picked: 47, tagged: { tag: 'rose1', ids: [1, 2] } } });
+    const note = memoryNote(said({ found: f }));
+    expect(note).toContain('A weak match.');
+    expect(note).toContain('Picked 47.');
+    expect(note).toContain('Tagged 47 “rose1”.');
+  });
+
+  it('does not say they are tagged once the tagging was undone', () => {
+    expect(memoryNote(said({ found: found({ done: { tagged: undefined } }) }))).not.toContain('Tagged');
+  });
+
+  it('says when a search found nothing, did not run, or failed', () => {
+    expect(memoryNote(said({ found: found({ ids: [] }) }))).toBe('[The search found nothing.]');
+    expect(memoryNote(said({ found: found({ status: 'problem', problems: ['You have no tag called “x”.'] }) }))).toBe('[The search did not run: You have no tag called “x”.]');
+    expect(memoryNote(said({ found: found({ status: 'failed', problems: ['offline'] }) }))).toBe('[The search failed: offline]');
+    expect(memoryNote(said({ found: found({ status: 'running' }) }))).toBe('[The search is still running.]');
+  });
+
+  it('says what became of a settings change', () => {
+    const changes = [{ key: 'analysis_faces', label: 'Find faces', value: false, from: 'On', to: 'Off' }];
+    expect(memoryNote(said({ changes, card: 'applied' }))).toBe('[Applied: Find faces On → Off.]');
+    expect(memoryNote(said({ changes, card: 'cancelled' }))).toBe('[Not applied.]');
+    expect(memoryNote(said({ changes, card: 'open' }))).toBe('[Waiting for the user to press Apply.]');
+  });
+
+  it('says it offered to open a tool on the results', () => {
+    expect(memoryNote(said({ openTool: { tool: 'print', source: 'results', tag: null } }))).toBe('[Offered a button to open Print on the results.]');
+    expect(memoryNote(said({ openTool: { tool: 'email', source: 'tag', tag: 'rose1' } }))).toBe('[Offered a button to open Email on the photos tagged “rose1”.]');
+  });
+
+  it('has nothing to say about a plain message, and keeps a note to a sensible length', () => {
+    expect(memoryNote(said({}))).toBe('');
+    const long = found({ args: { ...found().args, text: 'x'.repeat(500) } });
+    expect(memoryNote(said({ found: long })).length).toBeLessThanOrEqual(250);
+  });
+});
+
+describe('turnsToSend, what happened', () => {
+  it('puts the note after the assistant\'s words, and the note survives however long the words are', () => {
+    const f: FoundState = { args: { text: 'rose', also: [], withPeople: false, tags: [], people: [], from: null, to: null, kind: null, limit: null, pickedOnly: false, then: [], tag: null }, status: 'done', problems: [], ids: [1, 2, 3], allIds: [], scores: null, cut: 0.2, preview: [], analysed: null, weak: false, done: { tagged: { tag: 'rose1', ids: [1] } } };
+    const turns = turnsToSend([u('find rose'), { role: 'assistant', text: 'y'.repeat(900), found: f }, u('print them')]);
+    expect(turns[1].text.length).toBeLessThanOrEqual(600);
+    expect(turns[1].text).toContain('Tagged 3 “rose1”.');
+    expect(turns[1].text.startsWith('yyy')).toBe(true);
+  });
+
+  it('leaves a message without a note exactly as it was', () => {
+    expect(turnsToSend([u('hi'), a('hello'), u('again')])[1].text).toBe('hello');
+  });
+});
+
+describe('currentResults', () => {
+  it('is the last search that found something, as the card shows it', () => {
+    const f = (n: number): FoundState => ({ args: { text: 'rose', also: [], withPeople: false, tags: [], people: [], from: null, to: null, kind: null, limit: null, pickedOnly: false, then: [], tag: null }, status: 'done', problems: [], ids: Array.from({ length: n }, (_, i) => i), allIds: [], scores: null, cut: 0.2, preview: [], analysed: null, weak: false, done: {} });
+    expect(currentResults([])).toBeNull();
+    expect(currentResults([{ role: 'assistant', text: 'x', found: f(0) }])).toBeNull();
+    expect(currentResults([{ role: 'assistant', text: 'x', found: f(5) }, { role: 'assistant', text: 'y', found: f(0) }])).toEqual({ count: 5, of: 'photos that look like “rose”' });
+  });
+});
+
+describe('buildRequest, results', () => {
+  const app = { platform: 'windows', language: 'en-US', tab: 'ask', today: '2026-10-28' };
+  const values: SettingValues = { viewerMode: 'window', emailLimitMb: 20, recentDays: 30, networkRescan: { on: true, minutes: 30 }, analysis: { ...ALL_ON }, trips: { ...DEFAULT_TRIP_PREFS } };
+
+  it('tells the model what the current results are, after the library', () => {
+    const lib = { photos: 10, picked: 1, tags: [], people: [], trips: [] };
+    const ctx = JSON.parse(buildRequest([u('hi')], { ...app, results: { count: 47, of: 'photos that look like “rose”' } }, values, lib)).context;
+    expect(Object.keys(ctx)).toEqual(['platform', 'language', 'tab', 'today', 'settings', 'library', 'results']);
+    expect(ctx.results).toEqual({ count: 47, of: 'photos that look like “rose”' });
+  });
+
+  it('says nothing about results when there are none', () => {
+    expect(JSON.parse(buildRequest([u('hi')], { ...app, results: null }, values)).context.results).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import type { Feedback, FindArgs, LookupRequest, ModelResult, Proposal, ToolCall } from './types';
+import type { Feedback, FindArgs, LookupRequest, ModelResult, OpenToolArgs, Proposal, ToolCall } from './types';
 
 /** Replies are short, but leave room for a reply plus several tool calls. */
 export const MAX_TOKENS = 1024;
@@ -18,6 +18,9 @@ export const GO_TO_TARGETS = [
   'browse', 'people', 'duplicates', 'tools-details', 'tools-email', 'tools-print', 'tools-tags',
   'settings-folders', 'settings-viewing', 'settings-browsing', 'settings-trips', 'settings-analysis', 'settings-email', 'settings-about',
 ] as const;
+
+const OPEN_TOOLS = ['details', 'email', 'print', 'tags'] as const;
+const OPEN_SOURCES = ['results', 'picked', 'tag'] as const;
 
 /** What the model may ask the app about. */
 export const LOOKUP_KINDS = ['count', 'tags', 'people', 'trips'] as const;
@@ -87,6 +90,21 @@ export const TOOL_SPECS: ToolSpec[] = [
         say: { type: 'string', description: 'One or two sentences for the user, in their language, saying what you will look for and do.' },
       },
       required: ['say'],
+    },
+  },
+  {
+    name: 'open_tool',
+    description:
+      'Offer a button that opens Print, Email, Tags or Photo details on photos the user already has: the results of the last search (RESULTS in the user state), the photos they have picked, or the photos with one of their tags. Use it for a follow-up such as "print them" or "email those", instead of searching again. Nothing happens until they press it. Always give the sentence for the user in say.',
+    schema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', enum: [...OPEN_TOOLS] },
+        source: { type: 'string', enum: [...OPEN_SOURCES], description: 'results: the last search found. picked: the photos they have picked. tag: the photos with the tag named in tag.' },
+        tag: { type: 'string', description: 'The name of the tag, when source is tag.' },
+        say: { type: 'string', description: 'One or two sentences for the user, in their language, saying what the button opens.' },
+      },
+      required: ['tool', 'source', 'say'],
     },
   },
   {
@@ -178,6 +196,16 @@ function parseFind(input: unknown): { find: FindArgs; say: string } | null {
   return { find: { text, also, withPeople, tags, people, from, to, kind, limit, pickedOnly, then, tag }, say };
 }
 
+/** A tool to open on some photos, rebuilt from what the model sent; null if it is not one the app could do. */
+function parseOpenTool(input: unknown): { openTool: OpenToolArgs; say: string } | null {
+  const o = (input ?? {}) as Record<string, unknown>;
+  const tool = (OPEN_TOOLS as readonly unknown[]).includes(o.tool) ? (o.tool as OpenToolArgs['tool']) : null;
+  const source = (OPEN_SOURCES as readonly unknown[]).includes(o.source) ? (o.source as OpenToolArgs['source']) : null;
+  const tag = typeof o.tag === 'string' && o.tag.trim() !== '' ? o.tag.trim().slice(0, 60) : null;
+  if (!tool || !source || (source === 'tag' && tag === null)) return null;
+  return { openTool: { tool, source, tag: source === 'tag' ? tag : null }, say: typeof o.say === 'string' ? o.say.trim().slice(0, 1000) : '' };
+}
+
 /** A question to the app, rebuilt from what the model sent; null if it is not one the app could answer. */
 function parseLookup(call: ToolCall): LookupRequest | null {
   const o = (call.input ?? {}) as Record<string, unknown>;
@@ -204,6 +232,7 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
   const feedback: Feedback[] = [];
   let goTo: string | null = null;
   let find: FindArgs | null = null;
+  let openTool: OpenToolArgs | null = null;
   let say = '';
   const lookup: LookupRequest[] = [];
   for (const call of calls) {
@@ -219,6 +248,12 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
       const parsed: { find: FindArgs; say: string } | null = find === null ? parseFind(call.input) : null;
       if (parsed) {
         find = parsed.find;
+        if (parsed.say.length > say.length) say = parsed.say;
+      }
+    } else if (call.name === 'open_tool') {
+      const parsed: { openTool: OpenToolArgs; say: string } | null = openTool === null ? parseOpenTool(call.input) : null;
+      if (parsed) {
+        openTool = parsed.openTool;
         if (parsed.say.length > say.length) say = parsed.say;
       }
     } else if (call.name === 'lookup') {
@@ -238,9 +273,10 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
     proposal: lookup.length === 0 && proposals.length > 0 ? proposals : null,
     goTo: lookup.length === 0 ? goTo : null,
     find: lookup.length === 0 ? find : null,
+    openTool: lookup.length === 0 ? openTool : null,
     lookup,
     feedback,
   };
 }
 
-export const REFUSAL_RESULT: ModelResult = { reply: "Sorry, I can't help with that one.", proposal: null, goTo: null, find: null, lookup: [], feedback: [] };
+export const REFUSAL_RESULT: ModelResult = { reply: "Sorry, I can't help with that one.", proposal: null, goTo: null, find: null, openTool: null, lookup: [], feedback: [] };

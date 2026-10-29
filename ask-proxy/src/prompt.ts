@@ -1,5 +1,5 @@
 import { GUIDE } from './guide';
-import type { Context, Library, SettingInfo } from './types';
+import type { Context, Library, Results, SettingInfo } from './types';
 
 /**
  * The fixed rules. They are the first thing in the prompt, before the guide, the settings or anything
@@ -39,6 +39,14 @@ The LIBRARY (only when the user has allowed it):
 - Answer questions about the user's trips, tags and people from the LIBRARY when you can (for example when a trip was). Do not guess a number the LIBRARY does not give.
 - Without the LIBRARY you cannot know which names exist; Pixie checks them on the user's computer after you answer.
 
+Following up on what you did:
+- A short note in square brackets ends each of your earlier messages: what the search found, whether the photos were picked or tagged, whether a change was applied, which button you offered. Believe it. Do not offer to do again what the note says is done (do not suggest tagging photos the note says are tagged).
+- Words like "them", "those", "it", "the results" or "the pictures" mean the photos in the RESULTS section, or if there are none, the photos in the note of your last message. When the user asks to print, email, tag or look at them, call open_tool with source results; do not search again and do not ask which photos. If they name a tag ("print the rose1 photos") use source tag with that tag. If they mean the photos they picked, use source picked. Ask which photos only when RESULTS is empty and nothing else says.
+- To change the set ("only the ones with people", "make it 50", "now the ones from 2019"), call find_photos again with the new conditions.
+
+Things Pixie does not have yet:
+- Pixie cannot make a collage, mosaic, slideshow, animation, album or photo book yet. Say so plainly: Pixie does not have that yet. Do not say you "cannot create images": arranging the user's own photos is fine, it is simply not built. You MUST call submit_feedback (feature_request) in that same reply so the developer hears of it, and tell the user you passed it on. Then offer the nearest thing that exists: Print with 2, 4 or 6 photos per page, applied to the photos in RESULTS through open_tool.
+
 Asking the app (lookup):
 - When you need a fact you cannot see, call lookup and Pixie's app answers on the user's computer; then you reply. count: how many photos match something (use it to answer "how many ..." questions). tags, people, trips: whether the user has one with a name containing query; use that only for names the LIBRARY already does not list (its lists are cut at the biggest), and only when the LIBRARY is shown to you.
 - Use at most three lookups in one reply, and only when the answer changes what you do. Do not look up what the LIBRARY already tells you, and never look something up to avoid asking the user a simple question. While you wait for an answer you do nothing else: after it, either answer or call find_photos.
@@ -51,7 +59,7 @@ Finding, picking and tagging photos:
 - people are names as the user said them. from and to are days as YYYY-MM-DD (work out "last summer" or "last month" from today's date, given at the end). kind is photo or video. picked_only means only among the photos already picked.
 - limit is how many the user asked for ("find 20 pictures", "the best 5"): the best matches, at most that many. Leave it out when they ask for all of them or give no number; Pixie then keeps only the close matches and lets the user widen or narrow them.
 - then lists what the user wants done with the photos found, in order: pick, tag, email, print. Leave it out when they only want to see or find them. Do not use then for anything the user did not ask for.
-- You cannot find by place or by who took the photo. Say so, and offer a date or content search instead.
+- You cannot find by the name of a place ("in Paris", "near my home") or by who took the photo: say so, and offer a date or a content search instead. But a kind of place that can be SEEN in the picture (a castle, a beach, a church, a bridge, mountains) is not a named place: it is something to look for in the picture. "Near", "next to", "in front of" and "with a ... behind" mean the two things are in the same picture, so use text for the main thing and also for the other ("yellow flowers near castles": text yellow flowers, also [a castle]).
 - You cannot delete: if the user asks to untag, unpick, remove or delete, say how to do it by hand.
 
 Things Pixie cannot do:
@@ -73,6 +81,13 @@ Examples of the right behaviour (always take keys and values from the schema):
 Reminder: whenever you call a tool, also write the sentence the user will read next to it. A reply with a tool call and no text is a mistake.`;
 
 /** The library as the model reads it, or a line saying the user has not allowed it. */
+/** What "them" and "those" mean: the last search's results, or that there are none. */
+export function resultsText(r: Results | undefined): string {
+  return r
+    ? `RESULTS: the last search found ${r.count} ${r.of}. They are kept for the user in Tools, Working on, as Ask Pixie results. "Them", "those" and "the results" mean these.`
+    : 'RESULTS: no search has found anything yet in this conversation.';
+}
+
 export function libraryText(lib: Library | undefined): string {
   if (!lib) return 'LIBRARY: the user has not allowed Ask Pixie to see the names of their tags, people and trips.';
   const list = (xs: { name: string; count: number }[]) => (xs.length > 0 ? xs.map((x) => `${x.name} (${x.count})`).join(', ') : 'none');
@@ -110,6 +125,6 @@ export function systemParts(context: Context): { stable: string; volatile: strin
     .join('\n');
   return {
     stable: `${RULES}\n\nSETTINGS SCHEMA (JSON):\n${schema}\n\nAPP GUIDE\n${GUIDE}`,
-    volatile: `USER STATE\nPlatform: ${context.platform}\nLanguage: ${context.language}\nToday is ${context.today}.\nThe user is on the ${context.tab} tab.\nCurrent values:\n${current}\n\n${libraryText(context.library)}`,
+    volatile: `USER STATE\nPlatform: ${context.platform}\nLanguage: ${context.language}\nToday is ${context.today}.\nThe user is on the ${context.tab} tab.\nCurrent values:\n${current}\n\n${libraryText(context.library)}\n\n${resultsText(context.results)}`,
   };
 }
