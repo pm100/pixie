@@ -17,7 +17,7 @@
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
-  import DuplicatesTab from './lib/DuplicatesTab.svelte';
+  import PhotoActions from './lib/PhotoActions.svelte';
   import { dupPass, type DupStatus } from './lib/dupes';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
@@ -50,6 +50,7 @@
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
   import ToolsTab from './lib/ToolsTab.svelte';
+  import { isToolGroup, toolById } from './lib/tools';
   import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
@@ -372,8 +373,8 @@
     if (!next.dupes && before.dupes) { refresh(true).catch((e) => (message = String(e))); void loadFolderInfos(); } // every copy shows again
   }
   // A tab whose analysis was switched off is gone: leave it.
-  $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
-  const tabs = $derived(visibleTabs({ create: false, share: false, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
+  $effect(() => { if (tab === 'faces' && !analysisOptions.faces) tab = 'browse'; });
+  const tabs = $derived(visibleTabs({ people: analysisOptions.faces }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -1080,15 +1081,22 @@
     if (mode === 'map') loadPoints();
   }
 
-  /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
-  let toolsStart = $state<{ photo: Photo; page: 'email' | 'print' } | null>(null);
-  function workOn(page: 'email' | 'print') {
-    if (!selectedPhoto) return;
-    toolsStart = { photo: selectedPhoto, page };
-    tab = 'tools';
+  /** Which photos Send, Create and Organize work on (Picked, Current or a tag). Shared, so the choice carries from one of those tabs to the next. */
+  let workSource = $state('picked');
+  /** The tool a tab is to open at (from an Email button, the More menu or Ask Pixie); otherwise a tab opens at the tool it was last left at. */
+  let toolStart = $state<string | null>(null);
+  /** Open a tool in its tab, working on the picked photos or on the photo chosen here. */
+  function openTool(toolId: string, source: 'picked' | 'current') {
+    const t = toolById(toolId);
+    if (!t) return;
+    workSource = source;
+    toolStart = toolId;
+    pickTab(t.group);
   }
-  // Opening Tools any other way starts it as usual.
-  $effect(() => { if (tab !== 'tools') toolsStart = null; });
+  // Opening a tool tab any other way starts it as usual.
+  $effect(() => { if (!isToolGroup(tab)) toolStart = null; });
+  /** The photos the buttons beside Picked act on. */
+  const pickedIds = $derived([...picked]);
 
   // Details for the chosen photo (fetched by index in the current view).
   $effect(() => {
@@ -1182,7 +1190,7 @@
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools'}>
+    <div class="browse" inert={tab !== 'browse'}>
       <div class="topbars">
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
@@ -1235,6 +1243,7 @@
                   title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>★ Picked {picked.size.toLocaleString()}</button>
           <button class="linkbtn" onclick={clearAllPicks} disabled={picked.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear</button>
         </span>
+        <PhotoActions source="picked" count={picked.size} ids={pickedIds} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
         <div class="viewctl">
           <label class="check" title="Show a map above the photos">
             <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Map
@@ -1294,7 +1303,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} onemail={() => workOn('email')} onprint={() => workOn('print')} ontagschange={(t) => void utagChanged(t)} />
+          <Details photo={selectedPhoto} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}
@@ -1305,15 +1314,13 @@
         <PeopleTab active={tab === 'faces'} status={peopleState} onchange={peopleTabChanged} />
       </div>
     {/if}
-    {#if tab === 'tools'}
-      <div class="page-over">
-        <ToolsTab active={tab === 'tools'} start={toolsStart} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
-      </div>
-    {/if}
-    {#if tab === 'dupes'}
-      <div class="page-over">
-        <DuplicatesTab active={tab === 'dupes'} onchange={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
-      </div>
+    {#if isToolGroup(tab)}
+      {#key tab}
+        <div class="page-over">
+          <ToolsTab group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
+                    dupes={analysisOptions.dupes} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
+        </div>
+      {/key}
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">

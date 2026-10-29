@@ -1,18 +1,23 @@
 <script lang="ts">
   /** "Tag as…": give some photos a tag. Type to find one of your tags, or to make a new one. */
+  import { untrack } from 'svelte';
   import { tagPhotos, tagUsage, type TagUse } from './api';
   import { enterChoice, tagAsRows } from './userTags';
 
-  let { ids, onchange, floating = true }: {
+  let { ids, onchange, floating = true, inline = false, ondone }: {
     /** The photos to tag. */
     ids: number[];
     /** The box opens over what is below the + (as beside the tag pills); false: it opens in the flow, as in a narrow column. */
     floating?: boolean;
     /** Something was tagged (with the tag named): the tag lists need reading again. */
     onchange: (tag: string) => void;
+    /** No + button: the box is open from the start, in the flow, for a popover that is itself the way to add a tag. */
+    inline?: boolean;
+    /** Inline only: a tag was chosen or Escape was pressed, so the popover can close. */
+    ondone?: () => void;
   } = $props();
 
-  let open = $state(false);
+  let open = $state(untrack(() => inline));
   let query = $state('');
   let usage = $state<TagUse[]>([]);
   let error = $state('');
@@ -40,7 +45,19 @@
     try { usage = await tagUsage(ids); } catch (e) { error = String(e); }
     field?.focus();
   }
-  const close = () => { open = false; query = ''; };
+  const close = () => {
+    query = '';
+    if (inline) ondone?.();
+    else open = false;
+  };
+
+  // Inline: read the tags and focus the box as soon as it is on screen.
+  let started = false;
+  $effect(() => {
+    if (!inline || started) return;
+    started = true;
+    void show();
+  });
 
   async function apply(name: string) {
     let stored: string;
@@ -62,7 +79,7 @@
 
   // A click anywhere else closes the box.
   $effect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const away = (e: MouseEvent) => { if (box && !box.contains(e.target as Node)) close(); };
     window.addEventListener('mousedown', away);
     // The box is fixed to the window, so it would be left behind if the pane scrolled or the window changed size.
@@ -76,10 +93,12 @@
   });
 </script>
 
-<div class="tagas" class:floating bind:this={box}>
-  <button bind:this={plus} class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
+<div class="tagas" class:floating={floating && !inline} class:inline bind:this={box}>
+  {#if !inline}
+    <button bind:this={plus} class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
+  {/if}
   {#if open}
-    <div class="drop" style={floating ? dropStyle : undefined}>
+    <div class="drop" style={floating && !inline ? dropStyle : undefined}>
       <input bind:this={field} type="text" autocomplete="off" placeholder="Find or create a tag" aria-label="Find or create a tag" bind:value={query}
              onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); enter(); } else if (e.key === 'Escape') { e.stopPropagation(); close(); } }} />
       {#if error}<p class="err" role="alert">{error}</p>{/if}
@@ -102,6 +121,8 @@
   .plus { padding: 1px 8px; border: 0; border-radius: 4px; background: #e3ecff; color: #2a3f7a; font: inherit; font-size: 12px; line-height: normal; cursor: pointer; }
   .plus:hover:not(:disabled), .plus[aria-expanded="true"] { background: #cddcff; }
   .plus:disabled { opacity: .5; cursor: default; }
+  .tagas.inline { display: flex; align-items: stretch; }
+  .tagas.inline .drop { border: 0; box-shadow: none; padding: 0 4px; }
   .drop { align-self: stretch; border: 1px solid #d6d9e2; border-radius: 6px; padding: 6px; background: #fff; box-shadow: 0 4px 16px rgba(20, 28, 50, .14); display: flex; flex-direction: column; gap: 4px; }
   input { width: 100%; box-sizing: border-box; padding: 5px 8px; }
   ul { list-style: none; margin: 0; padding: 0; }
