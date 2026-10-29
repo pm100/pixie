@@ -108,7 +108,7 @@ export function stubProvider(...results: (Partial<ModelResult> | Error)[]) {
       calls.push(body);
       const next = results.shift() ?? { reply: '(no result queued)' };
       if (next instanceof Error) throw next;
-      return { reply: '', proposal: null, goTo: null, find: null, openTool: null, lookup: [], feedback: [], ...next };
+      return { reply: '', proposal: null, goTo: null, feedback: [], ...next };
     },
   };
   return { provider, calls };

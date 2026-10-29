@@ -98,9 +98,6 @@ export async function handleAsk(request: Request, env: Env, deps: Deps): Promise
     reply,
     proposal: result.proposal,
     goTo: result.goTo,
-    find: result.find,
-    openTool: result.openTool,
-    lookup: result.lookup.length > 0 ? result.lookup : null,
     feedbackSent: stored > 0,
     quota: { remaining: dev ? limit : Math.max(0, limit - (used + 1)), resetsAt: quota.resetsAt },
   });

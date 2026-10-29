@@ -20,48 +20,10 @@ pub fn run_with(db: &Db, embedder: &dyn Embedder, text: &str, k: usize, floor: f
         db.clear_search_hits().map_err(|e| e.to_string())?;
         return Ok(0);
     }
-    let ids = rank(embedder, text, items, k, floor)?;
+    let query = embedder.embed_text(text.trim())?;
+    let ids: Vec<i64> = top_k(&query, items, k, floor).into_iter().map(|h| h.id).collect();
     db.set_search_hits(&ids).map_err(|e| e.to_string())?;
     Ok(ids.len())
-}
-
-/// The photos that best match `text`, best first, without changing the current search result. Blank text matches nothing.
-pub fn rank(embedder: &dyn Embedder, text: &str, items: &[(i64, Vec<f32>)], k: usize, floor: f32) -> Result<Vec<i64>, String> {
-    Ok(rank_scored(embedder, text, items, k, floor)?.into_iter().map(|(id, _)| id).collect())
-}
-
-/// What a content search found for one thing, and how its scores spread over every analysed photo (so a score can be read as "how
-/// many standard deviations above the usual photo").
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ranked {
-    /// The photos at or above the floor, best first, with their scores.
-    pub hits: Vec<(i64, f32)>,
-    pub mean: f32,
-    pub sd: f32,
-}
-
-/// `rank_scored` with the mean and standard deviation of the score over all the photos, not only those above the floor. Blank text
-/// matches nothing.
-pub fn rank_with_stats(embedder: &dyn Embedder, text: &str, items: &[(i64, Vec<f32>)], k: usize, floor: f32) -> Result<(Vec<(i64, f32)>, f32, f32), String> {
-    if text.trim().is_empty() || items.is_empty() {
-        return Ok((Vec::new(), 0.0, 1.0));
-    }
-    let query = embedder.embed_text(text.trim())?;
-    let all = top_k(&query, items, items.len(), f32::MIN);
-    let n = all.len() as f32;
-    let mean = all.iter().map(|h| h.score).sum::<f32>() / n;
-    let sd = (all.iter().map(|h| (h.score - mean) * (h.score - mean)).sum::<f32>() / n).sqrt().max(1e-6);
-    let hits = all.into_iter().take_while(|h| h.score >= floor).take(k).map(|h| (h.id, h.score)).collect();
-    Ok((hits, mean, sd))
-}
-
-/// `rank` with each photo's score (cosine similarity), best first.
-pub fn rank_scored(embedder: &dyn Embedder, text: &str, items: &[(i64, Vec<f32>)], k: usize, floor: f32) -> Result<Vec<(i64, f32)>, String> {
-    if text.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let query = embedder.embed_text(text.trim())?;
-    Ok(top_k(&query, items, k, floor).into_iter().map(|h| (h.id, h.score)).collect())
 }
 
 #[cfg(test)]
@@ -90,36 +52,6 @@ mod tests {
         let (db, cat, _) = library();
         assert_eq!(run(&db, &FakeEmbedder, "cat", SEARCH_LIMIT, SEARCH_FLOOR).unwrap(), 1);
         assert_eq!(hits(&db), vec![cat]);
-    }
-
-    #[test]
-    fn rank_gives_the_matching_ids_and_leaves_the_current_search_alone() {
-        let (db, cat, other) = library();
-        run(&db, &FakeEmbedder, "other", SEARCH_LIMIT, SEARCH_FLOOR).unwrap();
-        let items = db.load_embeddings("fake-1").unwrap();
-        assert_eq!(rank(&FakeEmbedder, "cat", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap(), vec![cat]);
-        assert_eq!(hits(&db), vec![other]);
-        assert!(rank(&FakeEmbedder, "  ", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap().is_empty());
-    }
-
-    #[test]
-    fn rank_scored_gives_the_scores_best_first() {
-        let (db, cat, _) = library();
-        let items = db.load_embeddings("fake-1").unwrap();
-        let scored = rank_scored(&FakeEmbedder, "cat", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap();
-        assert_eq!(scored.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![cat]);
-        assert!(scored[0].1 > 0.9);
-    }
-
-    #[test]
-    fn rank_with_stats_also_gives_how_the_scores_spread_over_all_the_photos() {
-        let (db, cat, _) = library();
-        let items = db.load_embeddings("fake-1").unwrap();
-        let (hits, mean, sd) = rank_with_stats(&FakeEmbedder, "cat", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap();
-        assert_eq!(hits.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![cat]);
-        // the cat photo scores 1, the other 0: mean 0.5, standard deviation 0.5, counting the photo that is below the floor too
-        assert!((mean - 0.5).abs() < 1e-5 && (sd - 0.5).abs() < 1e-5, "{mean} {sd}");
-        assert_eq!(rank_with_stats(&FakeEmbedder, " ", &items, SEARCH_LIMIT, SEARCH_FLOOR).unwrap(), (vec![], 0.0, 1.0));
     }
 
     #[test]

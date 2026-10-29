@@ -40,11 +40,6 @@ export function makeAnthropicProvider(
         tool_choice: { type: 'auto' },
         messages: [
           ...body.messages.map((turn) => ({ role: turn.role, content: turn.text })),
-          // What the model asked the app earlier, and what the app answered: its own call, then the answer, for each round.
-          ...(body.lookups ?? []).flatMap((round) => [
-            { role: 'assistant' as const, content: round.calls.map((c) => ({ type: 'tool_use' as const, id: c.id, name: 'lookup', input: c.input })) },
-            { role: 'user' as const, content: round.results.map((r, i) => ({ type: 'tool_result' as const, tool_use_id: round.calls[i]!.id, content: r })) },
-          ]),
         ],
       });
 
@@ -64,7 +59,7 @@ export function makeAnthropicProvider(
       for (const block of message.content) {
         if (block.type === 'text') texts.push(block.text);
         else if (block.type === 'thinking') thoughts.push(block.thinking);
-        else if (block.type === 'tool_use') calls.push({ name: block.name, input: block.input, id: block.id });
+        else if (block.type === 'tool_use') calls.push({ name: block.name, input: block.input });
       }
       const result = interpret(texts, calls);
       return thoughts.length > 0 ? { ...result, reasoning: thoughts.join('\n\n') } : result;

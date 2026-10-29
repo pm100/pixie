@@ -256,20 +256,6 @@ impl AnalysisService {
         self.inner.cfg.pipeline.kick();
     }
 
-    /// The photos that best match each of `texts`, best first with their scores, and how many photos have been analysed (the search covers only those).
-    /// The current search result is left alone, so Browse does not change.
-    pub fn rank(&self, texts: &[String]) -> Result<(Vec<search::Ranked>, usize), String> {
-        let embedder = self.inner.lock().embedder.clone().ok_or_else(|| "The search model is not ready yet.".to_string())?;
-        let items = self.vectors()?;
-        // One thing to look for keeps the usual best 500; several need every candidate, or the ones they share could be cut away.
-        let k = if texts.len() > 1 { items.len() } else { SEARCH_LIMIT };
-        let ranked = texts
-            .iter()
-            .map(|t| search::rank_with_stats(&*embedder, t, &items, k, SEARCH_FLOOR).map(|(hits, mean, sd)| search::Ranked { hits, mean, sd }))
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok((ranked, items.len()))
-    }
-
     /// Make `text` the current search; returns how many photos match. Blank text clears the search.
     pub fn search(&self, text: &str) -> Result<usize, String> {
         let embedder = self.inner.lock().embedder.clone();

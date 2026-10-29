@@ -74,98 +74,22 @@ describe('systemParts', () => {
     expect(RULES).toContain('how to choose the photos');
   });
 
-  it('tells the model it can find, pick and tag photos, and how', () => {
-    expect(RULES).toContain('find_photos');
-    expect(RULES).not.toContain('Do not claim to find');
-    expect(RULES).not.toContain('changes settings only');
-    for (const word of ['pink flowers', 'tags', 'Never invent a tag', 'then']) expect(RULES).toContain(word);
-  });
-
-  it('tells the model in the guide that finding by content is approximate and skips videos', () => {
-    const { stable } = systemParts(CONTEXT);
-    const section = stable.slice(stable.indexOf('FINDING PHOTOS'));
-    expect(section).toContain('approximate');
-    expect(section).toContain('videos');
-    expect(section).toContain('analysed');
-  });
-
   it('says how a tag is taken off photos, so the model does not invent a button', () => {
     const { stable } = systemParts(CONTEXT);
     expect(stable).toContain('small x on the tag');
   });
 
-  it('explains finding people in photos and two things in one picture', () => {
+  it('says videos are sent as they are, never as a smaller copy', () => {
     const { stable } = systemParts(CONTEXT);
-    expect(stable).toContain('with people in them (any person) uses the faces');
-    expect(stable).toContain('each is searched for on its own');
-    expect(RULES).toContain('with_people');
+    expect(stable).toContain('Videos are always sent exactly as they are');
+    expect(RULES).toContain('Never say Pixie offers a smaller copy of a video');
   });
 
-  describe('with the library', () => {
-    const library = {
-      photos: 1000, picked: 2,
-      tags: [{ name: 'holiday', count: 12 }],
-      people: [{ name: 'Rose', count: 40 }],
-      trips: [{ name: 'Italy', from: '2019-06-01', to: '2019-06-14', nights: 13, photos: 340, videos: 6, where: 'Rome' }],
-    };
-
-    it('lists it in the per-user part, after the rules, and never in the cached part', () => {
-      const { stable, volatile } = systemParts({ ...CONTEXT, library });
-      expect(volatile).toContain('LIBRARY');
-      expect(volatile).toContain('Rose (40)');
-      expect(volatile).toContain('holiday (12)');
-      expect(volatile).toContain('2019-06-01 to 2019-06-14');
-      expect(volatile).toContain('Italy');
-      expect(volatile).toContain('Rome');
-      expect(stable).not.toContain('Rose');
-      expect(systemParts({ ...CONTEXT, library }).stable).toBe(systemParts(CONTEXT).stable);
-    });
-
-    it('says plainly when the user has not allowed it, so the model does not pretend to know names', () => {
-      expect(systemParts(CONTEXT).volatile).toContain('has not allowed');
-      expect(systemParts({ ...CONTEXT, library }).volatile).not.toContain('has not allowed');
-    });
-
-    it('tells the model how to use the names, and to check with the user when a word could be a name or a thing', () => {
-      for (const word of ['LIBRARY', 'exactly as listed', 'name or']) expect(RULES).toContain(word);
-    });
-  });
-
-  it('tells the model when and how to ask the app, and not to use it for what it can already see', () => {
-    for (const word of ['lookup', 'at most three', 'LIBRARY already']) expect(RULES).toContain(word);
-  });
-
-  it('describes in the guide what is sent, including the names only when sharing is on', () => {
+  it('says in the guide that names from the library are never sent', () => {
     const { stable } = systemParts(CONTEXT);
     const section = stable.slice(stable.indexOf('PRIVACY'));
-    expect(section).toContain('only if the user turned on sharing');
+    expect(section).toContain('never sent');
     expect(section).toContain('never sends pictures');
-  });
-
-  it('tells the model that a castle or a beach is something in the picture, and that near or next to means the same picture', () => {
-    for (const word of ['castle', 'near', 'same picture', 'named place']) expect(RULES).toContain(word);
-    expect(RULES).not.toContain('You cannot find by place or');
-  });
-
-  describe('the current results', () => {
-    const results = { count: 47, of: 'photos that look like “rose” and “flowers”' };
-
-    it('tells the model what them and those mean, in the per-user part', () => {
-      const { volatile, stable } = systemParts({ ...CONTEXT, results });
-      expect(volatile).toContain('RESULTS');
-      expect(volatile).toContain('47');
-      expect(volatile).toContain('photos that look like “rose” and “flowers”');
-      expect(stable).not.toContain('47 photos');
-      expect(systemParts({ ...CONTEXT, results }).stable).toBe(systemParts(CONTEXT).stable);
-    });
-
-    it('says there are none, so the model does not invent a set', () => {
-      expect(systemParts(CONTEXT).volatile).toContain('RESULTS: no search has found anything yet');
-    });
-  });
-
-  it('tells the model how to follow up on the results, and to read what happened from the notes', () => {
-    for (const word of ['open_tool', 'them', 'those', 'RESULTS', 'square brackets']) expect(RULES).toContain(word);
   });
 
   it('tells the model that a collage is a feature Pixie does not have yet, not an image it must not create', () => {

@@ -2,7 +2,6 @@
 //! back. Pictures are never part of it: the body is JSON text made by the UI from typed words and settings, and it is
 //! refused here if it is large enough to hold anything else.
 
-use pixie_analysis::search::Ranked;
 use std::io::Read;
 use std::time::Duration;
 
@@ -80,88 +79,6 @@ pub fn post(url: &str, install_id: &str, body: &str, dev_key: Option<&str>) -> A
         text.clear();
     }
     Answer { status: i32::from(status), body: text }
-}
-
-
-/// With several things that must be in the picture, how strong a match the 20th best photo is for its weakest part, in standard
-/// deviations above the usual photo. In a library where such photos exist this stays at 2.5 or more; where they do not (flowers with
-/// castles) even the 20th best is 2.3 or less, because the photos are good for one part and poor for the other.
-const WEAK_TOGETHER_Z: f32 = 2.3;
-const STRENGTH_PHOTOS: usize = 20;
-
-/// Is a combined search a poor one: probably few, if any, photos really look like all of the things together? Never for a single
-/// thing, and never when nothing was found.
-pub fn together_is_weak(lists: &[Ranked], combined: &[(i64, f32)]) -> bool {
-    if lists.len() < 2 || combined.is_empty() {
-        return false;
-    }
-    let by_id: Vec<std::collections::HashMap<i64, f32>> = lists.iter().map(|l| l.hits.iter().copied().collect()).collect();
-    let weakest = combined
-        .iter()
-        .take(STRENGTH_PHOTOS)
-        .map(|(id, _)| lists.iter().zip(&by_id).filter_map(|(l, m)| m.get(id).map(|s| (s - l.mean) / l.sd)).fold(f32::INFINITY, f32::min))
-        .fold(f32::INFINITY, f32::min);
-    weakest < WEAK_TOGETHER_Z
-}
-
-/// The words for the content search, put the way CLIP was trained on (a caption of a photo): it ranks "a photo of pink flowers"
-/// better than the bare "pink flowers".
-pub fn content_query(text: &str) -> String {
-    format!("a photo of {}", text.trim())
-}
-
-/// Several things that must all be in the picture ("yellow flowers", "a birthday cake"), each ranked on its own (best first, with
-/// scores), become one ranking: a photo must be in every list, and is judged by its weakest match. The lists score on different
-/// scales (a common thing runs near 0.30, a rarer one near 0.22), so each is first lifted until its best match is level with the
-/// first list's best; the scores then mean what they do for a single search, and one cut works for both.
-pub fn combine_concepts(lists: Vec<Vec<(i64, f32)>>) -> Vec<(i64, f32)> {
-    let Some(first) = lists.first() else { return Vec::new() };
-    let Some(&(_, top)) = first.first() else { return Vec::new() };
-    if lists.len() == 1 {
-        return first.clone();
-    }
-    let lifted: Vec<std::collections::HashMap<i64, f32>> = lists
-        .iter()
-        .map(|l| {
-            let best = l.first().map_or(0.0, |&(_, s)| s);
-            l.iter().map(|&(id, s)| (id, s - best + top)).collect()
-        })
-        .collect();
-    let mut out: Vec<(i64, f32)> = first
-        .iter()
-        .filter_map(|&(id, _)| lifted.iter().map(|m| m.get(&id).copied()).collect::<Option<Vec<f32>>>().map(|v| (id, v.into_iter().fold(f32::INFINITY, f32::min))))
-        .collect();
-    out.sort_by(|a, b| b.1.total_cmp(&a.1));
-    out
-}
-
-/// `spec` limited to the photos a content search ranked as matches (and to what it was already limited to).
-pub fn restricted(mut spec: pixie_core::FindSpec, ranked: &[(i64, f32)]) -> pixie_core::FindSpec {
-    let matches = ranked.iter().map(|(id, _)| *id);
-    spec.among = Some(match spec.among.take() {
-        Some(already) => matches.filter(|id| already.contains(id)).collect(),
-        None => matches.collect(),
-    });
-    spec
-}
-
-/// The photos found (the database lists them newest first) in the order of the content search, best match first, each with its score.
-pub fn ordered_by_rank(found: Vec<i64>, ranked: &[(i64, f32)]) -> (Vec<i64>, Vec<f32>) {
-    let found: std::collections::HashSet<i64> = found.into_iter().collect();
-    ranked.iter().filter(|(id, _)| found.contains(id)).map(|(id, score)| (*id, *score)).unzip()
-}
-
-/// What a find came back with: the photos, and for a content search how many photos it could look at.
-#[derive(Debug, PartialEq, serde::Serialize)]
-pub struct Found {
-    /// Best match first for a content search, newest first otherwise.
-    pub ids: Vec<i64>,
-    /// For a content search: each photo's score (cosine similarity, about 0.2 to 0.3), in the order of `ids`.
-    pub scores: Option<Vec<f32>>,
-    /// The photos analysed so far (a content search covers only those); `None` when no content search was asked for.
-    pub analysed: Option<usize>,
-    /// Several things were asked for together, and probably few, if any, photos really look like all of them (see `together_is_weak`).
-    pub weak: bool,
 }
 
 #[cfg(test)]
@@ -290,67 +207,5 @@ X: y"] {
     fn refuses_a_bad_install_id_or_a_body_too_big_to_be_a_question() {
         assert_eq!(post("http://127.0.0.1:9/", "x\r\nHost: evil", "{}", None).status, 400);
         assert_eq!(post("http://127.0.0.1:9/", ID, &"x".repeat(MAX_BODY + 1), None).status, 400);
-    }
-
-    #[test]
-    fn two_things_in_the_picture_need_both_and_are_judged_by_the_weaker() {
-        let flowers = vec![(1, 0.30), (2, 0.28), (3, 0.25)];
-        let people = vec![(2, 0.22), (3, 0.21), (4, 0.20)];
-        // people scores run lower, so each list is lifted until its best match is level with the first list's best
-        let both = combine_concepts(vec![flowers.clone(), people]);
-        assert_eq!(both.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![2, 3]);
-        assert!((both[0].1 - 0.28).abs() < 1e-6 && (both[1].1 - 0.25).abs() < 1e-6, "{both:?}");
-        assert_eq!(combine_concepts(vec![flowers.clone()]), flowers);
-        assert!(combine_concepts(vec![flowers.clone(), vec![]]).is_empty());
-        assert!(combine_concepts(vec![flowers, vec![(9, 0.3)]]).is_empty());
-        assert!(combine_concepts(vec![]).is_empty());
-    }
-
-    #[test]
-    fn a_combination_is_weak_when_even_the_twentieth_photo_is_a_poor_match_for_one_of_the_things() {
-        // two things, each scored over a library where the average photo scores 0.20 with a spread of 0.02
-        let stats = |hits: Vec<(i64, f32)>| Ranked { hits, mean: 0.20, sd: 0.02 };
-        // 25 photos that are strong (z = 3.5 = 0.27) for both things
-        let strong: Vec<(i64, f32)> = (0..25).map(|i| (i, 0.27)).collect();
-        let lists = vec![stats(strong.clone()), stats(strong.clone())];
-        let combined = combine_concepts(lists.iter().map(|l| l.hits.clone()).collect());
-        assert!(!together_is_weak(&lists, &combined));
-        // photos strong for the first thing but only z = 1.5 (0.23) for the second
-        let weak_b: Vec<(i64, f32)> = (0..25).map(|i| (i, 0.23)).collect();
-        let lists = vec![stats(strong), stats(weak_b)];
-        let combined = combine_concepts(lists.iter().map(|l| l.hits.clone()).collect());
-        assert!(together_is_weak(&lists, &combined));
-    }
-
-    #[test]
-    fn one_thing_is_never_called_weak_and_neither_is_nothing_found() {
-        let one = vec![Ranked { hits: vec![(1, 0.21)], mean: 0.20, sd: 0.02 }];
-        assert!(!together_is_weak(&one, &[(1, 0.21)]));
-        let two = vec![Ranked { hits: vec![(1, 0.3)], mean: 0.2, sd: 0.02 }, Ranked { hits: vec![(2, 0.3)], mean: 0.2, sd: 0.02 }];
-        assert!(!together_is_weak(&two, &[]));
-    }
-
-    #[test]
-    fn the_words_are_put_the_way_clip_was_trained_on() {
-        assert_eq!(content_query("  pink flowers "), "a photo of pink flowers");
-    }
-
-    #[test]
-    fn found_photos_come_best_match_first_with_their_scores() {
-        let ranked = vec![(7, 0.30), (3, 0.28), (9, 0.25)];
-        // the database lists newest first: 9, 7, 3, 5
-        let (ids, scores) = ordered_by_rank(vec![9, 7, 3, 5], &ranked);
-        assert_eq!(ids, vec![7, 3, 9]);
-        assert_eq!(scores, vec![0.30, 0.28, 0.25]);
-        assert_eq!(ordered_by_rank(vec![], &ranked), (vec![], vec![]));
-    }
-
-    #[test]
-    fn a_content_search_limits_the_find_to_its_matches_and_to_any_limit_it_already_had() {
-        let spec = pixie_core::FindSpec::default();
-        assert_eq!(restricted(spec.clone(), &[(3, 0.3), (1, 0.2)]).among, Some(vec![3, 1]));
-        let had = pixie_core::FindSpec { among: Some(vec![1, 2]), ..Default::default() };
-        assert_eq!(restricted(had, &[(3, 0.3), (1, 0.2), (2, 0.2)]).among, Some(vec![1, 2]));
-        assert_eq!(restricted(spec, &[]).among, Some(vec![]));
     }
 }

@@ -66,15 +66,6 @@ export function makeOpenAIProvider(config: OpenAIConfig, fetchFn: typeof fetch =
           messages: [
             { role: 'system', content: `${stable}\n\n${volatile}` },
             ...body.messages.map((turn) => ({ role: turn.role, content: turn.text })),
-            // What the model asked the app earlier, and what the app answered: its own call, then the answer, for each round.
-            ...(body.lookups ?? []).flatMap((round) => [
-              {
-                role: 'assistant',
-                content: null,
-                tool_calls: round.calls.map((c) => ({ id: c.id, type: 'function', function: { name: 'lookup', arguments: JSON.stringify(c.input) } })),
-              },
-              ...round.results.map((r, i) => ({ role: 'tool', tool_call_id: round.calls[i]!.id, content: r })),
-            ]),
           ],
           tools,
           tool_choice: 'auto',
@@ -101,7 +92,7 @@ export function makeOpenAIProvider(config: OpenAIConfig, fetchFn: typeof fetch =
 
       if (message.refusal) return REFUSAL_RESULT;
       const calls: ToolCall[] = (message.tool_calls ?? []).flatMap((call) =>
-        call.function?.name ? [{ name: call.function.name, input: parseArguments(call.function.arguments), id: call.id }] : [],
+        call.function?.name ? [{ name: call.function.name, input: parseArguments(call.function.arguments) }] : [],
       );
       const result = interpret(message.content ? [message.content] : [], calls);
       const reasoning = message.reasoning_content || message.reasoning;

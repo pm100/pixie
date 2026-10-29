@@ -119,27 +119,6 @@ pub enum SortOrder {
 /// UI unchanged.
 pub const UNDATED: i64 = -9_007_199_254_740_991;
 
-/// A search of the library that changes nothing on screen (Ask Pixie's `find`): every part that is given must match.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FindSpec {
-    /// Only these photos (for example the best matches of a content search). `None`: no such limit.
-    pub among: Option<Vec<PhotoId>>,
-    pub kind: Option<MediaKind>,
-    /// Taken at or after this time (unix seconds). Undated photos never match.
-    pub since: Option<i64>,
-    /// Taken before this time (unix seconds, exclusive).
-    pub until: Option<i64>,
-    /// Tags of the user's own; the photo must have all of them.
-    pub tags: Vec<String>,
-    /// People (ids); the photo must show all of them.
-    pub people: Vec<i64>,
-    /// Only among the picked photos.
-    pub picked: bool,
-    /// Only photos with at least one face of a person in them (not a face in a painting or a poster), whoever it is.
-    pub with_people: bool,
-}
-
 /// What the library view is showing: a sort order and an optional folder filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PhotoQuery {

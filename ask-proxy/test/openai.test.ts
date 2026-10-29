@@ -36,7 +36,7 @@ describe('openai-compatible provider', () => {
     expect(body.model).toBe('some-model');
     expect(body.max_tokens).toBe(MAX_TOKENS);
     expect(body.tool_choice).toBe('auto');
-    expect(body.tools.map((t: any) => t.function.name)).toEqual(['propose_settings_changes', 'go_to', 'find_photos', 'open_tool', 'lookup', 'submit_feedback']);
+    expect(body.tools.map((t: any) => t.function.name)).toEqual(['propose_settings_changes', 'go_to', 'submit_feedback']);
     expect(body.tools[0].type).toBe('function');
     expect(body.messages[0].role).toBe('system');
     expect(body.messages[0].content).toContain('analysis_faces');
@@ -83,9 +83,6 @@ describe('openai-compatible provider', () => {
       reply: 'More tries.',
       proposal: [{ setting: 'analysis_faces', value: false }],
       goTo: null,
-      find: null,
-      openTool: null,
-      lookup: [],
       feedback: [{ category: 'bug', summary: 'It crashed.' }],
     });
   });
@@ -144,23 +141,5 @@ describe('openai-compatible provider', () => {
     expect(logged).toContain('usage in=50 out=7 cache_read=40');
     expect(logged).not.toContain('private');
     expect(logged).not.toContain('secret');
-  });
-
-  it('sends what the app found out: the model\'s own call, then the answer, after the turns', async () => {
-    const { fn, calls } = fakeFetch(completion({ content: 'ok' }));
-    const body = { ...askBody('find rose swimming'), lookups: [{ calls: [{ id: 'call_1', input: { what: 'people', query: 'rose' } }], results: ['[{"name":"Rose","count":4}]'] }] };
-    await makeOpenAIProvider(config, fn).ask(body);
-    const messages = JSON.parse(calls[0]!.init.body as string).messages.slice(1);
-    expect(messages).toEqual([
-      { role: 'user', content: 'find rose swimming' },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"what":"people","query":"rose"}' } }] },
-      { role: 'tool', tool_call_id: 'call_1', content: '[{"name":"Rose","count":4}]' },
-    ]);
-  });
-
-  it('reads the id of a lookup the model asks for', async () => {
-    const { fn } = fakeFetch(completion({ content: null, tool_calls: [{ id: 'call_7', type: 'function', function: { name: 'lookup', arguments: '{"what":"trips"}' } }] }));
-    const r = await makeOpenAIProvider(config, fn).ask(askBody('when was my trip'));
-    expect(r.lookup).toEqual([{ id: 'call_7', input: { what: 'trips' }, what: 'trips', query: null, filter: null }]);
   });
 });

@@ -43,9 +43,6 @@ describe('anthropic provider', () => {
       reply: 'Give yourself more tries.',
       proposal: [{ setting: 'analysis_faces', value: false }],
       goTo: null,
-      find: null,
-      openTool: null,
-      lookup: [],
       feedback: [{ category: 'feature_request', summary: 'Wants dark mode.' }],
     });
   });
@@ -75,30 +72,5 @@ describe('anthropic provider', () => {
   it('lets API errors propagate to the caller', async () => {
     const { client } = stubClient(new Error('boom'));
     await expect(makeAnthropicProvider(client).ask(askBody())).rejects.toThrow('boom');
-  });
-
-  it('sends what the app found out: the model\'s own call, then the answer, after the turns', async () => {
-    const { client, calls } = stubClient(message([text('ok')]));
-    const body = { ...askBody('find rose swimming'), lookups: [{ calls: [{ id: 'toolu_1', input: { what: 'people', query: 'rose' } }], results: ['[{"name":"Rose","count":4}]'] }] };
-    await makeAnthropicProvider(client).ask(body);
-    expect(calls[0]?.messages).toEqual([
-      { role: 'user', content: 'find rose swimming' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'lookup', input: { what: 'people', query: 'rose' } }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '[{"name":"Rose","count":4}]' }] },
-    ]);
-  });
-
-  it('keeps the rounds in order when there are two', async () => {
-    const { client, calls } = stubClient(message([text('ok')]));
-    const round = (id: string) => ({ calls: [{ id, input: { what: 'tags' } }], results: ['[]'] });
-    await makeAnthropicProvider(client).ask({ ...askBody('hi'), lookups: [round('a'), round('b')] });
-    const roles = (calls[0]?.messages ?? []).map((m) => m.role);
-    expect(roles).toEqual(['user', 'assistant', 'user', 'assistant', 'user']);
-  });
-
-  it('reads the id of a lookup the model asks for', async () => {
-    const { client } = stubClient(message([text('one moment'), { type: 'tool_use', id: 'toolu_9', name: 'lookup', input: { what: 'tags', query: 'hol' } }], 'tool_use'));
-    const r = await makeAnthropicProvider(client).ask(askBody('how many holiday photos'));
-    expect(r.lookup).toEqual([{ id: 'toolu_9', input: { what: 'tags', query: 'hol' }, what: 'tags', query: 'hol', filter: null }]);
   });
 });

@@ -234,3 +234,20 @@ A conversation ("find some pics of rose near flowers", "tag them rose1", "create
 - **`open_tool`.** A button that opens Print, Email, Tags or Photo details on the results, the picked photos, or one of the person's tags (checked against their tags on the computer), so "print them" needs no new search and no question.
 - **Collage and the like are not built.** The model says Pixie does not have it yet, passes it on as feedback (#12), and offers Print with several photos per page. It does not say it "cannot create images": arranging the person's own photos is allowed, just not built.
 - Only the last six messages are sent; the notes make them enough.
+
+
+## Wound back to a help system (branch `ask-help`)
+
+The branch `ask` (commit `c3ce19e`) has the full version: finding, picking and tagging photos with the content search, the
+library names with the to-and-fro `lookup`, `open_tool`, results and memory notes. It stayed too complex to get right, so
+`ask-help` goes back to what Sage in Ear Ring does and nothing more.
+
+Kept: answering how-to questions from the guide, `propose_settings_changes` (confirmed on a card), `go_to` (a button),
+`submit_feedback`, the five fixed rules, the quota and the dev key, the opt-in first-use screen, and the short note after an
+earlier answer saying whether a settings change was applied.
+
+Removed: `find_photos`, `open_tool`, `lookup`; the library names and their Settings switch; results and Working on, Ask
+Pixie results; the Rust `find_photos` and `photos_by_ids` commands, `FindSpec`, `Db::find` and the ranking helpers in
+`pixie-analysis`. Asked to find, pick or tag photos, the assistant now explains how to do it by hand.
+
+Nothing about the library is sent now, so the Settings page has two lists: always sent, never sent.

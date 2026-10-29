@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, tagPhotos, untagPhotos, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -55,7 +55,6 @@
   import AskTab from './lib/AskTab.svelte';
   import { newInstallId } from './lib/ask';
   import { placeFor as askPlace } from './lib/askGoTo';
-  import { buildLibrary } from './lib/askLibrary';
   import type { Handlers, SettingValues } from './lib/askSettings';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
@@ -389,9 +388,6 @@
     savePref('askOn', on);
     if (on && typeof askInstall !== 'string') { askInstall = newInstallId(); savePref('askInstall', askInstall); }
   }
-  /** Whether Ask Pixie may be told the names in the library (tags, named people, trips); off until the person says so. */
-  let askLibraryOn = $state(loadPref<unknown>('askLibrary', false) === true);
-  function setAskLibrary(on: boolean) { askLibraryOn = on; savePref('askLibrary', on); }
   /** The Ask Pixie tab is built on first use and then kept, so the conversation survives a visit to another tab. */
   let askBuilt = $state(false);
   let askFrom = $state<TabId>('browse');
@@ -1104,7 +1100,7 @@
   }
 
   /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
-  let toolsStart = $state<{ photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags'; results?: boolean; source?: string } | null>(null);
+  let toolsStart = $state<{ photo: Photo | null; page: 'details' | 'email' | 'print' | 'tags' } | null>(null);
   function workOn(page: 'email' | 'print') {
     if (!selectedPhoto) return;
     toolsStart = { photo: selectedPhoto, page };
@@ -1122,28 +1118,6 @@
     analysis: (o) => void applyAnalysisOptions(o),
     trips: (p) => setTripPrefs(p),
   };
-  // What Ask Pixie last found (listed in Tools, Working on), and what its buttons do with it.
-  let askResults = $state<number[]>([]);
-  const askKnown = $derived({ tags: userTagList.map((t) => t.name), people: peopleList.map((p) => ({ id: p.id, name: p.name })) });
-  /** What Ask Pixie may be told about the library at this moment: nothing unless the person allowed it. */
-  const askLibraryNow = () => (askLibraryOn ? buildLibrary({ total: folderInfos.reduce((n, f) => n + f.count, 0), picked: picked.size, tags: userTagList, people: peopleList, trips, destinations }) : null);
-  async function askPick(ids: number[]) {
-    const fresh = ids.filter((id) => !picked.has(id));
-    if (fresh.length === 0) return;
-    picked = new Set([...picked, ...fresh]);
-    try { await pickMany(fresh); } catch (e) { await loadPicks(); throw e; }
-    if (activeUtag === 'picked') void utagChanged();
-  }
-  async function askTag(ids: number[], tag: string, undo = false): Promise<string> {
-    if (undo) { await untagPhotos(ids, tag); await utagChanged(tag); return tag; }
-    const stored = await tagPhotos(ids, tag);
-    await utagChanged(stored);
-    return stored;
-  }
-  function askOpen(tool: 'details' | 'email' | 'print' | 'tags', source: 'results' | 'picked' | `tag:${string}` = 'results') {
-    toolsStart = { photo: null, page: tool, ...(source === 'results' ? { results: true } : { source }) };
-    pickTab('tools');
-  }
   /** A button Ask Pixie offered: go to that tab, Settings page or tool. */
   function askGo(target: string) {
     const place = askPlace(target);
@@ -1370,7 +1344,7 @@
     {/if}
     {#if tab === 'tools'}
       <div class="page-over">
-        <ToolsTab active={tab === 'tools'} start={toolsStart} results={askResults} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
+        <ToolsTab active={tab === 'tools'} start={toolsStart} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
       </div>
     {/if}
     {#if tab === 'dupes'}
@@ -1380,13 +1354,12 @@
     {/if}
     {#if askBuilt}
       <div class="page-over" hidden={tab !== 'ask'}>
-        <AskTab on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers} from={askFrom} language={navigator.language} known={askKnown} getLibrary={askLibraryNow} onresults={(ids) => (askResults = ids)} onopen={askOpen} onpick={askPick} ontag={askTag}
-                ongo={askGo} onturnon={() => setAskOn(true)} ondecline={() => pickTab('browse')} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
+        <AskTab on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers} from={askFrom} language={navigator.language} ongo={askGo} onturnon={() => setAskOn(true)} ondecline={() => pickTab('browse')} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
       </div>
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings askOn={askOn} onask={setAskOn} askLibrary={askLibraryOn} onasklibrary={setAskLibrary} loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings askOn={askOn} onask={setAskOn} loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />

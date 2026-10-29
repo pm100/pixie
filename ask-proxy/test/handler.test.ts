@@ -24,9 +24,6 @@ describe('POST /v1/ask', () => {
       reply: 'Hi.',
       proposal: null,
       goTo: null,
-      find: null,
-      openTool: null,
-      lookup: null,
       feedbackSent: false,
       quota: { remaining: 9, resetsAt: '2026-10-02T00:00:00.000Z' },
     });
@@ -109,19 +106,6 @@ describe('POST /v1/ask', () => {
     expect(third.response.status).toBe(429);
     expect(third.json).toEqual({ error: 'quota_exceeded', quota: { remaining: 0, resetsAt: '2026-10-02T00:00:00.000Z' } });
     expect(third.stub.calls).toHaveLength(0);
-  });
-
-  it('hands a lookup request back to the app, to be answered there, with a question counted for each call to the model', async () => {
-    const lookup = [{ id: 'toolu_1', input: { what: 'people', query: 'rose' }, what: 'people' as const, query: 'rose', filter: null }];
-    const env = makeEnv({ DAILY_LIMIT: '5' });
-    const { json } = await ask(env, [{ reply: 'One moment.', lookup }]);
-    expect(json.lookup).toEqual(lookup);
-    expect(json.quota.remaining).toBe(4);
-    const rounds = { ...askBody(), lookups: [{ calls: [{ id: 'toolu_1', input: { what: 'people', query: 'rose' } }], results: ['[]'] }] };
-    const second = await ask(env, [{ reply: 'Done.' }], rounds);
-    expect(second.json.lookup).toBeNull();
-    expect(second.json.quota.remaining).toBe(3);
-    expect(second.stub.calls[0]?.lookups).toHaveLength(1);
   });
 
   describe('dev builds', () => {

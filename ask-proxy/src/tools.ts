@@ -1,4 +1,4 @@
-import type { Feedback, FindArgs, LookupRequest, ModelResult, OpenToolArgs, Proposal, ToolCall } from './types';
+import type { Feedback, ModelResult, Proposal, ToolCall } from './types';
 
 /** Replies are short, but leave room for a reply plus several tool calls. */
 export const MAX_TOKENS = 1024;
@@ -18,13 +18,6 @@ export const GO_TO_TARGETS = [
   'browse', 'people', 'duplicates', 'tools-details', 'tools-email', 'tools-print', 'tools-tags',
   'settings-folders', 'settings-viewing', 'settings-browsing', 'settings-trips', 'settings-analysis', 'settings-email', 'settings-about',
 ] as const;
-
-const OPEN_TOOLS = ['details', 'email', 'print', 'tags'] as const;
-const OPEN_SOURCES = ['results', 'picked', 'tag'] as const;
-
-/** What the model may ask the app about. */
-export const LOOKUP_KINDS = ['count', 'tags', 'people', 'trips'] as const;
-const MAX_LOOKUPS = 3;
 
 export const TOOL_SPECS: ToolSpec[] = [
   {
@@ -69,67 +62,6 @@ export const TOOL_SPECS: ToolSpec[] = [
     },
   },
   {
-    name: 'find_photos',
-    description:
-      "Look for photos or videos among the user's own and offer to do something with them. Use it when the user wants to find, pick, tag, email or print photos by what is in them, by a tag, a person, a date or a kind. Pixie runs the search on the user's computer, shows how many it found, and only then asks before it picks or tags anything. Always give the sentence for the user in say.",
-    schema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'What is in the pictures, in a few plain words (for example "pink flowers", "dog on a beach", "birthday cake"). Used for a content search, which is approximate.' },
-        also: { type: 'array', items: { type: 'string' }, description: 'More things that must also be in the same picture, each a few plain words (for example "a birthday cake"). Each is searched for on its own, and a photo must match all of them and text. Do not use it for people: use with_people or people.' },
-        with_people: { type: 'boolean', description: 'Only photos with a person in them, whoever. Use this for "with people", "of people", "with someone in them"; never put "people" in text or also.' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Names of tags the user gave their photos, only when the user names them. All must match.' },
-        people: { type: 'array', items: { type: 'string' }, description: 'Names of people, as the user said them. All must be in the photo.' },
-        from: { type: 'string', description: 'The first day, as YYYY-MM-DD.' },
-        to: { type: 'string', description: 'The last day, as YYYY-MM-DD.' },
-        kind: { type: 'string', enum: ['photo', 'video'] },
-        limit: { type: 'integer', description: 'How many photos the user asked for ("find 20 pictures", "the best 5"): the best matches, at most this many. Leave out when they ask for all of them.' },
-        picked_only: { type: 'boolean', description: 'Only look among the photos already picked.' },
-        then: { type: 'array', items: { type: 'string', enum: ['pick', 'tag', 'email', 'print'] }, description: 'What the user wants done with what is found, in order. Leave out to only show them.' },
-        tag: { type: 'string', description: 'The name of the tag to give them, when then includes tag.' },
-        say: { type: 'string', description: 'One or two sentences for the user, in their language, saying what you will look for and do.' },
-      },
-      required: ['say'],
-    },
-  },
-  {
-    name: 'open_tool',
-    description:
-      'Offer a button that opens Print, Email, Tags or Photo details on photos the user already has: the results of the last search (RESULTS in the user state), the photos they have picked, or the photos with one of their tags. Use it for a follow-up such as "print them" or "email those", instead of searching again. Nothing happens until they press it. Always give the sentence for the user in say.',
-    schema: {
-      type: 'object',
-      properties: {
-        tool: { type: 'string', enum: [...OPEN_TOOLS] },
-        source: { type: 'string', enum: [...OPEN_SOURCES], description: 'results: the last search found. picked: the photos they have picked. tag: the photos with the tag named in tag.' },
-        tag: { type: 'string', description: 'The name of the tag, when source is tag.' },
-        say: { type: 'string', description: 'One or two sentences for the user, in their language, saying what the button opens.' },
-      },
-      required: ['tool', 'source', 'say'],
-    },
-  },
-  {
-    name: 'lookup',
-    description:
-      "Ask Pixie's app something and get the answer back before you reply, when you need a fact you cannot see: how many photos match something, or whether the user has a tag, a person or a trip (only when the library is shown to you, and only for what the LIBRARY section does not already tell you). Use it sparingly, at most three at a time, and never to guess. After the answer, write your reply as usual.",
-    schema: {
-      type: 'object',
-      properties: {
-        what: { type: 'string', enum: [...LOOKUP_KINDS], description: 'count: how many photos match the filter below (no filter: all of them). tags, people, trips: the user\'s own whose name contains query.' },
-        query: { type: 'string', description: 'For tags, people and trips: part of a name to look for.' },
-        text: { type: 'string', description: 'For count: what is in the pictures.' },
-        also: { type: 'array', items: { type: 'string' }, description: 'For count: more things that must be in the picture.' },
-        with_people: { type: 'boolean', description: 'For count: only photos with a person in them.' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'For count: names of the user\'s tags.' },
-        people: { type: 'array', items: { type: 'string' }, description: 'For count: names of people.' },
-        from: { type: 'string', description: 'For count: the first day, YYYY-MM-DD.' },
-        to: { type: 'string', description: 'For count: the last day, YYYY-MM-DD.' },
-        kind: { type: 'string', enum: ['photo', 'video'] },
-        picked_only: { type: 'boolean' },
-      },
-      required: ['what'],
-    },
-  },
-  {
     name: 'submit_feedback',
     description:
       'Record a feature request, bug report or other comment about the app for the developer. Use for things no setting can do. Always write a sentence to the user in the same reply, saying you passed it on.',
@@ -169,53 +101,6 @@ function parseChanges(input: unknown): Proposal[] {
   return proposals;
 }
 
-const FIND_THEN = ['pick', 'tag', 'email', 'print'] as const;
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const words = (v: unknown, max: number, each: number): string[] =>
-  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim().slice(0, each)).slice(0, max) : [];
-
-/** The search the model asked for, reduced to what is well-formed; null when it names nothing to look for. */
-function parseFind(input: unknown): { find: FindArgs; say: string } | null {
-  const o = (input ?? {}) as Record<string, unknown>;
-  const text = typeof o.text === 'string' && o.text.trim() !== '' ? o.text.trim().slice(0, 200) : null;
-  const also = words(o.also, 3, 200);
-  const withPeople = o.with_people === true;
-  const tags = words(o.tags, 10, 60);
-  const people = words(o.people, 10, 60);
-  const day = (v: unknown) => (typeof v === 'string' && DAY.test(v) && !Number.isNaN(Date.parse(v)) ? v : null);
-  const from = day(o.from), to = day(o.to);
-  const kind = o.kind === 'photo' || o.kind === 'video' ? o.kind : null;
-  const pickedOnly = o.picked_only === true;
-  const limit = typeof o.limit === 'number' && Number.isFinite(o.limit) && Math.floor(o.limit) >= 1 && Math.floor(o.limit) <= 500 ? Math.floor(o.limit) : null;
-  const tag = typeof o.tag === 'string' && o.tag.trim() !== '' ? o.tag.trim().slice(0, 60) : null;
-  const then = (Array.isArray(o.then) ? o.then : [])
-    .filter((x): x is (typeof FIND_THEN)[number] => (FIND_THEN as readonly unknown[]).includes(x) && (x !== 'tag' || tag !== null))
-    .filter((x, i, all) => all.indexOf(x) === i);
-  if (text === null && also.length === 0 && !withPeople && tags.length === 0 && people.length === 0 && from === null && to === null && kind === null && !pickedOnly) return null;
-  const say = typeof o.say === 'string' ? o.say.trim().slice(0, 1000) : '';
-  return { find: { text, also, withPeople, tags, people, from, to, kind, limit, pickedOnly, then, tag }, say };
-}
-
-/** A tool to open on some photos, rebuilt from what the model sent; null if it is not one the app could do. */
-function parseOpenTool(input: unknown): { openTool: OpenToolArgs; say: string } | null {
-  const o = (input ?? {}) as Record<string, unknown>;
-  const tool = (OPEN_TOOLS as readonly unknown[]).includes(o.tool) ? (o.tool as OpenToolArgs['tool']) : null;
-  const source = (OPEN_SOURCES as readonly unknown[]).includes(o.source) ? (o.source as OpenToolArgs['source']) : null;
-  const tag = typeof o.tag === 'string' && o.tag.trim() !== '' ? o.tag.trim().slice(0, 60) : null;
-  if (!tool || !source || (source === 'tag' && tag === null)) return null;
-  return { openTool: { tool, source, tag: source === 'tag' ? tag : null }, say: typeof o.say === 'string' ? o.say.trim().slice(0, 1000) : '' };
-}
-
-/** A question to the app, rebuilt from what the model sent; null if it is not one the app could answer. */
-function parseLookup(call: ToolCall): LookupRequest | null {
-  const o = (call.input ?? {}) as Record<string, unknown>;
-  const what = (LOOKUP_KINDS as readonly unknown[]).includes(o.what) ? (o.what as LookupRequest['what']) : null;
-  if (!what || typeof call.id !== 'string' || call.id === '') return null;
-  const query = typeof o.query === 'string' && o.query.trim() !== '' ? o.query.trim().slice(0, 80) : null;
-  const filter = what === 'count' ? (parseFind({ ...o, say: '' })?.find ?? null) : null;
-  return { id: call.id, input: o, what, query, filter };
-}
-
 function parseFeedback(input: unknown): Feedback | null {
   const { category, summary } = (input ?? {}) as { category?: unknown; summary?: unknown };
   if (typeof category !== 'string' || !FEEDBACK_CATEGORIES.has(category)) return null;
@@ -231,10 +116,7 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
   const proposals: Proposal[] = [];
   const feedback: Feedback[] = [];
   let goTo: string | null = null;
-  let find: FindArgs | null = null;
-  let openTool: OpenToolArgs | null = null;
   let say = '';
-  const lookup: LookupRequest[] = [];
   for (const call of calls) {
     if (call.name === 'propose_settings_changes') {
       proposals.push(...parseChanges(call.input));
@@ -244,21 +126,6 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
         goTo = target;
         if (typeof said === 'string') say = said.trim().slice(0, 1000);
       }
-    } else if (call.name === 'find_photos') {
-      const parsed: { find: FindArgs; say: string } | null = find === null ? parseFind(call.input) : null;
-      if (parsed) {
-        find = parsed.find;
-        if (parsed.say.length > say.length) say = parsed.say;
-      }
-    } else if (call.name === 'open_tool') {
-      const parsed: { openTool: OpenToolArgs; say: string } | null = openTool === null ? parseOpenTool(call.input) : null;
-      if (parsed) {
-        openTool = parsed.openTool;
-        if (parsed.say.length > say.length) say = parsed.say;
-      }
-    } else if (call.name === 'lookup') {
-      const asked = lookup.length < MAX_LOOKUPS ? parseLookup(call) : null;
-      if (asked) lookup.push(asked);
     } else if (call.name === 'submit_feedback' && feedback.length < MAX_FEEDBACK_PER_TURN) {
       const item = parseFeedback(call.input);
       if (item) feedback.push(item);
@@ -269,14 +136,10 @@ export function interpret(texts: string[], calls: ToolCall[]): ModelResult {
     // Models often make the call and write little or nothing beside it (a lead-in ending in a colon), so the answer travels
     // inside the call as well, and the fuller of the two is shown.
     reply: say.length > text.length ? say : text,
-    // While the model waits for an answer it does nothing else: what it asked for is decided after the answer comes back.
-    proposal: lookup.length === 0 && proposals.length > 0 ? proposals : null,
-    goTo: lookup.length === 0 ? goTo : null,
-    find: lookup.length === 0 ? find : null,
-    openTool: lookup.length === 0 ? openTool : null,
-    lookup,
+    proposal: proposals.length > 0 ? proposals : null,
+    goTo,
     feedback,
   };
 }
 
-export const REFUSAL_RESULT: ModelResult = { reply: "Sorry, I can't help with that one.", proposal: null, goTo: null, find: null, openTool: null, lookup: [], feedback: [] };
+export const REFUSAL_RESULT: ModelResult = { reply: "Sorry, I can't help with that one.", proposal: null, goTo: null, feedback: [] };

@@ -37,17 +37,9 @@ WORKING ON SEVERAL PHOTOS
 - To email several photos: pick them, open Tools, Email, check the subject, add To and a message if wanted, choose how to send them if they are big, press Email.
 - To tag several photos: pick them, open Tools, Tags, and add the tag; it goes on all of them.
 
-FINDING PHOTOS
-- Ask Pixie can find photos by what is in them, by the user's own tags, by person, by date and by photo or video, and then pick them, tag them, or open them in Email or Print. It shows how many it found first, with a few pictures, and asks before it picks or tags.
-- Finding by what is in the picture (for example pink flowers, a dog on a beach) works by the look of the picture, not by a label. It is approximate: it matches the overall gist, not exact counts, positions, small details or text in the picture. It only covers photos analysed so far, needs Auto tags turned on in Settings, Picture analysis, and skips videos.
-- Finding photos with people in them (any person) uses the faces Pixie has found so far, so it needs Find faces turned on in Settings, Picture analysis, and leaves out photos not yet scanned. It can be combined with a content search, such as yellow flowers with people.
-- When two things must be in the same picture (for example flowers and a birthday cake), each is searched for on its own and a photo must match both; the match is as strong as the weaker of the two.
-- It cannot find by place name or by camera yet. It never deletes anything. Tags it adds can be undone straight afterwards from the chat.
-- The photos it finds are kept in Tools under Working on as Ask Pixie results, so they can be looked at and used by Print, Email and Tags.
-
 TOOLS
 - Working on at the top chooses the photos: Picked, Current photo, or one of the user's tags.
-- Email: opens the user's mail program with the photos attached, a proposed subject (editable), optional To and message. If they are too big for an email it offers smaller copies or several emails. The size limit is in Settings, Email. Originals are never changed.
+- Email: opens the user's mail program with the photos attached, a proposed subject (editable), optional To and message. If the photos are too big for an email it offers smaller copies of the pictures, or several emails. Videos are always sent exactly as they are: Pixie cannot make a video smaller, and one video cannot be split across emails, so a single video over the mail service's limit may be refused (several emails only help when there are several files). The size limit is in Settings, Email. Originals are never changed.
 - Print: choose paper (A4, Letter, 4x6, 5x7), orientation, photos per page, fit, margin and captions; Print opens the system print dialog.
 - Tags: add or remove the user's own tags on all the photos being worked on.
 - Photo details: the details of the chosen photo.
@@ -78,6 +70,6 @@ SETTINGS
 
 PRIVACY
 - Pixie sends nothing about the pictures anywhere. Ask Pixie sends the typed questions and some app information (settings, version, language) to a server; it never sends pictures, thumbnails, faces, file names or folder names.
-- The names of the user's tags, the people they have named and their trips, with counts, are sent only if the user turned on sharing in Settings, Ask Pixie. When they are not, the section marked LIBRARY says so, and Pixie checks names on the user's computer after the answer. Where home is, map coordinates and folders are never sent.
-- The user can turn Ask Pixie off, or the sharing off, at any time in Settings, Ask Pixie.
+- The names of the user's tags, people and trips, where home is, map coordinates, and folder and file names are never sent.
+- The user can turn Ask Pixie off at any time in Settings, Ask Pixie.
 `;

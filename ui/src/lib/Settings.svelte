@@ -21,9 +21,7 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit, askOn, onask, askLibrary, onasklibrary }: {
-    /** Whether Ask Pixie may be told the names in the library, and a change to that. */
-    askLibrary: boolean; onasklibrary: (on: boolean) => void;
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit, askOn, onask }: {
     /** Whether Ask Pixie may send questions, and a change to that. */
     askOn: boolean; onask: (on: boolean) => void;
     /** The loading of the files found, and whether the Pause is on. */
@@ -106,7 +104,7 @@
     {:else if page === 'email'}
       <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
     {:else if page === 'ask'}
-      <AskSettings on={askOn} onchange={onask} library={askLibrary} onlibrary={onasklibrary} />
+      <AskSettings on={askOn} onchange={onask} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
