@@ -89,10 +89,10 @@
       {#if error}<p class="err" role="alert">{error}</p>{/if}
       <ul>
         {#each list.rows as r (r.name)}
-          <li><button class="row" disabled={r.all} onclick={() => void apply(r.name)}><span class="name">{r.name}</span><span class="note">{r.all ? 'on all' : r.on > 0 ? `on ${r.on}` : ''}</span></button></li>
+          <li><button class="row" title={r.all ? 'Every one of these photos has this tag' : 'Give these photos this tag'} disabled={r.all} onclick={() => void apply(r.name)}><span class="name">{r.name}</span><span class="note">{r.all ? 'on all' : r.on > 0 ? `on ${r.on}` : ''}</span></button></li>
         {/each}
         {#if list.more > 0}<li class="more">{list.more} more. Keep typing to narrow the list.</li>{/if}
-        {#if list.create}<li><button class="row create" onclick={() => void apply(list.create!)}>+ Create tag “{list.create}”</button></li>{/if}
+        {#if list.create}<li><button class="row create" title="Make this tag and give it to these photos" onclick={() => void apply(list.create!)}>+ Create tag “{list.create}”</button></li>{/if}
         {#if list.rows.length === 0 && !list.create}<li class="more">No tags yet. Type a name to make one.</li>{/if}
       </ul>
     </div>

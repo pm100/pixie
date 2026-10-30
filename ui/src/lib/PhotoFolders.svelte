@@ -57,7 +57,7 @@
   {/each}
 </ul>
 {#if error}<p class="err">{error}</p>{/if}
-<button onclick={onadd}>Add folder…</button>
+<button onclick={onadd} title="Choose another folder of photos and videos to add to the library">Add folder…</button>
 
 <h3>Keeping up to date</h3>
 <p class="hint">Pixie automatically detects new or changed local files. How often should Pixie check network files?</p>

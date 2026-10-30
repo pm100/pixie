@@ -28,7 +28,7 @@
   </ul>
 
   {#snippet footer()}
-    <button onclick={onpeople}>Open People</button>
+    <button onclick={onpeople} title="Go to the People tab, to name the faces found">Open People</button>
     <button class="primary" onclick={onbrowse}>Start browsing</button>
   {/snippet}
 </FlowStage>

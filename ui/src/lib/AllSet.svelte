@@ -36,7 +36,7 @@
       <button onclick={onbrowse}>Not now</button>
       <button onclick={onadd}>Add another folder…</button>
     {:else}
-      {#if summary.showPeopleBox}<button onclick={onpeople}>Open People</button>{/if}
+      {#if summary.showPeopleBox}<button onclick={onpeople} title="Go to the People tab, to name the faces found">Open People</button>{/if}
       <button class="primary" onclick={onbrowse}>Start browsing</button>
     {/if}
   {/snippet}

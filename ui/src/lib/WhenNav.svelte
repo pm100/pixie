@@ -59,7 +59,7 @@
 
 {#snippet yearBlock(n: TreeNode)}
   {@const counts = monthCounts(n)}
-  <button class="yr" class:active={marked.has(n.key)} onclick={() => toggleYear(n)} aria-expanded={openYear === n.key}>
+  <button class="yr" class:active={marked.has(n.key)} onclick={() => toggleYear(n)} aria-expanded={openYear === n.key} title="Show only this date, and open it to see the days inside">
     <Chevron open={openYear === n.key} />
     <span class="y">{n.label}</span>
     {#if marked.has(n.key)}<Check />{/if}
@@ -80,7 +80,7 @@
       <div class="days">
         {#each m.children as d (d.key)}
           {@const b = dayBadge(d.key.slice(2))}
-          <button class="day" class:active={marked.has(d.key)} onclick={() => onperiod(d.key)}>
+          <button class="day" class:active={marked.has(d.key)} title="Show only the photos from this day" onclick={() => onperiod(d.key)}>
             <span class="badge" class:we={b.weekend}><i>{b.weekday}</i><b>{b.dom}</b></span>
             <span class="place"></span>
             {#if marked.has(d.key)}<Check />{/if}
@@ -97,7 +97,7 @@
     {#if e.kind === 'year'}
       {@render yearBlock(e.node)}
     {:else}
-      <button class="yr" class:active={marked.has('undated')} aria-pressed={marked.has('undated')} onclick={() => onperiod('undated')}>
+      <button class="yr" class:active={marked.has('undated')} aria-pressed={marked.has('undated')} title="Show only the photos that have no date" onclick={() => onperiod('undated')}>
         <span class="tw"></span><span class="y">Undated</span>{#if marked.has('undated')}<Check />{/if}<span class="n">{e.node.count.toLocaleString()}</span>
       </button>
     {/if}

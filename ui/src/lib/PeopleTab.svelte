@@ -255,7 +255,7 @@
   <div class="top">
     <header>
       {#if selected !== null}
-        <button onclick={back}>← {section ? sectionTitle[section] : 'Back'}</button>
+        <button onclick={back} title="Go back">← {section ? sectionTitle[section] : 'Back'}</button>
       {:else if loaded && overview}
         <nav class="sections" aria-label="People">
           {#each sections as s (s)}
@@ -275,7 +275,7 @@
         {#if status && lookingForPeople(status)}<span class="advice">It's best to let Pixie finish before naming anyone.</span>{/if}
       </div>
     {/if}
-    {#if notice}<div class="notice" role="status">{notice} <button onclick={() => (notice = null)}>OK</button></div>{/if}
+    {#if notice}<div class="notice" role="status">{notice} <button onclick={() => (notice = null)} title="Dismiss this message">OK</button></div>{/if}
 
     {#if loaded && selected === null && section === 'groups' && (overview?.groups ?? 0) + (overview?.unsorted ?? 0) > 0}
       <p class="hint">Each card is one person as far as Pixie can tell, or a single face it could not place. Click <b>This is…</b> and type a name, or pick someone you have already named. Click a picture to see the faces behind it.</p>
@@ -317,14 +317,14 @@
         <span class="sp"></span>
         {#if picked.size > 0}
           {#if inIgnored}
-            <button onclick={unignoreSelected}>Unignore</button>
+            <button onclick={unignoreSelected} title="Stop ignoring the selected faces, so they are offered for naming again">Unignore</button>
           {:else}
-            {#if selected !== null}<button onclick={() => notThem(ids())}>Move out of group</button>{/if}
+            {#if selected !== null}<button onclick={() => notThem(ids())} title="Say the selected faces are not this person, and take them out of the group">Move out of group</button>{/if}
           {/if}
-          <button onclick={() => (picked = new Set())}>Clear</button>
+          <button onclick={() => (picked = new Set())} title="Clear the selection">Clear</button>
         {:else}
           {#if current?.hidden}<button onclick={() => unhide(current)} title="Bring this group back">Unignore this group</button>{/if}
-          {#if faceList.length > 0}<button onclick={pickAll}>Select all shown</button>{/if}
+          {#if faceList.length > 0}<button onclick={pickAll} title="Select all the faces shown">Select all shown</button>{/if}
         {/if}
       </div>
     {/if}
@@ -344,8 +344,8 @@
         {#if section === 'people'}
           <div class="listbar">
             <span>Sort:</span>
-            <button class:on={peopleSort === 'name'} onclick={() => (peopleSort = 'name')}>Name</button>
-            <button class:on={peopleSort === 'photos'} onclick={() => (peopleSort = 'photos')}>Photos</button>
+            <button class:on={peopleSort === 'name'} title="List people by name" onclick={() => (peopleSort = 'name')}>Name</button>
+            <button class:on={peopleSort === 'photos'} title="List people by how many photos they are in" onclick={() => (peopleSort = 'photos')}>Photos</button>
           </div>
         {/if}
         {#if cards.length > 0 || (section === 'groups' && unsorted.length > 0)}
@@ -363,11 +363,11 @@
               {/each}
             {/if}
           </div>
-          {#if section === 'groups' && unsorted.length < total}<p><button onclick={showMore}>Show more</button></p>{/if}
+          {#if section === 'groups' && unsorted.length < total}<p><button onclick={showMore} title="Show more groups of faces">Show more</button></p>{/if}
         {/if}
         {#if inIgnored && ignored.length > 0}
           <FaceGrid tiles={ignored} {picked} onclick={click} onzoom={view} />
-          {#if ignored.length >= shown}<p><button onclick={showMore}>Show more faces</button></p>{/if}
+          {#if ignored.length >= shown}<p><button onclick={showMore} title="Show more faces">Show more faces</button></p>{/if}
         {/if}
       {/if}
     {:else}
@@ -375,7 +375,7 @@
         <p class="hint">No faces here.</p>
       {:else}
         <FaceGrid tiles={faceList} {picked} onclick={click} onzoom={view} />
-        {#if tiles.length < total}<p><button onclick={showMore}>Show more faces</button></p>{/if}
+        {#if tiles.length < total}<p><button onclick={showMore} title="Show more faces">Show more faces</button></p>{/if}
       {/if}
     {/if}
   </div>

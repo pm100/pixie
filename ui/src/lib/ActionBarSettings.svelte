@@ -17,7 +17,7 @@
     </li>
   {/each}
 </ul>
-<p><button onclick={() => onchange([...DEFAULT_BAR])} disabled={chosen.join() === DEFAULT_BAR.join()}>Use the usual buttons</button></p>
+<p><button onclick={() => onchange([...DEFAULT_BAR])} title="Put the action bar back to the standard set of buttons" disabled={chosen.join() === DEFAULT_BAR.join()}>Use the usual buttons</button></p>
 
 <style>
   h3 { margin: 18px 0 4px; font-size: 15px; }

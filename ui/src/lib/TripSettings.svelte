@@ -40,7 +40,7 @@
 {:else}<p>Click the map to move home.</p>{/if}
 <HomePicker home={draft} radiusKm={prefs.radiusKm} onpick={pick} />
 {#if draft}<p class="where">{formatGps(draft.lat, draft.lon)}</p>{/if}
-{#if changed}<button class="primary" onclick={confirm}>{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>
+{#if changed}<button class="primary" onclick={confirm} title="Use the place on the map as home">{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>
 {:else if prefs.confirmed}<p class="ok">Home is set.</p>{/if}
 {#if error}<p class="err">{error}</p>{/if}
 

@@ -65,15 +65,15 @@
   </dl>
   {#each view.problems as p (p.key + p.kind)}
     {#if p.kind === 'error'}
-      <div class="err" role="alert">{p.text} <button onclick={onretry}>Retry</button></div>
+      <div class="err" role="alert">{p.text} <button onclick={onretry} title="Try again">Retry</button></div>
     {:else}
-      <div class="err" role="status">{p.text} <button onclick={onresume}>Resume</button></div>
+      <div class="err" role="status">{p.text} <button onclick={onresume} title="Carry on from where it stopped">Resume</button></div>
     {/if}
   {/each}
   <p class="note">This can take a while for a big library. You don't have to wait here.</p>
   {#snippet footer()}
     <button onclick={onstop} title={phase === 'scanning' ? 'Stop reading the folders; what was found so far is kept' : 'Pause the analysis; resume it from the top right or in Settings'}>Stop</button>
-    <button class="primary" onclick={onbackground}>Carry on in the background</button>
+    <button class="primary" onclick={onbackground} title="Close this window; the work carries on in the background">Carry on in the background</button>
   {/snippet}
 </FlowStage>
 

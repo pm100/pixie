@@ -52,19 +52,19 @@
 <div class="print">
   <p class="hint">{plural(photos.length, 'photo')} shown here.</p>
   <label>Paper
-    <select bind:value={paper}>{#each Object.entries(PAPERS) as [id, p] (id)}<option value={id}>{p.label}</option>{/each}</select>
+    <select bind:value={paper} title="The size of the paper">{#each Object.entries(PAPERS) as [id, p] (id)}<option value={id}>{p.label}</option>{/each}</select>
   </label>
   <label>Orientation
-    <select bind:value={landscape}><option value={false}>Portrait</option><option value={true}>Landscape</option></select>
+    <select bind:value={landscape} title="Whether the paper is tall or wide"><option value={false}>Portrait</option><option value={true}>Landscape</option></select>
   </label>
   <label>Photos per page
-    <select bind:value={perPage}>{#each PER_PAGE as n (n)}<option value={n}>{n}</option>{/each}</select>
+    <select bind:value={perPage} title="How many photos go on each page">{#each PER_PAGE as n (n)}<option value={n}>{n}</option>{/each}</select>
   </label>
   <label>Fit
-    <select bind:value={fit}><option value="fill">Fill the space (crop)</option><option value="whole">Show the whole photo</option></select>
+    <select bind:value={fit} title="Fill each space by cropping the photo, or show all of it"><option value="fill">Fill the space (crop)</option><option value="whole">Show the whole photo</option></select>
   </label>
   <label>Margin (mm)
-    <input type="number" min="0" max="30" bind:value={margin} />
+    <input type="number" min="0" max="30" bind:value={margin} title="The space around the edge of each page, in millimetres" />
   </label>
   <label class="check"><input type="checkbox" bind:checked={captions} /> Print the file name and date</label>
 
@@ -74,7 +74,7 @@
     </div>
     <p class="hint">{plural(pages.length, 'page')}. The first is shown above.</p>
   {/if}
-  <button class="primary go" onclick={print} disabled={printing || pages.length === 0}>{printing ? 'Printing…' : 'Print…'}</button>
+  <button class="primary go" title="Open the system print dialog, where you choose the printer" onclick={print} disabled={printing || pages.length === 0}>{printing ? 'Printing…' : 'Print…'}</button>
   {#if error}<span class="err" role="alert">{error}</span>{/if}
 </div>
 

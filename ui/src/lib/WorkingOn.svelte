@@ -29,7 +29,7 @@
 <div class="bar">
   <span class="lbl" id="working-on-label">Working on:</span>
   <div class="seg" role="group" aria-labelledby="working-on-label">
-    <button class="opt" aria-pressed={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
+    <button class="opt" title="Work on the photos you have picked" aria-pressed={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
     <button class="opt" aria-pressed={source === 'current'} class:on={source === 'current'} disabled={!hasPhoto}
             title={hasPhoto ? 'The photo chosen in Browse' : 'Choose a photo in Browse first'} onclick={() => (source = 'current')}>Current</button>
     <span class="tagpick" use:dismiss={{ active: listOpen, close: () => (listOpen = false) }}>
@@ -38,7 +38,7 @@
       {#if listOpen}
         <ul class="list" role="listbox" aria-label="Your tags">
           {#each userTags as t (t.name)}
-            <li><button role="option" aria-selected={source === `tag:${t.name}`} onclick={() => choose(t.name)}><span class="n">{t.name}</span><span class="c">{t.count.toLocaleString()}</span></button></li>
+            <li><button role="option" title={`Work on the photos tagged ${t.name}`} aria-selected={source === `tag:${t.name}`} onclick={() => choose(t.name)}><span class="n">{t.name}</span><span class="c">{t.count.toLocaleString()}</span></button></li>
           {/each}
         </ul>
       {/if}

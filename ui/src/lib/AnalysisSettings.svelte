@@ -39,9 +39,9 @@
 
 <div class="row">
   {#if view.failed}
-    <button onclick={onretry}>Try again</button>
+    <button onclick={onretry} title="Try the analysis again">Try again</button>
   {:else if view.working || view.paused || loading.pending > 0 || loading.paused}
-    <button onclick={() => onpause(!(view.paused || loading.paused))}>{view.paused || loading.paused ? 'Resume' : 'Pause'}</button>
+    <button onclick={() => onpause(!(view.paused || loading.paused))} title={view.paused || loading.paused ? 'Carry on analysing your pictures' : 'Stop analysing for now; it carries on from where it stopped'}>{view.paused || loading.paused ? 'Resume' : 'Pause'}</button>
   {/if}
 </div>
 

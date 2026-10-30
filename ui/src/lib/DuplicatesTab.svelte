@@ -96,7 +96,7 @@
       <div class="status" role="status">
         <span>{dupLine(status)}</span>
         {#if checking}<progress value={status.total > 0 ? status.done / status.total : 0} max="1"></progress>{/if}
-        {#if more}<button onclick={load}>Show newly found duplicates</button>{/if}
+        {#if more}<button onclick={load} title="Add the duplicates found since this list was made">Show newly found duplicates</button>{/if}
       </div>
     {/if}
     {#if groups.length > 0}

@@ -76,7 +76,7 @@
 />
 
 <span class="thisis" bind:this={root}>
-  <button class="trigger" class:small {disabled} aria-haspopup="dialog" aria-expanded={open} onclick={show}>{label} <span aria-hidden="true">▾</span></button>
+  <button class="trigger" class:small {disabled} aria-haspopup="dialog" aria-expanded={open} title="Say who this is by choosing a person or typing a name" onclick={show}>{label} <span aria-hidden="true">▾</span></button>
   {#if open}
     <div class="menu" class:right={alignRight}>
       <input

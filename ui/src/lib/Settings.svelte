@@ -109,8 +109,8 @@
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>
-      <p><button onclick={openData}>Open data folder</button></p>
-      <p><button class="danger" onclick={() => (confirmReset = true)} disabled={resetting}>{resetting ? 'Starting again…' : 'Start again from a clean slate…'}</button></p>
+      <p><button onclick={openData} title="Show the folder where Pixie keeps its database and thumbnails">Open data folder</button></p>
+      <p><button class="danger" title="Remove everything Pixie knows and begin again; your photo files are not touched" onclick={() => (confirmReset = true)} disabled={resetting}>{resetting ? 'Starting again…' : 'Start again from a clean slate…'}</button></p>
       <p class="hint">Forgets every folder, photo, face, name, tag and setting, and shows the welcome again. Your photo files and the downloaded models are left alone.</p>
       {#if devError}<p class="err">{devError}</p>{/if}
       {#if confirmReset}

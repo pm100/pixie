@@ -139,7 +139,7 @@
 <nav>
   {@render head('when', 'When')}
   {#if !folded('when')}
-    <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow" use:clipTitle>{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
+    <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} title={recent ? 'Stop showing only the recent items' : 'Show only the recent items'} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow" use:clipTitle>{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
     <WhenNav {groups} {period} {onperiod} />
   {/if}
 
@@ -147,27 +147,27 @@
     {@render head('people', 'People')}
     {#if !folded('people')}
       <p class="hint">People is turned off, so no faces are being looked for. Turn it on in Settings → Picture analysis.</p>
-      <button class="item more" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
+      <button class="item more" title="Open the Picture analysis settings" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
     {/if}
   {:else if people.length === 0 && facesFound}
     {@render head('people', 'People')}
     {#if !folded('people')}
       <p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>
-      <button class="item more" onclick={onnamepeople}><span class="mark"></span>Name people…</button>
+      <button class="item more" title="Go to the People tab, to name the faces found" onclick={onnamepeople}><span class="mark"></span>Name people…</button>
     {/if}
   {:else if people.length > 0}
     {@render head('people', 'People')}
     {#if !folded('people')}
       {#each shownPeople.rows as p (p.id)}
         {@const n = countOf(facets?.people, p.id, p.count)}
-        <button class="item" class:active={person === p.id} class:zero={facets && n === 0 && person !== p.id} aria-pressed={person === p.id} onclick={() => onperson(person === p.id ? null : p.id)}>
+        <button class="item" class:active={person === p.id} class:zero={facets && n === 0 && person !== p.id} aria-pressed={person === p.id} title={person === p.id ? 'Stop showing only this person' : 'Show only the photos of this person'} onclick={() => onperson(person === p.id ? null : p.id)}>
           <span class="mark">{#if person === p.id}<Check />{/if}</span>
           {#if p.face_id !== null}<img class="avatar" alt="" src={faceUrl(p.face_id)} />{:else}<span class="avatar"></span>{/if}
           <span class="grow" use:clipTitle>{personLabel(p)}</span><span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}
       {#if shownPeople.hidden > 0 || allPeople}
-        <button class="item more" onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${plural(people.length, 'person', 'people')}`}</button>
+        <button class="item more" title={allPeople ? 'List only the first few people' : 'List every person'} onclick={() => (allPeople = !allPeople)}><span class="mark"></span>{allPeople ? 'Show fewer' : `Show all ${plural(people.length, 'person', 'people')}`}</button>
       {/if}
     {/if}
   {/if}
@@ -176,7 +176,7 @@
   {#if !folded('mytags')}
     {#each userTags as t (t.name)}
       {@const key = `tag:${t.name}`}
-      <button class="item" class:active={utag === key} aria-pressed={utag === key} onclick={() => onutag(utag === key ? null : key)}>
+      <button class="item" class:active={utag === key} aria-pressed={utag === key} title={utag === key ? 'Stop showing only the photos with this tag' : 'Show only the photos with this tag'} onclick={() => onutag(utag === key ? null : key)}>
         <span class="mark">{#if utag === key}<Check />{/if}</span><span class="grow" use:clipTitle>{t.name}</span><span class="n">{t.count.toLocaleString()}</span>
       </button>
     {/each}
@@ -187,20 +187,20 @@
     {@render head('tags', 'Auto tags')}
     {#if !folded('tags')}
       <p class="hint">Auto tags are turned off, so photos are not being labelled. Turn them on in Settings → Picture analysis.</p>
-      <button class="item more" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
+      <button class="item more" title="Open the Picture analysis settings" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
     {/if}
   {:else if tags.length > 0}
     {@render head('tags', 'Auto tags')}
     {#if !folded('tags')}
       {#each tree as g (g.category)}
         {@const held = countOf(facets?.categories, g.category, g.photos)}
-        <button class="item cat" class:zero={facets && held === 0} aria-expanded={isOpen(g.category)} onclick={() => toggleCategory(g.category)}>
+        <button class="item cat" class:zero={facets && held === 0} aria-expanded={isOpen(g.category)} title={isOpen(g.category) ? 'Hide the tags in this group' : 'Show the tags in this group'} onclick={() => toggleCategory(g.category)}>
           <Chevron open={isOpen(g.category)} /><span class="grow" use:clipTitle>{g.category}</span><span class="n">{held.toLocaleString()}</span>
         </button>
         {#if isOpen(g.category)}
           {#each g.tags as t (t.tag)}
             {@const n = countOf(facets?.tags, t.tag, t.count)}
-            <button class="item sub" class:active={tag === t.tag} class:zero={facets && n === 0 && tag !== t.tag} aria-pressed={tag === t.tag} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
+            <button class="item sub" class:active={tag === t.tag} class:zero={facets && n === 0 && tag !== t.tag} aria-pressed={tag === t.tag} title={tag === t.tag ? 'Stop showing only the photos with this tag' : 'Show only the photos with this tag'} onclick={() => ontag(tag === t.tag ? null : t.tag)}>
               <span class="mark">{#if tag === t.tag}<Check />{/if}</span><span class="grow" use:clipTitle>{tagLabel(t.tag)}</span><span class="n">{n.toLocaleString()}</span>
             </button>
           {/each}
@@ -213,13 +213,13 @@
   {#if !folded('trips')}
     {#if !tripsReady}
       <p class="hint">Trips are runs of days spent away from home. Pixie needs to know where home is first.</p>
-      <button class="item more" onclick={onsettrips}><span class="mark"></span>Set up trips…</button>
+      <button class="item more" title="Open the Trips settings, to say where home is" onclick={onsettrips}><span class="mark"></span>Set up trips…</button>
     {:else if trips.length === 0}
       <p class="hint">No trips found. A smaller home radius or a shorter minimum length in Settings may find some.</p>
     {:else}
       {#each shownYears as g (g.year)}
         {@const held = tripsHeld(g.trips, facets ?? null)}
-        <button class="item cat" class:zero={facets && held === 0} aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
+        <button class="item cat" class:zero={facets && held === 0} aria-expanded={openYears.has(g.year)} title={openYears.has(g.year) ? 'Hide the trips of this year' : 'Show the trips of this year'} onclick={() => toggleYear(g.year)}>
           <Chevron open={openYears.has(g.year)} /><span class="grow" use:clipTitle>{g.year}</span>
         </button>
         {#if openYears.has(g.year)}
@@ -250,8 +250,8 @@
   {@render head('library', 'Media types')}
   {#if !folded('library')}
     <!-- Like every other filter: click to choose, click again to clear. Nothing chosen shows everything. -->
-    <button class="item" class:active={kind === 'photo'} class:zero={facets && facets.photos === 0 && kind !== 'photo'} aria-pressed={kind === 'photo'} onclick={() => onkind(kind === 'photo' ? null : 'photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span><span class="grow">Photos</span>{#if facets}<span class="n">{facets.photos.toLocaleString()}</span>{/if}</button>
-    <button class="item" class:active={kind === 'video'} class:zero={facets && facets.videos === 0 && kind !== 'video'} aria-pressed={kind === 'video'} onclick={() => onkind(kind === 'video' ? null : 'video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span><span class="grow">Videos</span>{#if facets}<span class="n">{facets.videos.toLocaleString()}</span>{/if}</button>
+    <button class="item" class:active={kind === 'photo'} class:zero={facets && facets.photos === 0 && kind !== 'photo'} aria-pressed={kind === 'photo'} title={kind === 'photo' ? 'Stop showing only photos' : 'Show only photos, not videos'} onclick={() => onkind(kind === 'photo' ? null : 'photo')}><span class="mark">{#if kind === 'photo'}<Check />{/if}</span><span class="grow">Photos</span>{#if facets}<span class="n">{facets.photos.toLocaleString()}</span>{/if}</button>
+    <button class="item" class:active={kind === 'video'} class:zero={facets && facets.videos === 0 && kind !== 'video'} aria-pressed={kind === 'video'} title={kind === 'video' ? 'Stop showing only videos' : 'Show only videos, not photos'} onclick={() => onkind(kind === 'video' ? null : 'video')}><span class="mark">{#if kind === 'video'}<Check />{/if}</span><span class="grow">Videos</span>{#if facets}<span class="n">{facets.videos.toLocaleString()}</span>{/if}</button>
   {/if}
 
   <!-- A list of one camera is no choice: the section appears with two or more (or while one is chosen, to clear it). -->
@@ -259,7 +259,7 @@
     {@render head('cameras', 'Cameras')}
     {#if !folded('cameras')}
       {#each cameras as [name, n] (name)}
-        <button class="item" class:active={camera === name} aria-pressed={camera === name} onclick={() => oncamera(camera === name ? null : name)}>
+        <button class="item" class:active={camera === name} aria-pressed={camera === name} title={camera === name ? 'Stop showing only this camera' : 'Show only the photos from this camera'} onclick={() => oncamera(camera === name ? null : name)}>
           <span class="mark">{#if camera === name}<Check />{/if}</span><span class="grow" use:clipTitle>{name}</span><span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}

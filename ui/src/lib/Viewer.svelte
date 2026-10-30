@@ -129,7 +129,7 @@
 <svelte:window onkeydown={key} />
 <div class="overlay" role="dialog" aria-label={current?.kind === 'video' ? 'Video viewer' : 'Photo viewer'}>
   <button class="close" onclick={onclose} aria-label="Close">✕</button>
-  {#if onpopout && !solo}<button class="popout" onclick={onpopout}>Pop out ⧉</button>{/if}
+  {#if onpopout && !solo}<button class="popout" onclick={onpopout} title="Show the viewer in a window of its own">Pop out ⧉</button>{/if}
   {#if current?.kind === 'video'}
     {#key current.id}
       <!-- svelte-ignore a11y_media_has_caption -->
@@ -146,7 +146,7 @@
     {#if videoFailed}
       <div class="msg">
         <p>This video can't be played here. If it is an iPhone video, Windows may need Microsoft's HEVC Video Extensions.</p>
-        <button onclick={() => current && openInDefaultPlayer(current.id)}>Open in default player</button>
+        <button onclick={() => current && openInDefaultPlayer(current.id)} title="Play this video in your computer's usual video player">Open in default player</button>
       </div>
     {/if}
   {:else}

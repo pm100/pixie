@@ -1282,7 +1282,7 @@
         {#if folders.length === 0 && total === 0 && !scanning}
           <div class="empty">
             <p>Add a folder of photos to get started.</p>
-            <button onclick={chooseFolder}>Add photo folder…</button>
+            <button onclick={chooseFolder} title="Choose a folder of photos and videos to add to the library">Add photo folder…</button>
           </div>
         {:else}
       <Shell>

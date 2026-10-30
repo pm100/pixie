@@ -66,12 +66,12 @@
 <span class="actions" role="group" aria-label="Actions on {what}" use:dismiss={{ active: open !== null, close: () => (open = null), closeOnMove: true }}>
   {#each shown as id (id)}
     {#if id === 'tag'}
-      <button class="act" aria-haspopup="dialog" aria-expanded={open === 'tag'} onclick={(e) => toggle('tag', e)}>Tag…</button>
+      <button class="act" aria-haspopup="dialog" aria-expanded={open === 'tag'} title="Add tags to these photos, or take them off" onclick={(e) => toggle('tag', e)}>Tag…</button>
     {:else}
       <button class="act" disabled={id in unavailable} onclick={() => go(id)} title={unavailable[id] ?? `${label(id)}: ${what}`}>{label(id)}</button>
     {/if}
   {/each}
-  <button class="act" bind:this={moreBtn} aria-haspopup="menu" aria-expanded={open === 'more'} onclick={(e) => toggle('more', e)}>More ▾</button>
+  <button class="act" bind:this={moreBtn} aria-haspopup="menu" aria-expanded={open === 'more'} title="More things to do with these photos" onclick={(e) => toggle('more', e)}>More ▾</button>
   {#if open === 'tag'}
     <div class="pop" style={popStyle} role="dialog" aria-label="Tags">
       {#if ids.length === 1}
