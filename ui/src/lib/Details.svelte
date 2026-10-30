@@ -97,7 +97,7 @@
         {#each onPhoto as t (t)}<span class="chip utag">{t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
         <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
       </dd>
-      {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
+      {#if tags.length > 0}<dt>AutoTags</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip auto" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
@@ -125,6 +125,7 @@
   .face img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
   .hint { color: #777; }
   .chip.utag { background: #e3ecff; border-radius: 4px; }
+  .chip.auto { border-radius: 4px; }
   .x { border: 0; background: none; padding: 0 0 0 5px; color: inherit; opacity: .7; cursor: pointer; line-height: 1; }
   .x:hover { opacity: 1; }
   .actions { margin: 0 0 16px; }
