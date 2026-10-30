@@ -63,10 +63,13 @@
 <p class="hint">Pixie automatically detects new or changed local files. How often should Pixie check network files?</p>
 <label class="opt">
   <input type="checkbox" checked={networkRescan.on} onchange={(e) => onnetworkrescan({ ...networkRescan, on: e.currentTarget.checked })} />
-  Check folders on the network every
-  <select value={networkRescan.minutes} disabled={!networkRescan.on} aria-label="How often to check folders on the network"
+  Check folders on the network
+</label>
+<label class="opt">
+  Time between checks:
+  <select value={networkRescan.minutes} disabled={!networkRescan.on}
           onchange={(e) => onnetworkrescan({ ...networkRescan, minutes: Number(e.currentTarget.value) })}>
-    {#each NETWORK_MINUTES as m (m)}<option value={m}>{m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}</option>{/each}
+    {#each NETWORK_MINUTES as m (m)}<option value={m}>{m < 60 ? `${m} minutes` : plural(m / 60, 'hour')}</option>{/each}
   </select>
 </label>
 {#if ask}

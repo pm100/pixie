@@ -45,19 +45,26 @@
 {#if error}<p class="err">{error}</p>{/if}
 
 <h3>What counts as a trip</h3>
-<p>Away means further than
-  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_RADIUS_KM, unit))} step="any" value={fromKm(prefs.radiusKm, unit)} aria-label="Distance from home that counts as away, in {unitName}"
-         onchange={(e) => setRadius(e.currentTarget.value)} /> {unitName} from home.</p>
-<p>A trip needs at least
-  <input class="num" type="number" min="0" max={MAX_NIGHTS} step="1" value={prefs.minNights} aria-label="Fewest nights away that make a trip"
-         onchange={(e) => setNights(e.currentTarget.value)} /> {prefs.minNights === 1 ? 'night' : 'nights'} away (0 counts a day out as a trip).</p>
+<label class="row">Distance from home that counts as away ({unitName}):
+  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_RADIUS_KM, unit))} step="any" value={fromKm(prefs.radiusKm, unit)}
+         onchange={(e) => setRadius(e.currentTarget.value)} />
+</label>
+<label class="row">Fewest nights away that make a trip:
+  <input class="num" type="number" min="0" max={MAX_NIGHTS} step="1" value={prefs.minNights}
+         onchange={(e) => setNights(e.currentTarget.value)} />
+</label>
+<p class="note">0 counts a day out as a trip.</p>
 
 <h3>Where a trip went</h3>
-<p>Photos taken within
-  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_STOP_KM, unit))} step="any" value={fromKm(prefs.stopKm, unit)} aria-label="Distance within which photos are one stop, in {unitName}"
-         onchange={(e) => setStop(e.currentTarget.value)} /> {unitName} of each other count as one stop. Stops name the trip's destination and are the numbered points on the map.</p>
+<p>Stops name the trip's destination and are the numbered points on the map. Photos taken close together count as one stop.</p>
+<label class="row">Distance within which photos are one stop ({unitName}):
+  <input class="num" type="number" min="1" max={Math.round(fromKm(MAX_STOP_KM, unit))} step="any" value={fromKm(prefs.stopKm, unit)}
+         onchange={(e) => setStop(e.currentTarget.value)} />
+</label>
 
 <style>
+  .row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+  .note { color: #666; font-size: 12px; margin: 0 0 8px; }
   h3 { margin: 16px 0 6px; font-size: 14px; }
   .num { width: 5em; font: inherit; padding: 2px 4px; }
   .where { color: #555; font-size: 12px; margin: 0 0 8px; }

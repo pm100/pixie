@@ -82,7 +82,7 @@
         <b>{mbText(info.total_bytes)}</b> in all. Email services usually accept about {limitMb} MB in a message,
         and sending makes attachments about a third bigger.
       {:else}
-        <b>{mbText(info.total_bytes)}</b> in all. We think they will fit in an email.
+        <b>{mbText(info.total_bytes)}</b> in all. We think {info.photos + info.videos === 1 ? 'it' : 'they'} will fit in a single email.
       {/if}
     </p>
     <div class="fields">

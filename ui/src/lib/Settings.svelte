@@ -94,9 +94,11 @@
       <label class="opt"><input type="radio" name="viewer" checked={viewerMode === 'popout'} onchange={() => onviewer('popout')} /> A separate window</label>
     {:else if page === 'browsing'}
       <h2>Browsing</h2>
-      <p>The "recent" shortcut at the top of the date list shows items from the last
-        <input class="days" type="number" min="1" max={MAX_RECENT_DAYS} step="1" value={recentDays} aria-label="Days counted as recent"
-               onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} /> days.</p>
+      <p>The "recent" shortcut at the top of the date list shows the items from the last few days.</p>
+      <label class="recent">Days counted as recent:
+        <input class="days" type="number" min="1" max={MAX_RECENT_DAYS} step="1" value={recentDays}
+               onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} />
+      </label>
       <ActionBarSettings chosen={actionBar} onchange={onactionbar} />
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
@@ -135,5 +137,6 @@
   .opt { display: block; margin: 6px 0; }
   .err { color: #b00020; }
   .hint { color: #666; font-size: 13px; }
+  .recent { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
   .days { width: 4.5em; font: inherit; padding: 2px 4px; }
 </style>

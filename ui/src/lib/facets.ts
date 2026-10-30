@@ -56,3 +56,7 @@ export const countOf = <K>(counts: Map<K, number> | undefined, key: K, base: num
  *  filtered counts are known. */
 export const tripsHeld = (trips: Pick<Trip, 'since'>[], facets: Facets | null): number =>
   facets ? trips.filter((t) => (facets.trips.get(t.since) ?? 0) > 0).length : trips.length;
+
+/** The entries with the empty ones (those dimmed because the filters leave them nothing) after the others. Each group keeps
+ *  its order, and the list given is not changed. */
+export const emptyLast = <T>(items: readonly T[], isEmpty: (item: T) => boolean): T[] => [...items.filter((i) => !isEmpty(i)), ...items.filter(isEmpty)];

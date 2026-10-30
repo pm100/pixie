@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countOf, indexFacets, tripsHeld, type FacetCounts } from './facets';
+import { countOf, emptyLast, indexFacets, tripsHeld, type FacetCounts } from './facets';
 
 const counts: FacetCounts = {
   photos: 1180, videos: 60,
@@ -52,5 +52,35 @@ describe('the cameras', () => {
   it('are an empty list from a backend that does not send them', () => {
     const { cameras, ...old } = counts;
     expect(indexFacets(old as FacetCounts, []).cameras).toEqual([]);
+  });
+});
+
+describe('emptyLast', () => {
+  const rows = [{ id: 'a', n: 0 }, { id: 'b', n: 3 }, { id: 'c', n: 0 }, { id: 'd', n: 1 }];
+
+  it('puts the empty entries after the others, each group in its own order', () => {
+    expect(emptyLast(rows, (r) => r.n === 0).map((r) => r.id)).toEqual(['b', 'd', 'a', 'c']);
+  });
+
+  it('leaves the order alone when nothing is empty', () => {
+    const full = rows.filter((r) => r.n > 0);
+    expect(emptyLast(full, (r) => r.n === 0)).toEqual(full);
+  });
+
+  it('does not change the list it was given', () => {
+    const copy = [...rows];
+    emptyLast(rows, (r) => r.n === 0);
+    expect(rows).toEqual(copy);
+  });
+
+  it('orders a parent and its children separately', () => {
+    const tree = [
+      { id: 'x', n: 0, kids: [{ id: 'x1', n: 0 }, { id: 'x2', n: 0 }] },
+      { id: 'y', n: 2, kids: [{ id: 'y1', n: 0 }, { id: 'y2', n: 5 }] },
+    ];
+    const out = emptyLast(tree, (t) => t.n === 0).map((t) => ({ ...t, kids: emptyLast(t.kids, (k) => k.n === 0) }));
+    expect(out.map((t) => t.id)).toEqual(['y', 'x']);
+    expect(out[0].kids.map((k) => k.id)).toEqual(['y2', 'y1']);
+    expect(out[1].kids.map((k) => k.id)).toEqual(['x1', 'x2']);
   });
 });

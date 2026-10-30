@@ -14,7 +14,7 @@
   import type { SectionId } from './sections';
   import { nameFromEdit, tripEditText, tripLines, tripSummary, tripTitle, tripYear, tripYears } from './trips';
   import { faceUrl } from './url';
-  import { countOf, tripsHeld, type Facets } from './facets';
+  import { countOf, emptyLast, tripsHeld, type Facets } from './facets';
 
   let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
@@ -58,9 +58,14 @@
   let allPeople = $state(false);
   /** Auto tags categories the user has opened; the one holding the chosen tag is open as well. */
   let openCategories = $state<Set<string>>(new Set());
-  const shownPeople = $derived(personRows(people, person, allPeople, 8));
+  // Entries the filters leave nothing in are dimmed, and listed after the others in each list (the chosen one is never dimmed).
+  const noPhotos = (n: number, isChosen: boolean) => facets !== null && n === 0 && !isChosen;
+  const orderedPeople = $derived(emptyLast(people, (p) => noPhotos(countOf(facets?.people, p.id, p.count), person === p.id)));
+  const shownPeople = $derived(personRows(orderedPeople, person, allPeople, 8));
   // Trips are listed under the year they started in. The newest year starts open, and so does the year of a chosen trip.
   const years = $derived(tripYears(trips));
+  const shownYears = $derived(emptyLast(years, (g) => facets !== null && tripsHeld(g.trips, facets) === 0)
+    .map((g) => ({ ...g, trips: emptyLast(g.trips, (t) => noPhotos(countOf(facets?.trips, t.since, t.photos + t.videos), trip === t.since)) })));
   let openYears = $state<Set<number>>(new Set());
   let yearsSeeded = false;
   const toggleYear = (y: number) => {
@@ -81,7 +86,9 @@
     const showing = folded('trips') ? [] : years.filter((g) => openYears.has(g.year)).flatMap((g) => g.trips);
     untrack(() => onvisibletrips(showing));
   });
-  const tree = $derived(tagTree(tags));
+  const tree = $derived(emptyLast(tagTree(tags), (g) => facets !== null && countOf(facets.categories, g.category, g.photos) === 0)
+    .map((g) => ({ ...g, tags: emptyLast(g.tags, (t) => noPhotos(countOf(facets?.tags, t.tag, t.count), tag === t.tag)) })));
+  const orderedFolders = $derived(emptyLast(folders, (f) => noPhotos(countOf(facets?.folders, f.id, f.count), folderId === f.id)));
   const chosenCategory = $derived(categoryOf(tags, tag));
   const isOpen = (category: string) => openCategories.has(category);
   const toggleCategory = (category: string) => {
@@ -210,7 +217,7 @@
     {:else if trips.length === 0}
       <p class="hint">No trips found. A smaller home radius or a shorter minimum length in Settings may find some.</p>
     {:else}
-      {#each years as g (g.year)}
+      {#each shownYears as g (g.year)}
         {@const held = tripsHeld(g.trips, facets ?? null)}
         <button class="item cat" class:zero={facets && held === 0} aria-expanded={openYears.has(g.year)} onclick={() => toggleYear(g.year)}>
           <Chevron open={openYears.has(g.year)} /><span class="grow" use:clipTitle>{g.year}</span>
@@ -262,7 +269,7 @@
   {#if folders.length > 0}
     {@render head('folders', 'Folders')}
     {#if !folded('folders')}
-      {#each folders as f (f.id)}
+      {#each orderedFolders as f (f.id)}
         {@const n = countOf(facets?.folders, f.id, f.count)}
         {@const note = folderNote(folderStates[f.id])}
         <button class="item" class:active={folderId === f.id} class:zero={facets && n === 0 && folderId !== f.id} class:offline={note !== null} aria-pressed={folderId === f.id} title={note ? `${f.path} — ${note}` : f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
