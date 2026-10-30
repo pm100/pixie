@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, locationCounts, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -34,6 +34,7 @@
   import { loadPref, savePref } from './lib/prefs';
   import { folderName, plural } from './lib/format';
   import { shouldFit, type MapChange } from './lib/mapFit';
+  import { DEFAULT_DATE_RULES, type DateRules } from './lib/dateRules';
   import { missingFromMap } from './lib/mapNote';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
@@ -136,6 +137,18 @@
   /** The most an email may carry, in megabytes (Settings, Email): what is bigger is offered smaller or split. */
   let emailLimitMb = $state(parseLimit(loadPref<unknown>('emailLimitMb', null)));
   function setEmailLimit(mb: number) { emailLimitMb = parseLimit(mb); savePref('emailLimitMb', emailLimitMb); }
+
+  /** Which dates count as missing, and when the file's date stands in (Settings, Dates). A change is applied to the whole library at once. */
+  let dateRules = $state<DateRules>(DEFAULT_DATE_RULES);
+  async function changeDateRules(next: DateRules) {
+    dateRules = next;
+    try { await setDateRules(next); } catch (e) { message = String(e); return; }
+    // Dates moved: the listing, the date tree, the trips and the counts all follow them.
+    await refresh(true).catch((e) => (message = String(e)));
+    void loadTrips();
+    refreshLocations();
+    version++;
+  }
   function setViewerMode(m: ViewerMode) { viewerMode = m; savePref('viewerMode', m); }
   // Whether, and how often, folders on the network are scanned again (folders on this computer are watched, so need no
   // setting). The backend keeps the timer; it is told at start and whenever this changes.
@@ -1119,6 +1132,11 @@
   /** The tool a tab is to open at (from an Email button, the More menu or Ask Pixie); otherwise a tab opens at the tool it was last left at. */
   let toolStart = $state<string | null>(null);
   /** Open a tool in its tab, working on the picked photos or on the photo chosen here. */
+  /** Browse, showing only the items that have no date. */
+  function showUndated() {
+    pickTab('browse');
+    if (periodKey !== 'undated') setPeriod('undated');
+  }
   function openTool(toolId: string, source: 'picked' | 'current') {
     const t = toolById(toolId);
     if (!t) return;
@@ -1159,6 +1177,7 @@
     duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {});
     loadTags();
     refreshLocations();
+    getDateRules().then((r) => (dateRules = r)).catch(() => { /* the defaults stay */ });
     void loadUserTags();
     loadPeople();
     // Re-scan all known folders on launch to pick up changes.
@@ -1377,7 +1396,7 @@
     {#if isToolGroup(tab)}
       {#key tab}
         <div class="page-over">
-          <ToolsTab group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
+          <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
                     dupes={analysisOptions.dupes} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
         </div>
       {/key}
@@ -1386,7 +1405,7 @@
       <div class="page-over">
         <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
@@ -1417,6 +1436,8 @@
 {/if}
 
 <style>
+  /* The inner margin of a page or tool pane (Settings, the Clean up tools, People): one place, so they all line up. */
+  :global(:root) { --page-pad-y: 14px; --page-pad-x: 18px; --page-pad: var(--page-pad-y) var(--page-pad-x); }
   :global(body) { margin: 0; font-family: system-ui, sans-serif; font-size: 14px; background: #fff; color: #111; }
   /* Plain buttons look the same on every system (the Mac's own are tiny); any style written for a button wins over this. */
   :global(:where(button)) { font: inherit; font-size: 14px; padding: 5px 12px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; cursor: pointer; }

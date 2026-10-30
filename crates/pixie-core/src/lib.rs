@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub mod camera;
+pub mod dates;
 pub mod mail;
 pub mod usertags;
 pub use camera::normalize_camera;
+pub use dates::{DateRules, DateSummary};
 pub use mail::*;
 pub use usertags::*;
 
@@ -118,14 +120,6 @@ pub enum SortOrder {
 /// inside a real window). It is the lowest whole number a browser can hold exactly, so the window passes through the
 /// UI unchanged.
 pub const UNDATED: i64 = -9_007_199_254_740_991;
-
-/// Whether a date is one a camera shows when its clock was never set, so it says nothing about when the picture was taken:
-/// the start of QuickTime time (1904), Unix (1970), DOS (1980) and the year 2000. Any time of that day counts, because a clock
-/// that has just started counts up from midnight.
-pub fn is_clock_default(taken_at: i64) -> bool {
-    const DAYS: [i64; 4] = [-2_082_844_800, 0, 315_532_800, 946_684_800];
-    DAYS.iter().any(|d| (*d..*d + 86_400).contains(&taken_at))
-}
 
 /// What the library view is showing: a sort order and an optional folder filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -247,18 +241,6 @@ pub type Result<T> = std::result::Result<T, PixieError>;
 mod tests {
     use super::*;
     use std::path::Path;
-
-    #[test]
-    fn a_date_a_camera_clock_starts_from_is_not_a_real_date() {
-        // 1904-01-01 (the start of QuickTime time), 1970-01-01, 1980-01-01 (the DOS start) and 2000-01-01, at any time of day.
-        for t in [-2_082_844_800, 0, 105, 86_399, 315_532_800 + 105, 946_684_800, 946_684_800 + 86_399] {
-            assert!(is_clock_default(t), "{t}");
-        }
-        // The day before and after, and a real date.
-        for t in [-1, 86_400, 315_532_799, 315_532_800 + 86_400, 946_684_799, 946_684_800 + 86_400, 1_577_934_245] {
-            assert!(!is_clock_default(t), "{t}");
-        }
-    }
 
     #[test]
     fn supports_known_extensions_case_insensitively() {

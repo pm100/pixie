@@ -328,6 +328,7 @@ pub fn scan_folder_with(
             });
         }
         drop(tx);
+        let rules = db.date_rules();
         for (i, mut meta) in rx {
             if cancel.load(Ordering::Relaxed) {
                 break; // what was already read but not saved is found again by the next scan; dropping `rx` stops the workers
@@ -336,13 +337,11 @@ pub fn scan_folder_with(
             if meta.width.is_none() {
                 stats.unreadable += 1;
             }
-            match meta.taken_at {
-                None => meta.taken_at = Some(c.mtime / 1000),
-                // A clock that was never set: no date, rather than the file's own (a copy's) time.
-                Some(t) if pixie_core::is_clock_default(t) => meta.taken_at = None,
-                Some(_) => {}
-            }
-            let id = match db.upsert_photo(folder_id, &c.path, c.size, c.mtime, &meta) {
+            // The date inside the file is kept as read; the date to show is what the person's rules make of it and of the
+            // file's own date.
+            let exif_at = meta.taken_at;
+            meta.taken_at = rules.effective(exif_at, c.mtime / 1000);
+            let id = match db.upsert_photo_dated(folder_id, &c.path, c.size, c.mtime, &meta, exif_at) {
                 Ok(id) => id,
                 Err(e) => {
                     db_error = Some(e);
@@ -461,14 +460,37 @@ mod tests {
         assert_eq!(p.meta.taken_at, Some(1_577_934_245));
     }
 
+    fn set_mtime(path: &std::path::Path, secs: u64) {
+        fs::File::options().write(true).open(path).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+    }
+
     #[test]
-    fn a_date_from_a_clock_that_was_never_set_means_no_date_not_the_mtime() {
+    fn the_date_rules_decide_what_an_odd_or_missing_date_becomes() {
         let (dir, db, f) = setup();
-        fs::write(dir.path().join("a.jpg"), jpeg_with_exif(20, 10, 1, Some("1980:01:01 00:01:45"))).unwrap();
-        fs::write(dir.path().join("b.jpg"), jpeg_with_exif(20, 10, 1, Some("2020:01:02 03:04:05"))).unwrap();
+        fs::write(dir.path().join("odd.jpg"), jpeg_with_exif(20, 10, 1, Some("1980:01:01 00:01:45"))).unwrap();
+        fs::write(dir.path().join("real.jpg"), jpeg_with_exif(20, 10, 1, Some("2020:01:02 03:04:05"))).unwrap();
+        fs::write(dir.path().join("none.jpg"), jpeg(20, 10)).unwrap();
+        for n in ["odd.jpg", "real.jpg", "none.jpg"] {
+            set_mtime(&dir.path().join(n), 1_313_805_178); // the file date: 2011
+        }
         scan(&db, f);
-        let dates: Vec<Option<i64>> = db.list_photos(0, 10).unwrap().iter().map(|p| p.meta.taken_at).collect();
-        assert!(dates.contains(&None) && dates.contains(&Some(1_577_934_245)), "{dates:?}");
+        let by_name = |n: &str| db.list_photos(0, 10).unwrap().into_iter().find(|p| p.path.ends_with(n)).unwrap().meta.taken_at;
+        assert_eq!((by_name("odd.jpg"), by_name("real.jpg"), by_name("none.jpg")), (Some(1_313_805_178), Some(1_577_934_245), Some(1_313_805_178)));
+        // With the rules changed, a scan puts it the other way, and a change of rules needs no scan to apply.
+        let rules = pixie_core::DateRules { file_when_odd: false, ..Default::default() };
+        db.set_date_rules(&rules).unwrap();
+        db.apply_date_rules(&rules).unwrap();
+        assert_eq!((by_name("odd.jpg"), by_name("none.jpg")), (None, Some(1_313_805_178)));
+    }
+
+    #[test]
+    fn a_file_date_that_is_the_same_dead_clock_gives_no_date() {
+        let (dir, db, f) = setup();
+        let p = dir.path().join("olympus.jpg");
+        fs::write(&p, jpeg(20, 10)).unwrap(); // no date inside
+        set_mtime(&p, 946_684_800 + 7 * 3600); // 2000-01-01 07:00, as an Olympus camera that was never set stamps its files
+        scan(&db, f);
+        assert_eq!(db.list_photos(0, 10).unwrap()[0].meta.taken_at, None);
     }
 
     #[test]

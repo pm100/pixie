@@ -6,12 +6,12 @@ describe('tools', () => {
     expect(toolsIn('send').map((t) => t.id)).toEqual(['email', 'print', 'share', 'clipboard', 'open-with', 'slideshow']);
     expect(toolsIn('create').map((t) => t.id)).toEqual(['collage', 'gif', 'frames', 'edit']);
     expect(toolsIn('organize').map((t) => t.id)).toEqual(['tags', 'dates', 'hide', 'move']);
-    expect(toolsIn('cleanup').map((t) => t.id)).toEqual(['duplicates', 'bursts', 'thumbnails']);
+    expect(toolsIn('cleanup').map((t) => t.id)).toEqual(['duplicates', 'missing-dates', 'bursts', 'thumbnails']);
   });
 
   it('leaves Duplicates out while the duplicate check is off', () => {
-    expect(toolsIn('cleanup', { dupes: false }).map((t) => t.id)).toEqual(['bursts', 'thumbnails']);
-    expect(firstTool('cleanup', { dupes: false }).id).toBe('bursts');
+    expect(toolsIn('cleanup', { dupes: false }).map((t) => t.id)).toEqual(['missing-dates', 'bursts', 'thumbnails']);
+    expect(firstTool('cleanup', { dupes: false }).id).toBe('missing-dates');
   });
 
   it('opens each tab at its first built tool, or at its first tool when none is built', () => {

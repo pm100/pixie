@@ -158,8 +158,8 @@
 
 <style>
   .dupes { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fff; font-size: 14px; }
-  .top { flex: none; padding: 14px 18px 8px; border-bottom: 1px solid #e3e6ee; }
-  .scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .top { flex: none; padding: var(--page-pad-y) var(--page-pad-x) 8px; border-bottom: 1px solid #e3e6ee; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; padding: var(--page-pad-y) var(--page-pad-x) 24px; display: flex; flex-direction: column; gap: 14px; }
   header { display: flex; align-items: baseline; gap: 16px; }
   h2 { margin: 0 0 4px; font-size: 18px; }
   .hint { color: #777; margin: 6px 0; font-size: 13px; }

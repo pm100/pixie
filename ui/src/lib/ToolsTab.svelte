@@ -4,6 +4,8 @@
   import { untrack } from 'svelte';
   import { listPicked, listTagged, type Photo, type UserTagCount, type View } from './api';
   import DuplicatesTab from './DuplicatesTab.svelte';
+  import MissingDatesTool from './MissingDatesTool.svelte';
+  import type { DateRules } from './dateRules';
   import EmailForm from './EmailForm.svelte';
   import GroupTags from './GroupTags.svelte';
   import PlaceholderTool from './PlaceholderTool.svelte';
@@ -16,7 +18,7 @@
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { posterUrl, thumbUrl } from './url';
 
-  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, dupes, onduplicates }: {
+  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, dupes, onduplicates, dateRules, ondaterules, onshowundated }: {
     group: ToolGroup;
     /** The tool to open at; otherwise the one used last in this tab, or the first. */
     tool?: string | null;
@@ -39,6 +41,8 @@
     dupes: boolean;
     /** Copies were moved to the Recycle Bin: the rest of the app should refresh its counts. */
     onduplicates: () => void;
+    /** Which dates count as missing and when the file's date stands in (Missing dates), a change to that, and "show the items with no date" in Browse. */
+    dateRules: DateRules; ondaterules: (r: DateRules) => void; onshowundated: () => void;
   } = $props();
 
   const features = $derived({ dupes });
@@ -133,6 +137,8 @@
       <div class="whole" role="region" aria-label={current.label}>
         {#if current.id === 'duplicates'}
           <DuplicatesTab {active} onchange={onduplicates} />
+        {:else if current.id === 'missing-dates'}
+          <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
         {:else}
           <PlaceholderTool tool={current} />
         {/if}

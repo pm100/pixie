@@ -52,6 +52,7 @@ export const TOOLS: ToolDef[] = [
     mock: [{ label: 'Into', value: 'D:\\Photos' }, { label: 'Layout', value: 'Year, then month' }, { label: 'Copy or move', value: 'Copy' }], action: 'Copy the files' },
 
   { id: 'duplicates', group: 'cleanup', label: 'Duplicates', built: true, blurb: '' },
+  { id: 'missing-dates', group: 'cleanup', label: 'Missing dates', built: true, blurb: '' },
   { id: 'bursts', group: 'cleanup', label: 'Bursts', built: false, blurb: 'Find quick runs of shots of the same moment, and keep the best frame of each.',
     mock: [{ label: 'Found', value: '71 bursts, 1,096 photos' }, { label: 'Keep', value: 'The sharpest frame' }], action: 'Hide the others…' },
   { id: 'thumbnails', group: 'cleanup', label: 'Thumbnails and cache', built: false, blurb: 'Remove thumbnails left behind by folders you took out, or clear them all to rebuild later.',

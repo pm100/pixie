@@ -17,7 +17,7 @@
 </div>
 
 <style>
-  .ph { padding: 14px; font-size: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; color: #777; }
+  .ph { padding: var(--page-pad); font-size: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; color: #777; }
   .soon { margin: 0; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #8a6d00; background: #fff7d6; border-radius: 4px; padding: 2px 8px; }
   .blurb { margin: 0; color: #555; line-height: 1.45; }
   .mock { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }

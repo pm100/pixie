@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -193,6 +193,16 @@ const MIGRATIONS: &[&str] = &[
     // Android names its phone in its own keys, and writes a longitude with fewer than three digits, which were not read before.
     "ALTER TABLE photos ADD COLUMN reread INTEGER NOT NULL DEFAULT 0;
      UPDATE photos SET reread = 1 WHERE kind = 1 AND (camera IS NULL OR camera = '' OR gps_lat IS NULL OR gps_lon IS NULL);",
+    // V23: items with no date are read again. (Some databases were already given this step: it stays so their version is known.)
+    "UPDATE photos SET reread = 1 WHERE taken_at IS NULL;",
+    // V24: the date inside each file is kept apart from the date shown (`taken_at`), which the person's date rules work out from it
+    // and from the file's own date. Until a file is read again the date kept is taken to be the one inside; those that may have
+    // come from the file (the same as its time), or are odd, or are missing, are read again.
+    "ALTER TABLE photos ADD COLUMN exif_at INTEGER;
+     UPDATE photos SET exif_at = taken_at;
+     UPDATE photos SET reread = 1
+      WHERE taken_at IS NULL OR taken_at = mtime / 1000
+         OR date(taken_at, 'unixepoch') IN ('1904-01-01', '1970-01-01', '1980-01-01', '2000-01-01');",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -576,7 +586,10 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
         )
         .map_err(db_err)?;
-        Ok(Db { conn: Arc::new(Mutex::new(conn)) })
+        let db = Db { conn: Arc::new(Mutex::new(conn)) };
+        // Dates kept before the person's rules (or under older rules) are brought into line with them, from the dates remembered.
+        db.apply_date_rules(&db.date_rules())?;
+        Ok(db)
     }
 
     pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -646,7 +659,14 @@ impl Db {
             .map_err(db_err)
     }
 
+    /// Save a photo whose date inside the file is the date to keep.
     pub fn upsert_photo(&self, folder_id: FolderId, path: &str, size: i64, mtime: i64, meta: &PhotoMeta) -> Result<PhotoId> {
+        self.upsert_photo_dated(folder_id, path, size, mtime, meta, meta.taken_at)
+    }
+
+    /// Save a photo: `meta.taken_at` is the date to keep, `exif_at` the date inside the file as read (which can be odd or
+    /// missing), kept so the date rules can be applied again without reading the file.
+    pub fn upsert_photo_dated(&self, folder_id: FolderId, path: &str, size: i64, mtime: i64, meta: &PhotoMeta, exif_at: Option<i64>) -> Result<PhotoId> {
         let c = self.conn();
         // A file that changed on disk is a different picture: whatever was learned from the old one (including a
         // "could not analyse" marker from a half-copied file) no longer applies.
@@ -661,13 +681,13 @@ impl Db {
         refresh_people(&c, &affected)?;
         c
             .query_row(
-                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)
+                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)
                  ON CONFLICT(path) DO UPDATE SET
                     folder_id = excluded.folder_id, size = excluded.size, mtime = excluded.mtime,
                     width = excluded.width, height = excluded.height, taken_at = excluded.taken_at,
                     camera = excluded.camera, gps_lat = excluded.gps_lat, gps_lon = excluded.gps_lon,
-                    kind = excluded.kind, duration_ms = excluded.duration_ms,
+                    kind = excluded.kind, duration_ms = excluded.duration_ms, exif_at = excluded.exif_at,
                     quick_key = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN NULL ELSE photos.quick_key END,
                     hash      = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN NULL ELSE photos.hash END,
                     dup       = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN 0 ELSE photos.dup END,
@@ -675,7 +695,7 @@ impl Db {
                     reread = 0,
                     missing = 0
                  RETURNING id",
-                params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms],
+                params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms, exif_at],
                 |r| r.get(0),
             )
             .map_err(db_err)
@@ -1159,6 +1179,66 @@ impl Db {
         })();
         let _ = c.execute_batch("PRAGMA foreign_keys = ON");
         result
+    }
+
+    /// The person's date rules (Settings, Dates); the defaults when none were saved or the saved ones cannot be read.
+    pub fn date_rules(&self) -> DateRules {
+        self.get_setting("date_rules").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    /// Remember the date rules. (They apply to what is already in the library by `apply_date_rules`.)
+    pub fn set_date_rules(&self, rules: &DateRules) -> Result<()> {
+        self.set_setting("date_rules", &serde_json::to_string(rules).map_err(|e| PixieError::Db(e.to_string()))?)
+    }
+
+    /// What these rules make of the library: how many items have an odd date or none inside, how many show the file's date
+    /// instead, and how many are left with no date.
+    pub fn date_summary(&self, rules: &DateRules) -> Result<DateSummary> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT exif_at, mtime FROM photos WHERE missing = 0 AND dup = 0").map_err(db_err)?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?))).map_err(db_err)?;
+        let mut out = DateSummary::default();
+        for row in rows {
+            let (inside, mtime) = row.map_err(db_err)?;
+            out.total += 1;
+            let kept = rules.effective(inside, mtime / 1000);
+            match inside {
+                None => out.none_inside += 1,
+                Some(t) if rules.is_odd(t) => out.odd += 1,
+                Some(_) => continue,
+            }
+            if kept.is_some() {
+                out.from_file += 1;
+            } else {
+                out.undated += 1;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Work out the date to keep for every item again from the date inside its file and the file's own date, under these
+    /// rules. Returns how many items changed their date.
+    pub fn apply_date_rules(&self, rules: &DateRules) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let rows: Vec<(i64, Option<i64>, i64, Option<i64>)> = {
+            let mut s = tx.prepare("SELECT id, exif_at, mtime, taken_at FROM photos").map_err(db_err)?;
+            let found = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+            found
+        };
+        let mut changed = 0;
+        {
+            let mut set = tx.prepare("UPDATE photos SET taken_at = ?2 WHERE id = ?1").map_err(db_err)?;
+            for (id, inside, mtime, kept) in rows {
+                let now = rules.effective(inside, mtime / 1000);
+                if now != kept {
+                    set.execute(params![id, now]).map_err(db_err)?;
+                    changed += 1;
+                }
+            }
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(changed)
     }
 
     /// A saved choice of the person's (see `settings`), or None when it was never made.
@@ -2555,7 +2635,7 @@ mod tests {
             // name, kind, camera, gps_lat
             for (name, kind, camera, lat) in [("nocam.mp4", 1, None, Some(1.0)), ("nogps.mp4", 1, Some("iPhone"), None), ("whole.mp4", 1, Some("iPhone"), Some(1.0)), ("nocam.jpg", 0, None, None)] {
                 c.execute(
-                    "INSERT INTO photos(folder_id, path, size, mtime, kind, camera, gps_lat, gps_lon) VALUES (1, ?1, 1, 1, ?2, ?3, ?4, ?4)",
+                    "INSERT INTO photos(folder_id, path, size, mtime, taken_at, kind, camera, gps_lat, gps_lon) VALUES (1, ?1, 1, 1, 1577934245, ?2, ?3, ?4, ?4)",
                     params![format!("/p/{name}"), kind, camera, lat],
                 )
                 .unwrap();
@@ -2569,6 +2649,92 @@ mod tests {
         let stat = db.find_photo_stat("/p/nocam.mp4").unwrap().unwrap();
         db.upsert_photo(1, "/p/nocam.mp4", stat.size, stat.mtime, &PhotoMeta::default()).unwrap();
         assert!(!flagged("nocam.mp4"));
+    }
+
+    #[test]
+    fn v24_migration_remembers_the_date_inside_each_file_and_flags_the_doubtful_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v23.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for m in &MIGRATIONS[..23] {
+                c.execute_batch(m).unwrap();
+            }
+            c.pragma_update(None, "user_version", 23).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            // name, mtime (ms), taken_at
+            for (name, mtime, taken) in [
+                ("real", 5_000_000_000_000_i64, Some(1_577_934_245_i64)),
+                ("from_the_file", 1_313_805_178_000, Some(1_313_805_178)), // taken_at is the mtime: it may have come from there
+                ("undated", 1, None),
+                ("clock1980", 7_000_000_000_000, Some(315_532_800 + 105)),
+            ] {
+                c.execute("INSERT INTO photos(folder_id, path, size, mtime, taken_at) VALUES (1, ?1, 1, ?2, ?3)", params![format!("/p/{name}.jpg"), mtime, taken]).unwrap();
+            }
+        }
+        let db = Db::open(&p).unwrap();
+        let stat = |n: &str| db.find_photo_stat(&format!("/p/{n}.jpg")).unwrap().unwrap();
+        assert!(!stat("real").reread);
+        assert!(stat("from_the_file").reread && stat("undated").reread && stat("clock1980").reread);
+        // The date inside is taken to be what was kept until the file is read again.
+        db.apply_date_rules(&DateRules { file_when_none: false, file_when_odd: false, ..Default::default() }).unwrap();
+        let dates: Vec<(String, Option<i64>)> = db.list_photos(0, 10).unwrap().into_iter().map(|p| (p.path, p.meta.taken_at)).collect();
+        assert!(dates.contains(&("/p/real.jpg".into(), Some(1_577_934_245))) && dates.contains(&("/p/from_the_file.jpg".into(), Some(1_313_805_178))), "{dates:?}");
+        assert!(dates.contains(&("/p/clock1980.jpg".into(), None)), "an odd date inside, nothing to replace it: {dates:?}");
+    }
+
+    #[test]
+    fn opening_the_library_applies_the_saved_date_rules_to_dates_that_were_kept_before_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("lib.db");
+        {
+            let db = Db::open(&p).unwrap();
+            let f = db.add_folder("/p").unwrap();
+            // A date kept from before the rules existed: 1980, a clock that was never set, with the file's own date 2011.
+            db.upsert_photo(f, "/p/odd.jpg", 1, 1_313_805_178_000, &meta(Some(315_532_800 + 105))).unwrap();
+        }
+        let db = Db::open(&p).unwrap();
+        assert_eq!(db.list_photos(0, 10).unwrap()[0].meta.taken_at, Some(1_313_805_178), "the file's date stands in, as the default rules say");
+    }
+
+    #[test]
+    fn the_date_summary_counts_odd_missing_file_dated_and_undated_items() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let file_ms = 1_313_805_178_000_i64; // 2011
+        db.upsert_photo(f, "/p/real.jpg", 1, file_ms, &meta(Some(1_577_934_245))).unwrap();
+        db.upsert_photo(f, "/p/odd_ok.jpg", 1, file_ms, &meta(Some(315_532_800 + 105))).unwrap(); // 1980: the file date stands in
+        db.upsert_photo(f, "/p/odd_dead.jpg", 1, (946_684_800 + 7 * 3600) * 1000, &meta(Some(315_532_800 + 105))).unwrap(); // and a dead file clock
+        db.upsert_photo(f, "/p/none_ok.jpg", 1, file_ms, &meta(None)).unwrap();
+        db.upsert_photo(f, "/p/none_dead.jpg", 1, (946_684_800 + 7 * 3600) * 1000, &meta(None)).unwrap();
+        let s = db.date_summary(&DateRules::default()).unwrap();
+        assert_eq!(s, DateSummary { total: 5, odd: 2, none_inside: 2, from_file: 2, undated: 2 });
+        let off = DateRules { file_when_none: false, file_when_odd: false, ..Default::default() };
+        assert_eq!(db.date_summary(&off).unwrap(), DateSummary { total: 5, odd: 2, none_inside: 2, from_file: 0, undated: 4 });
+    }
+
+    #[test]
+    fn the_date_rules_are_saved_and_applied_to_every_item_from_the_dates_it_remembers() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.date_rules(), DateRules::default());
+        let f = db.add_folder("/p").unwrap();
+        let file_s = 1_313_805_178_i64; // 2011
+        // inside the file: a clock that was never set (1980); a real date; nothing at all
+        let odd = db.upsert_photo(f, "/p/odd.jpg", 1, file_s * 1000, &meta(Some(315_532_800 + 105))).unwrap();
+        let real = db.upsert_photo(f, "/p/real.jpg", 1, file_s * 1000, &meta(Some(1_577_934_245))).unwrap();
+        let none = db.upsert_photo(f, "/p/none.jpg", 1, file_s * 1000, &meta(None)).unwrap();
+        let taken = |id| db.get_photo(id).unwrap().unwrap().meta.taken_at;
+
+        let off = DateRules { file_when_none: false, file_when_odd: false, ..Default::default() };
+        db.set_date_rules(&off).unwrap();
+        assert_eq!(db.date_rules(), off);
+        assert_eq!(db.apply_date_rules(&off).unwrap(), 1, "only the odd one changes: it has nothing to replace it");
+        assert_eq!((taken(odd), taken(real), taken(none)), (None, Some(1_577_934_245), None));
+
+        let on = DateRules::default();
+        assert_eq!(db.apply_date_rules(&on).unwrap(), 2, "the odd and the missing one now take the file's date");
+        assert_eq!((taken(odd), taken(real), taken(none)), (Some(file_s), Some(1_577_934_245), Some(file_s)));
+        assert_eq!(db.apply_date_rules(&on).unwrap(), 0, "nothing more to change");
     }
 
     #[test]

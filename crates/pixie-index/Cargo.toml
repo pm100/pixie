@@ -12,6 +12,7 @@ rusqlite = { workspace = true }
 walkdir = { workspace = true }
 serde = { workspace = true }
 sha2 = "0.10"
+serde_json = "1"
 
 [dev-dependencies]
 pixie-testutil = { path = "../pixie-testutil" }

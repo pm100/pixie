@@ -21,7 +21,7 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
     /** The loading of the files found, and whether the Pause is on. */
     loading: LoadStatus;
     /** Which analyses are on, and a change to that. */
@@ -39,6 +39,8 @@
     actionBar: string[]; onactionbar: (next: string[]) => void;
     recentDays: number; onrecentdays: (n: number) => void;
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
+    /** Open a tool (the Missing dates tool in Clean up). */
+    onopentool: (id: string) => void;
     analysis: AnalysisView; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
   } = $props();
 
@@ -100,6 +102,9 @@
                onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} />
       </label>
       <ActionBarSettings chosen={actionBar} onchange={onactionbar} />
+      <h3>Dates</h3>
+      <p>Which dates count as missing, and when the file's date is shown instead, are chosen in Clean up.</p>
+      <button onclick={() => onopentool('missing-dates')} title="Open Missing dates in the Clean up tab">Open Missing dates</button>
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
@@ -131,8 +136,9 @@
   nav button { text-align: left; border: 0; background: none; font: inherit; padding: 4px 12px; border-radius: 4px; cursor: pointer; }
   nav button:hover:not(.on) { background: #eef2fb; }
   nav button.on { background: #e3ecff; font-weight: 600; }
-  .page { padding: 16px 24px; font-size: 14px; overflow-y: auto; }
+  .page { padding: var(--page-pad); font-size: 14px; overflow-y: auto; }
   .page :global(h2) { margin: 0 0 8px; font-size: 18px; }
+  .page :global(h3) { margin: 16px 0 6px; font-size: 14px; }
   .page :global(p) { margin: 0 0 8px; }
   .opt { display: block; margin: 6px 0; }
   .err { color: #b00020; }

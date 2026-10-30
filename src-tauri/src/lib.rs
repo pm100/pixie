@@ -762,6 +762,32 @@ fn set_camera_filter(state: tauri::State<AppState>, camera: Option<String>) -> R
     state.db.set_camera_filter(camera.as_deref())
 }
 
+/// The person's date rules (Settings, Dates): which dates count as missing, and when the file's own date stands in.
+#[tauri::command]
+fn get_date_rules(state: tauri::State<AppState>) -> pixie_core::DateRules {
+    state.db.date_rules()
+}
+
+/// What the date rules do to the library (the Missing dates tool in Clean up).
+#[tauri::command]
+async fn date_summary(state: tauri::State<'_, AppState>) -> Result<pixie_core::DateSummary, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.date_summary(&db.date_rules()).map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
+}
+
+/// Save the date rules and apply them to every photo and video from the dates remembered for them (no scan needed).
+/// Returns how many changed their date.
+#[tauri::command]
+async fn set_date_rules(state: tauri::State<'_, AppState>, rules: pixie_core::DateRules) -> Result<usize, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.set_date_rules(&rules).map_err(|e| e.to_string())?;
+        db.apply_date_rules(&rules).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// How many of the items Browse lists have no position, and how many there are (the Locations line of Settings, Picture analysis).
 #[derive(Serialize)]
 struct LocationCounts {
@@ -1844,7 +1870,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, location_counts, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])

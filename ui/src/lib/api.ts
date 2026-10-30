@@ -227,6 +227,13 @@ export const setPersonFilter = (person: number | null) => invoke<void>('set_pers
 export const setCameraFilter = (camera: string | null) => invoke<void>('set_camera_filter', { camera });
 /** Show only the items missing a kind of data (`location`: no position); null turns it off. */
 export const setMissingFilter = (kind: string | null) => invoke<void>('set_missing_filter', { kind });
+/** The person's date rules, and saving them (this applies them to the whole library at once; the number is how many items changed date). */
+import type { DateRules } from './dateRules';
+export const getDateRules = () => invoke<DateRules>('get_date_rules');
+/** What the date rules do to the library (mirrors the Rust `DateSummary`). */
+export type DateSummary = { total: number; odd: number; none_inside: number; from_file: number; undated: number };
+export const dateSummary = () => invoke<DateSummary>('date_summary');
+export const setDateRules = (rules: DateRules) => invoke<number>('set_date_rules', { rules });
 /** How many of the items Browse lists have no position, and how many there are. */
 export const locationCounts = () => invoke<{ without: number; undated: number; total: number }>('location_counts');
 

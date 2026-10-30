@@ -392,8 +392,8 @@
   .spin { width: 22px; height: 22px; border: 3px solid #c3d1f5; border-top-color: #2f6fed; border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes busyin { to { opacity: 1; } }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .top { flex: none; padding: 14px 18px 8px; border-bottom: 1px solid #e3e6ee; }
-  .scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 24px; }
+  .top { flex: none; padding: var(--page-pad-y) var(--page-pad-x) 8px; border-bottom: 1px solid #e3e6ee; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; padding: var(--page-pad-y) var(--page-pad-x) 24px; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
   .sp { flex: 1; }
   .sections { display: flex; gap: 6px; }
