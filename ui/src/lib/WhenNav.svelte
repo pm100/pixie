@@ -109,26 +109,26 @@
 <style>
   .when { display: grid; gap: 1px; }
   /* The same rows and indents as the other trees in the list (Auto tags categories, trip years). */
-  .yr, .day { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; font: inherit; text-align: left; padding: 4px 12px; border-radius: 4px; cursor: pointer; }
+  .yr, .day { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; background: none; font: inherit; text-align: left; padding: 4px 8px 4px 20px; border-radius: 4px; cursor: pointer; }
   .yr:hover, .day:hover, .chip:not(.none):hover { background: #eef2fb; }
   .yr.active, .day.active { background: #e3ecff; }
   .tw { width: 16px; flex: none; }
   .y { font-weight: 600; color: #333; }
   .n { margin-left: auto; color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
   /* Month tiles keep one size whatever the width of the pane: always four to a row, so three rows. */
-  .months { display: grid; grid-template-columns: repeat(4, 42px); justify-content: start; gap: 3px; padding: 2px 12px 6px 28px; }
+  .months { display: grid; grid-template-columns: repeat(4, 42px); justify-content: start; gap: 3px; padding: 2px 8px 6px 32px; }
   .chip { text-align: center; border: 1px solid #cfd5e3; border-radius: 4px; padding: 2px 0; background: #fff; font: inherit; font-size: 12px; cursor: pointer; }
   .chip.none { color: #999; border-style: dashed; background: transparent; cursor: default; }
   /* Chosen: the same light blue and bold as every other chosen row in the list. */
   .chip.on { background: #e3ecff; border-color: #bcd0f7; font-weight: 600; }
   .chip { display: inline-flex; align-items: center; justify-content: center; gap: 2px; }
   .chip :global(.check) { width: 11px; height: 11px; }
-  .days { margin: 0 12px 6px 28px; padding-left: 6px; border-left: 2px solid #2f6fed; display: grid; gap: 1px; }
+  .days { margin: 0 8px 6px 32px; padding-left: 6px; border-left: 2px solid #2f6fed; display: grid; gap: 1px; }
   .day { padding: 2px 6px; }
   .badge { width: 30px; flex: none; text-align: center; border: 1px solid #d6dbe8; border-radius: 4px; background: #fff; line-height: 1.05; padding: 1px 0 2px; }
   .badge i { display: block; font-style: normal; font-size: 8px; letter-spacing: .06em; text-transform: uppercase; color: #888; }
   .badge b { font-size: 13px; font-variant-numeric: tabular-nums; }
   .badge.we i { color: #2f6fed; }
   .place { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #555; }
-  .empty { margin: 6px 12px; color: #888; }
+  .empty { margin: 6px 8px 6px 20px; color: #888; }
 </style>

@@ -282,27 +282,35 @@
 </nav>
 
 <style>
-  nav { padding: 6px 4px 16px; font-size: 14px; }
-  .head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; margin: 2px 0 0; padding: 2px 8px; border: 0; border-radius: 4px; background: none; cursor: pointer; font: inherit;
-          font-weight: 400; color: #222; }
+  nav { padding: 4px 4px 16px; font-size: 14px; }
+  /* One indent grid: every row has a 16px slot (a chevron, a tick or nothing) and each level moves right by one 12px step,
+     so a child's slot sits under its parent's label. Section headings are small, quiet capitals with a rule above. */
+  .head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; margin: 0; padding: 7px 8px; border: 0; border-top: 1px solid #e6e9f1; border-radius: 0; background: none; cursor: pointer; font: inherit;
+          font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #6a7388; }
   .head:hover { background: #eef2fb; }
-  .head:first-child { margin-top: 6px; }
-  .chosen { font-size: 12px; color: #2a5bd7; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 12px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; }
+  /* Open: its rows follow closely, so the heading stays attached to them. The first one has nothing above it to space from. */
+  .head[aria-expanded="true"] { padding-bottom: 2px; }
+  /* A little air after the last row of an open section, before the next rule. */
+  :not(.head) + .head { margin-top: 6px; }
+  .head:first-child { margin-top: 0; padding-top: 2px; border-top: 0; }
+  .chosen { font-size: 12px; color: #2a5bd7; font-weight: 600; letter-spacing: 0; text-transform: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; padding: 4px 8px 4px 20px; border: 0; background: none; cursor: pointer; font: inherit; border-radius: 4px; }
   .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .n { color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
   /* Nothing here under the filters in force: shown, but quiet. */
   .zero { opacity: .45; }
   .more { color: #555; }
   .cat { font-weight: 600; color: #333; }
-  .sub { padding-left: 28px; }
+  .sub { position: relative; padding-left: 32px; }
+  /* A thin line down the tags of an open group, under its chevron. */
+  .sub::before { content: ""; position: absolute; left: 28px; top: 0; bottom: 0; width: 1px; background: #cfd5e3; }
   .avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: #dde2ee; flex: none; margin-right: 6px; }
-  .mark { width: 14px; flex: none; display: inline-flex; }
+  .mark { width: 16px; flex: none; display: inline-flex; justify-content: center; }
   .item:hover { background: #eef2fb; }
   .item.offline .grow, .item.offline .n { opacity: .55; }
   .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }
-  .hint { margin: 2px 12px 4px; font-size: 12px; color: #777; }
+  .hint { margin: 2px 8px 4px 20px; font-size: 12px; color: #777; }
   .row { position: relative; }
   .edit { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); border: 0; background: none; cursor: pointer; color: #777; font-size: 12px; padding: 2px 4px; visibility: hidden; }
   .row:hover .edit, .edit:focus-visible { visibility: visible; }
