@@ -1415,7 +1415,8 @@
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }
   .mapsplit { display: flex; flex-direction: column; height: 100%; }
-  .maptop { flex: 0 0 45%; min-height: 220px; }
-  .mapbottom { flex: 1; min-height: 0; }
+  .maptop { flex: 0 0 45%; min-height: 220px; margin-bottom: 8px; }
+  /* A line from edge to edge of the panel (past the Shell's 8px side padding), with space either side of it, between the map and the photo list. */
+  .mapbottom { flex: 1; min-height: 0; margin: 0 -8px; border-top: 1px solid #b8bdca; padding: 8px 8px 0; box-sizing: border-box; }
   .empty.small { margin-top: 24px; }
 </style>
