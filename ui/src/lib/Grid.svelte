@@ -3,20 +3,22 @@
   import { listPhotos, type DayGroup, type Photo, type View } from './api';
   import { formatDay, formatDuration } from './format';
   import { columnsFor } from './gridMath';
-  import { buildLayout, groupTop, visibleRows } from './layout';
+  import { buildLayout, groupTop, revealOffset, visibleRows } from './layout';
   import { PageCache } from './pageCache';
   import { makePoster } from './posterFrame';
   import { createPosterQueue } from './posterQueue';
   import { retryDelay } from './retry';
   import { posterUrl, thumbUrl } from './url';
 
-  let { groups, version, view, selected, scrollTo, onopen, onselect, picks = new Set<number>(), onpick = () => {} }: {
+  let { groups, version, view, selected, scrollTo, reveal = null, onopen, onselect, picks = new Set<number>(), onpick = () => {} }: {
     groups: DayGroup[];
     version: number;
     view: View;
     /** The photo chosen (its position), if any. */
     selected: number | null;
     scrollTo: { group: number; n: number } | null;
+    /** Ask to bring the photo at this position into view (`n` changes with each ask, so the same photo can be asked for again). */
+    reveal?: { index: number; n: number } | null;
     onopen: (index: number) => void;
     onselect: (index: number, mods: { ctrl: boolean; shift: boolean }) => void;
     /** Quick pick: the picked photos (by id), and a click on the marker in a photo's top-left corner. */
@@ -103,6 +105,16 @@
     const t = scrollTo;
     if (!t) return;
     untrack(() => { scroller.scrollTop = groupTop(layout, t.group); });
+  });
+
+  // Ask to show a photo: scrolled to only if it is not in view already.
+  $effect(() => {
+    const t = reveal;
+    if (!t) return;
+    untrack(() => {
+      const y = revealOffset(layout, t.index, scroller.scrollTop, height);
+      if (y !== null) scroller.scrollTop = y;
+    });
   });
 
   function unit(n: number): string {

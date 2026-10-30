@@ -151,6 +151,8 @@ export const saveContact = (contact: NewContact) => invoke<Contact>('save_contac
 export const deleteContact = (id: number) => invoke<void>('delete_contact', { id });
 export const photosAt = (indexes: number[], v: View) =>
   invoke<Photo[]>('photos_at', { indexes, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId, since: v.since, until: v.until, search: v.search });
+export const photoPosition = (id: number, v: View) =>
+  invoke<number | null>('photo_position', { id, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId, since: v.since, until: v.until, search: v.search });
 export const sendEmail = (request: SendEmailRequest) => invoke<string[]>('send_email', { request });
 
 // ---- picture analysis (Auto tags) ----

@@ -63,6 +63,15 @@ export function groupTop(layout: Layout, group: number): number {
   return layout.groupTops[group] ?? layout.height;
 }
 
+/** Where to scroll so the photo at this position shows: its row centred in the view, within the list. Nothing (stay put) when its row is
+ *  already fully in view, or when the list has no such position. */
+export function revealOffset(layout: Layout, index: number, scrollTop: number, viewH: number): number | null {
+  const row = layout.rows.find((r) => r.kind === 'cells' && index >= r.first && index < r.first + r.n);
+  if (!row) return null;
+  if (row.top >= scrollTop && row.top + row.h <= scrollTop + viewH) return null;
+  return Math.max(0, Math.min(row.top + row.h / 2 - viewH / 2, layout.height - viewH));
+}
+
 /** True when two group lists are identical, so a live refresh can skip a pointless grid reload. */
 export function sameGroups(a: DayGroup[], b: DayGroup[]): boolean {
   return a.length === b.length && a.every((g, i) => g.day === b[i].day && g.count === b[i].count && g.first_index === b[i].first_index);

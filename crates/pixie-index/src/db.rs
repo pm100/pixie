@@ -1394,6 +1394,23 @@ impl Db {
         Ok(out)
     }
 
+    /// Where this photo sits in the listing (the position the grid shows it at), or `None` when the listing does not hold it.
+    pub fn position_of(&self, q: &PhotoQuery, id: PhotoId) -> Result<Option<i64>> {
+        let c = self.conn();
+        let filter = Filter::of(q);
+        let sql = format!("SELECT id FROM photos WHERE missing = 0{} ORDER BY {}", filter.sql(), order_sql(q.order));
+        let mut s = c.prepare(&sql).map_err(db_err)?;
+        let mut rows = s.query(filter.params().as_slice()).map_err(db_err)?;
+        let mut at = 0;
+        while let Some(r) = rows.next().map_err(db_err)? {
+            if r.get::<_, PhotoId>(0).map_err(db_err)? == id {
+                return Ok(Some(at));
+            }
+            at += 1;
+        }
+        Ok(None)
+    }
+
     /// Store the embedding of one photo for a model version (replacing any earlier one).
     pub fn put_embedding(&self, photo_id: PhotoId, model_version: &str, vector: &[f32]) -> Result<()> {
         let blob: Vec<u8> = vector.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -2329,6 +2346,19 @@ mod tests {
         assert!(db.photos_at(&q, &[99]).unwrap().is_empty()); // past the end: nothing, the caller compares counts
         assert!(db.photos_at(&q, &[-1]).unwrap().is_empty());
         assert!(db.photos_at(&q, &(0..201).collect::<Vec<_>>()).is_err()); // more than 200 positions
+    }
+
+    #[test]
+    fn position_of_gives_where_a_photo_sits_in_the_current_order() {
+        let (db, _f) = geo_library();
+        let q = PhotoQuery::default();
+        let all = db.list_photos_in(&q, 0, 100).unwrap();
+        for (i, p) in all.iter().enumerate() {
+            assert_eq!(db.position_of(&q, p.id).unwrap(), Some(i as i64));
+        }
+        let oldest = PhotoQuery { order: SortOrder::Oldest, ..PhotoQuery::default() };
+        assert_eq!(db.position_of(&oldest, all[0].id).unwrap(), Some(all.len() as i64 - 1));
+        assert_eq!(db.position_of(&q, -5).unwrap(), None); // not in the listing
     }
 
     #[test]

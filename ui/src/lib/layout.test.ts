@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DayGroup } from './api';
-import { buildLayout, groupAt, groupTop, rowAt, sameGroups, visibleRows } from './layout';
+import { buildLayout, groupAt, groupTop, revealOffset, rowAt, sameGroups, visibleRows } from './layout';
 
 const g = (count: number, first_index: number, day: string | null = '2024-06-01'): DayGroup => ({ day, count, first_index });
 
@@ -77,5 +77,24 @@ describe('sameGroups', () => {
     expect(sameGroups([g(5, 0)], [g(6, 0)])).toBe(false);
     expect(sameGroups([g(5, 0)], [g(5, 0), g(1, 5)])).toBe(false);
     expect(sameGroups([g(1, 0, 'a')], [g(1, 0, 'b')])).toBe(false);
+  });
+});
+
+describe('revealOffset', () => {
+  it('centres the row of the photo in the view, within the list', () => {
+    expect(revealOffset(layout(), 5, 0, 200)).toBe(160); // row 260..360 would centre at 210, but the list ends at 360
+    expect(revealOffset(layout(), 0, 200, 200)).toBe(0); // row 30..130 would centre at -20
+    expect(revealOffset(layout(), 4, 0, 100)).toBe(130); // row 130..230 centres at 130 + 50 - 50
+  });
+  it('does not move when the row of the photo is already fully in view', () => {
+    expect(revealOffset(layout(), 1, 0, 200)).toBeNull();
+    expect(revealOffset(layout(), 4, 100, 200)).toBeNull();
+  });
+  it('moves when only part of the row is in view', () => {
+    expect(revealOffset(layout(), 4, 0, 200)).not.toBeNull(); // row 130..230, view 0..200
+  });
+  it('gives nothing for a position the list does not have', () => {
+    expect(revealOffset(layout(), 7, 0, 200)).toBeNull();
+    expect(revealOffset(layout(), -1, 0, 200)).toBeNull();
   });
 });

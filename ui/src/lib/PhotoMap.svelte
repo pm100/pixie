@@ -33,10 +33,6 @@
   let routeLayer: L.LayerGroup | undefined;
   let loaded = 0; // tiles shown since the last view change
   let errors = 0; // tiles that failed since the last view change
-  // After a click on a pin the grid shows just that photo. While this is true the map reports no area
-  // changes, whatever moves it (the zoom to the pin, an animation that was already running, a resize),
-  // until the user acts on the map themselves.
-  let focusActive = false;
   let positioned = false; // the view is set once: from the saved position or by fitting the points
 
   const emitBounds = debounce((b: Bounds | null) => onbounds(b), 200);
@@ -66,7 +62,7 @@
         if (!map) return;
         if (c.count === 1 && c.id !== null) { // one photo
           if (POPUP_ON_PIN) void showPin(c.id, c.lat, lon);
-          else void focusPin(c.id, c.lat, lon);
+          else void focusPin(c.id);
           return;
         }
         const t = clusterTarget(c);
@@ -83,19 +79,11 @@
     }
   }
 
-  /** Off: a click on a red dot zooms to that photo. Set to true to show a thumbnail popup instead (kept for later). */
+  /** Off: a click on a red dot selects that photo. Set to true to show a thumbnail popup instead (kept for later). */
   const POPUP_ON_PIN = false;
 
-  /**
-   * Click on one red dot: zoom to just that photo. The app narrows the grid to that spot and selects
-   * the photo, so the grid and the details pane show it. Nothing reports bounds again (which would
-   * widen the grid) until the user acts on the map.
-   */
-  async function focusPin(id: number, lat: number, lon: number) {
-    if (!map) return;
-    emitBounds.cancel(); // a report from an earlier pan must not undo the focus
-    focusActive = true;
-    map.setView([lat, lon], Math.max(map.getZoom(), 18));
+  /** Click on one red dot: the app selects that photo and scrolls the grid to it, so the details pane shows it. The map stays as it is. */
+  async function focusPin(id: number) {
     const p = await getPhoto(id).catch(() => null);
     if (p) onpin(p);
   }
@@ -222,19 +210,9 @@
     map.on('movestart', () => { loaded = 0; errors = 0; });
     map.on('moveend', () => {
       redraw();
-      if (!focusActive) emitBounds(viewBounds());
+      emitBounds(viewBounds());
       const c = map!.getCenter();
       emitMove({ lat: c.lat, lon: c.lng, zoom: map!.getZoom() });
-    });
-    // The user taking over (drag, wheel, zoom buttons, keys, touch) ends the focus; the next move reports as usual.
-    const takeOver = () => { focusActive = false; };
-    const inputs = ['pointerdown', 'wheel', 'keydown', 'touchstart'] as const;
-    for (const ev of inputs) el.addEventListener(ev, takeOver, { capture: true, passive: true });
-    // A click on empty map (not on a pin) also ends it, and puts the grid back on the visible area.
-    map.on('click', () => {
-      if (!focusActive) return;
-      focusActive = false;
-      emitBounds(viewBounds());
     });
     const ro = new ResizeObserver(() => map?.invalidateSize());
     ro.observe(el);
@@ -242,7 +220,6 @@
     redraw();
     emitBounds(viewBounds());
     return () => {
-      for (const ev of inputs) el.removeEventListener(ev, takeOver, { capture: true });
       ro.disconnect();
       emitBounds.cancel();
       emitMove.cancel();
@@ -261,13 +238,12 @@
     const bounds = drawRoute();
     if (bounds && r !== routeShown) {
       map.closePopup();
-      focusActive = false;
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
     }
     routeShown = r;
   });
 
-  // A choice in the browse tree: when its points arrive, show all of them (the same as Recenter).
+  // A choice in the browse tree: when its points arrive, show all of them (the same as Re-center).
   let fitSeen = untrack(() => fitMap); // the value at mount: only later changes count
   let fitWanted = false;
   $effect(() => {
@@ -292,7 +268,7 @@
 
 <div class="wrap">
   <div class="map" bind:this={el}></div>
-  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Centre the map on every photo and video shown, and zoom to fit them">Recenter</button>
+  <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Re-center the map on every photo and video shown, and zoom to fit them">Re-center</button>
   {#if points.length === 0}
     <div class="note">No photos with a location yet.</div>
   {/if}

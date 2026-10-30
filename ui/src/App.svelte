@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
-    analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
+    analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
@@ -719,23 +719,22 @@
     refresh(true).catch((e) => (message = String(e)));
   }
 
-  /**
-   * A red dot was clicked: the grid shows just what is at that spot and the photo is selected, so the
-   * details pane shows it. The next pan or zoom of the map goes back to showing the visible area.
-   */
-  async function focusPhoto(p: Photo) {
-    if (mode !== 'map' || p.gps_lat === null || p.gps_lon === null) return;
-    areaOnly = true; // the grid is now limited to this spot, which is a filter like any other (it shows as a pill)
-    const d = 0.00002; // about 2 m
-    view = { ...view, bounds: { south: p.gps_lat - d, west: p.gps_lon - d, north: p.gps_lat + d, east: p.gps_lon + d } };
-    selected = null;
+  /** Asks the grid to bring a photo into view (see Grid's `reveal`). */
+  let reveal = $state<{ index: number; n: number } | null>(null);
+  let reveals = 0;
+  /** A red dot was clicked: the photo is selected (so the details pane shows it) and the grid scrolls to it. Nothing else changes: the map stays where it is and the grid keeps its filters. */
+  async function revealPhoto(p: Photo) {
+    if (mode !== 'map') return;
+    let at: number | null;
     try {
-      await refresh(true);
+      at = await photoPosition(p.id, shown);
     } catch (e) {
       message = String(e);
       return;
     }
-    if (total > 0) selected = 0;
+    if (at === null) return; // not in the listing (a filter hides it)
+    selected = at;
+    reveal = { index: at, n: ++reveals };
   }
 
   // A scan that finishes while the viewer is open must not swap what is on screen: the refresh waits.
@@ -1304,7 +1303,7 @@
               <div class="maptop">
                 <PhotoMap {points} {fitMap} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
-                          onpin={focusPhoto}
+                          onpin={revealPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}
                           onmove={(v) => { lastMap = v; savePref('mapView', v); }} />
               </div>
@@ -1312,7 +1311,7 @@
                 {#if total === 0 && !scanning}
                   <p class="empty small">{areaOnly ? 'No photos or videos in this part of the map.' : emptyMessage}</p>
                 {:else}
-                  <Grid {groups} {version} view={shown} {selected} {scrollTo} picks={picked} onpick={togglePick}
+                  <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick}
                         onopen={openItem}
                         onselect={selectItem} />
                 {/if}
@@ -1321,7 +1320,7 @@
           {:else if total === 0 && !scanning}
             <p class="empty">{emptyMessage}</p>
           {:else}
-            <Grid {groups} {version} view={shown} {selected} {scrollTo} picks={picked} onpick={togglePick}
+            <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick}
                   onopen={openItem}
                   onselect={selectItem} />
           {/if}
