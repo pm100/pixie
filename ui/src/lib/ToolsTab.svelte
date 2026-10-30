@@ -130,7 +130,7 @@
     <Resizer bind:width={navW} min={160} max={360} side="left" onchange={(w) => savePref('tools.nav', w)} />
 
     {#if whole}
-      <div class="whole" aria-label={current.label}>
+      <div class="whole" role="region" aria-label={current.label}>
         {#if current.id === 'duplicates'}
           <DuplicatesTab {active} onchange={onduplicates} />
         {:else}

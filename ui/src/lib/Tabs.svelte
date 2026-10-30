@@ -12,10 +12,12 @@
 </script>
 
 <div class="frame">
-  <div class="strip" role="tablist" aria-label="Sections">
-    {#each tabs as t (t.id)}
-      <button role="tab" aria-selected={active === t.id} class:on={active === t.id} onclick={() => onpick(t.id)}>{t.label}</button>
-    {/each}
+  <div class="strip">
+    <div class="tabs" role="tablist" aria-label="Sections">
+      {#each tabs as t (t.id)}
+        <button role="tab" aria-selected={active === t.id} class:on={active === t.id} onclick={() => onpick(t.id)}>{t.label}</button>
+      {/each}
+    </div>
     <span class="sp"></span>
     <span class="status">{@render status()}</span>
     <!-- A placeholder for the help panel (Ask Pixie will open from here); it does nothing yet. -->
@@ -27,6 +29,7 @@
 <style>
   .frame { display: flex; flex-direction: column; flex: 1; min-height: 0; background: #e9ecf2; }
   .sp { flex: 1; }
+  .tabs { display: flex; align-items: flex-end; gap: 2px; }
   .status { display: flex; align-items: center; gap: 10px; align-self: center; padding-bottom: 2px; font-size: 12px; }
   /* The strip's bottom line is the top edge of the panel; the active tab sits over it and is open at the bottom. */
   .strip { display: flex; align-items: flex-end; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid #c3c8d4; }

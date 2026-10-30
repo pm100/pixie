@@ -4,6 +4,7 @@
    *  is a popover so the grid stays in view. When there is no room the last buttons fold into More. */
   import { BAR_ACTIONS, split } from './actionBar';
   import GroupTags from './GroupTags.svelte';
+  import { dismiss, placeBeside } from './popover';
   import TagAs from './TagAs.svelte';
   import { GROUPS, toolById, worksOnWholeLibrary } from './tools';
 
@@ -34,36 +35,15 @@
   const label = (id: string) => BAR_ACTIONS.find((a) => a.id === id)?.label ?? id;
 
   let open = $state<'tag' | 'more' | null>(null);
-  let root: HTMLElement | undefined = $state();
   let moreBtn: HTMLElement | undefined = $state();
   /** The popover is fixed to the window (so a pane it sits in cannot clip it), under the button that opened it. */
   let popStyle = $state('');
-  /** Under the button, or over it when there is more room there (the details row sits low in the window); the popover scrolls if it is still too tall. */
-  function placeUnder(el: HTMLElement) {
-    const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - 8;
-    const above = r.top - 8;
-    const up = below < 300 && above > below;
-    const side = alignRight ? `right:${Math.round(window.innerWidth - r.right)}px` : `left:${Math.round(r.left)}px`;
-    popStyle = up
-      ? `bottom:${Math.round(window.innerHeight - r.top + 4)}px;max-height:${Math.round(above)}px;${side}`
-      : `top:${Math.round(r.bottom + 4)}px;max-height:${Math.round(below)}px;${side}`;
-  }
+  function placeUnder(el: HTMLElement) { popStyle = placeBeside(el, { alignRight }); }
   function toggle(which: 'tag' | 'more', e: MouseEvent) {
     if (open === which) { open = null; return; }
     placeUnder(e.currentTarget as HTMLElement);
     open = which;
   }
-  $effect(() => {
-    if (!open) return;
-    const close = () => (open = null);
-    window.addEventListener('resize', close);
-    window.addEventListener('scroll', close, true);
-    return () => { window.removeEventListener('resize', close); window.removeEventListener('scroll', close, true); };
-  });
-  // The path is taken when the click happens: a More item has already left the page by the time this runs, so asking where its target is now would call it an outside click.
-  function away(e: MouseEvent) { if (open && root && !e.composedPath().includes(root)) open = null; }
-  function keys(e: KeyboardEvent) { if (e.key === 'Escape' && open) { open = null; e.stopPropagation(); } }
 
   /** Everything not shown as a button, by tab, for More: the ones not built yet are greyed. */
   const more = $derived(GROUPS.filter((g) => !worksOnWholeLibrary(g.id))
@@ -83,9 +63,7 @@
   }
 </script>
 
-<svelte:window onclick={away} onkeydown={keys} />
-
-<span class="actions" role="group" aria-label="Actions on {what}" bind:this={root}>
+<span class="actions" role="group" aria-label="Actions on {what}" use:dismiss={{ active: open !== null, close: () => (open = null), closeOnMove: true }}>
   {#each shown as id (id)}
     {#if id === 'tag'}
       <button class="act" aria-haspopup="dialog" aria-expanded={open === 'tag'} onclick={(e) => toggle('tag', e)}>Tag…</button>
@@ -107,10 +85,12 @@
   {#if open === 'more'}
     <div class="pop menu" style={popStyle} role="menu" aria-label="More tools">
       {#each more as g (g.id)}
-        <h4>{g.label}</h4>
-        {#each g.actions as a (a.id)}
-          <button role="menuitem" class:soon={!a.built || a.id in unavailable} aria-disabled={!a.built || a.id in unavailable} disabled={!a.built || a.id in unavailable} title={unavailable[a.id]} onclick={() => go(a.id)}>{a.label}{#if !a.built}<small>soon</small>{/if}</button>
-        {/each}
+        <div role="group" aria-label={g.label}>
+          <div class="gh" aria-hidden="true">{g.label}</div>
+          {#each g.actions as a (a.id)}
+            <button role="menuitem" class:soon={!a.built || a.id in unavailable} aria-disabled={!a.built || a.id in unavailable} disabled={!a.built || a.id in unavailable} title={unavailable[a.id]} onclick={() => go(a.id)}>{a.label}{#if !a.built}<small>soon</small>{/if}</button>
+          {/each}
+        </div>
       {/each}
     </div>
   {/if}
@@ -122,7 +102,7 @@
   .act:disabled { opacity: .5; cursor: default; }
   .pop { position: fixed; z-index: 60; min-width: 240px; background: #fff; border: 1px solid #c5c8d2; border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); padding: 6px 4px; overflow-y: auto; }
   .menu { min-width: 220px; padding: 4px 0; }
-  .menu h4 { margin: 6px 14px 2px; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #7a7a86; font-weight: 600; }
+  .menu .gh { margin: 6px 14px 2px; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #7a7a86; font-weight: 600; }
   .menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; font: inherit; padding: 5px 14px; cursor: pointer; }
   .menu button:hover:not(:disabled) { background: #2f6fed; color: #fff; }
   .menu button.soon { color: #9a9aa4; cursor: default; }

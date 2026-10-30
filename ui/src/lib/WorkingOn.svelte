@@ -2,6 +2,7 @@
   /** "Working on": which photos a tool acts on. Shared by Send, Create and Organize, so the choice carries from one tab to the next. */
   import type { UserTagCount } from './api';
   import { plural } from './format';
+  import { dismiss } from './popover';
 
   let { source = $bindable(), pickedCount, hasPhoto, userTags, count, onclear, error = '' }: {
     /** `picked`, `current` (the photo chosen in Browse), or `tag:<name>`. */
@@ -21,22 +22,17 @@
 
   // The tag segment opens a small list of your tags (a plain select would list its own label as a choice).
   let listOpen = $state(false);
-  let root: HTMLElement | undefined = $state();
-  function away(e: MouseEvent) { if (listOpen && root && e.target instanceof Node && !root.contains(e.target)) listOpen = false; }
-  function keys(e: KeyboardEvent) { if (e.key === 'Escape' && listOpen) { listOpen = false; e.stopPropagation(); } }
   $effect(() => { if (userTags.length === 0) listOpen = false; });
   const choose = (name: string) => { source = `tag:${name}`; listOpen = false; };
 </script>
 
-<svelte:window onclick={away} onkeydown={keys} />
-
 <div class="bar">
   <span class="lbl" id="working-on-label">Working on:</span>
-  <div class="seg" role="radiogroup" aria-labelledby="working-on-label">
-    <button class="opt" role="radio" aria-checked={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
-    <button class="opt" role="radio" aria-checked={source === 'current'} class:on={source === 'current'} disabled={!hasPhoto}
+  <div class="seg" role="group" aria-labelledby="working-on-label">
+    <button class="opt" aria-pressed={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
+    <button class="opt" aria-pressed={source === 'current'} class:on={source === 'current'} disabled={!hasPhoto}
             title={hasPhoto ? 'The photo chosen in Browse' : 'Choose a photo in Browse first'} onclick={() => (source = 'current')}>Current</button>
-    <span class="tagpick" bind:this={root}>
+    <span class="tagpick" use:dismiss={{ active: listOpen, close: () => (listOpen = false) }}>
       <button class="opt" class:on={onTag} aria-pressed={onTag} aria-haspopup="listbox" aria-expanded={listOpen} disabled={userTags.length === 0}
               title={userTags.length === 0 ? 'You have no tags yet' : 'Work on the photos with one of your tags'} onclick={() => (listOpen = !listOpen)}>{onTag ? tagName : 'A tag…'} ▾</button>
       {#if listOpen}

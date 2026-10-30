@@ -2,6 +2,7 @@
   /** "Tag as…": give some photos a tag. Type to find one of your tags, or to make a new one. */
   import { untrack } from 'svelte';
   import { tagPhotos, tagUsage, type TagUse } from './api';
+  import { dismiss, placeBeside } from './popover';
   import { enterChoice, tagAsRows } from './userTags';
 
   let { ids, onchange, floating = true, inline = false, ondone }: {
@@ -21,7 +22,6 @@
   let query = $state('');
   let usage = $state<TagUse[]>([]);
   let error = $state('');
-  let box = $state<HTMLDivElement | null>(null);
   let field = $state<HTMLInputElement | null>(null);
 
   const list = $derived(tagAsRows(usage, ids.length, query));
@@ -32,9 +32,7 @@
   let plus = $state<HTMLButtonElement | null>(null);
   const BOX_WIDTH = 240;
   function place() {
-    if (!plus) return;
-    const r = plus.getBoundingClientRect();
-    dropStyle = `top:${Math.round(r.bottom + 4)}px;left:${Math.max(8, Math.round(r.right - BOX_WIDTH))}px;width:${BOX_WIDTH}px`;
+    if (plus) dropStyle = placeBeside(plus, { alignRight: true, width: BOX_WIDTH });
   }
 
   async function show() {
@@ -77,23 +75,10 @@
     if (name !== null) void apply(name);
   }
 
-  // A click anywhere else closes the box.
-  $effect(() => {
-    if (!open || inline) return;
-    const away = (e: MouseEvent) => { if (box && !box.contains(e.target as Node)) close(); };
-    window.addEventListener('mousedown', away);
-    // The box is fixed to the window, so it would be left behind if the pane scrolled or the window changed size.
-    window.addEventListener('resize', close);
-    window.addEventListener('scroll', close, true);
-    return () => {
-      window.removeEventListener('mousedown', away);
-      window.removeEventListener('resize', close);
-      window.removeEventListener('scroll', close, true);
-    };
-  });
 </script>
 
-<div class="tagas" class:floating={floating && !inline} class:inline bind:this={box}>
+<!-- A press anywhere else closes the box; as it is fixed to the window it also closes when the window changes size or something else scrolls. Inline, the popover that holds it closes it. -->
+<div class="tagas" class:floating={floating && !inline} class:inline use:dismiss={{ active: open && !inline, close, closeOnMove: floating }}>
   {#if !inline}
     <button bind:this={plus} class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
   {/if}
@@ -123,7 +108,7 @@
   .plus:disabled { opacity: .5; cursor: default; }
   .tagas.inline { display: flex; align-items: stretch; }
   .tagas.inline .drop { border: 0; box-shadow: none; padding: 0 4px; }
-  .drop { align-self: stretch; border: 1px solid #d6d9e2; border-radius: 6px; padding: 6px; background: #fff; box-shadow: 0 4px 16px rgba(20, 28, 50, .14); display: flex; flex-direction: column; gap: 4px; }
+  .drop { overflow-y: auto; align-self: stretch; border: 1px solid #d6d9e2; border-radius: 6px; padding: 6px; background: #fff; box-shadow: 0 4px 16px rgba(20, 28, 50, .14); display: flex; flex-direction: column; gap: 4px; }
   input { width: 100%; box-sizing: border-box; padding: 5px 8px; }
   ul { list-style: none; margin: 0; padding: 0; }
   .row { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; background: none; font: inherit; padding: 5px 4px; border-radius: 4px; cursor: pointer; }
