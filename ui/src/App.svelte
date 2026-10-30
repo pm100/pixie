@@ -33,6 +33,7 @@
   import { sameGroups } from './lib/layout';
   import { loadPref, savePref } from './lib/prefs';
   import { folderName, plural } from './lib/format';
+  import { shouldFit, type MapChange } from './lib/mapFit';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
   import BackgroundProgress from './lib/BackgroundProgress.svelte';
@@ -156,7 +157,7 @@
       view = { ...view, since: recentSince(Math.floor(Date.now() / 1000), days) };
       selected = null;
       refresh(true).catch((e) => (message = String(e)));
-      if (mode === 'map') { fitMap++; loadPoints(); }
+      if (mode === 'map') { askFit('filter'); loadPoints(); }
     }
   }
   let analysis = $state<AnalysisStatus | null>(null);
@@ -203,7 +204,7 @@
     view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
   /** Picks or tags changed: read the tag list again, and if Picked or a tag is chosen, what it lists changed too (a tag
    *  that lost its last photo is gone from the library, so the chip goes with it). */
@@ -224,7 +225,7 @@
     view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
 
   // People: faces grouped by who they are, as a filter. It combines with a tag.
@@ -238,7 +239,7 @@
     view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
   let peopleState = $state<PeopleStatus | null>(null);
   let dupState = $state<DupStatus | null>(null);
@@ -287,7 +288,7 @@
     view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
 
   /** The People tab changed someone: refresh the list, and re-take the photos of a chosen person (they may have changed). */
@@ -508,7 +509,7 @@
     view = { ...view, order: 'newest', since: on ? recentSince(Math.floor(Date.now() / 1000), recentDays) : null, until: null };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   /** Anything narrowing the photos shown (the library choice, folder and kind, are not counted). */
@@ -526,7 +527,7 @@
     savePref('kind', null);
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   /** Show only one year, month or day, or the items without a date (the same key again clears it). */
@@ -539,7 +540,7 @@
     view = { ...view, order: 'newest', since: r?.since ?? null, until: r?.until ?? null };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   function setKind(kind: MediaKind | null) {
@@ -548,7 +549,7 @@
     savePref('kind', kind);
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   /** Show only one photo folder (the same folder again clears it). */
@@ -557,7 +558,7 @@
     view = { ...view, folderId: id };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   /** Show only one trip (the same trip again clears it): its days become the date range. */
@@ -575,7 +576,7 @@
     }
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
-    if (mode === 'map') { fitMap++; loadPoints(); }
+    if (mode === 'map') { askFit('selection'); loadPoints(); }
   }
 
   // Trips: runs of days away from home. Home is the user's to confirm (in Settings), so none are shown before that.
@@ -687,6 +688,10 @@
   let points = $state<GeoPoint[]>([]);
   /** Counts the choices made in the browse tree: the map shows all of what was chosen when the new points arrive. */
   let fitMap = $state(0);
+  /** The user has moved or zoomed the map by hand since it last fitted the photos (PhotoMap says). */
+  let mapMoved = false;
+  /** After a change in Browse: ask the map to fit the photos, unless the rule in `shouldFit` says to leave it. */
+  function askFit(change: MapChange) { if (shouldFit(change, areaOnly, mapMoved)) fitMap++; }
   let soloPhoto = $state<Photo | null>(null); // a photo opened from the map's popup
   let lastMap: MapView | null = parseMapView(loadPref<unknown>('mapView', null)); // latest position, kept for the next opening
   let mapStart = $state<MapView | null>(lastMap); // where the map opens; read once by the map
@@ -1301,7 +1306,7 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} {fitMap} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
+                <PhotoMap {points} {fitMap} onhand={(moved) => (mapMoved = moved)} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={revealPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}

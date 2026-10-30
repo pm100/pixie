@@ -9,7 +9,7 @@
   import { tripDates } from './trips';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, fitMap = 0, initial, route = null, stopNames = [], onbounds, onmove, onpin, onopenphoto }: {
+  let { points, fitMap = 0, initial, route = null, stopNames = [], onbounds, onmove, onhand = () => {}, onpin, onopenphoto }: {
     points: GeoPoint[];
     /** Changes whenever a choice is made in the browse tree: once the new points are in, the map shows all of them. */
     fitMap?: number;
@@ -20,6 +20,8 @@
     initial: MapView | null;
     onbounds: (b: Bounds | null) => void;
     onmove: (v: MapView) => void;
+    /** The user moved or zoomed the map by hand (true), or the map was fitted to the photos (false). */
+    onhand?: (moved: boolean) => void;
     /** A single pin was clicked: its photo. */
     onpin: (p: Photo) => void;
     /** The photo in the pin popup was clicked: open it. */
@@ -34,6 +36,10 @@
   let loaded = 0; // tiles shown since the last view change
   let errors = 0; // tiles that failed since the last view change
   let positioned = false; // the view is set once: from the saved position or by fitting the points
+  let movedByHand = false;
+  const setMoved = (moved: boolean) => { if (moved !== movedByHand) { movedByHand = moved; onhand(moved); } };
+  /** Photos exist but none is in the part of the map on show. */
+  let emptyView = $state(false);
 
   const emitBounds = debounce((b: Bounds | null) => onbounds(b), 200);
   const emitMove = debounce((v: MapView) => onmove(v), 500);
@@ -49,7 +55,9 @@
     markers.clearLayers(); // always remove the old ones: no leaks across pans
     const zoom = map.getZoom();
     const centerLon = map.getCenter().lng;
-    for (const c of clusterPoints(points, zoom, viewBounds())) {
+    const clusters = clusterPoints(points, zoom, viewBounds());
+    emptyView = points.length > 0 && clusters.length === 0;
+    for (const c of clusters) {
       // Draw on the copy of the world that is on screen (the view can cross the date line).
       const lon = nearestWorldLon(c.lon, centerLon);
       const html = c.count === 1 ? '<div class="pin"></div>' : `<div class="cl">${c.count > 9999 ? '10k+' : c.count}</div>`;
@@ -180,6 +188,7 @@
     }
     map.fitBounds([[s, w], [n, e]], { padding: [30, 30], maxZoom: 14 });
     positioned = true;
+    setMoved(false);
   }
 
   onMount(() => {
@@ -204,6 +213,7 @@
     if (initial) {
       map.setView([initial.lat, initial.lon], initial.zoom);
       positioned = true;
+      setMoved(true); // the user's own view from last time
     } else {
       map.setView([20, 0], 2);
     }
@@ -214,6 +224,10 @@
       const c = map!.getCenter();
       emitMove({ lat: c.lat, lon: c.lng, zoom: map!.getZoom() });
     });
+    // The user taking hold of the map (drag, wheel, zoom buttons, keys, touch) is what keeps a filter from moving it.
+    const hands = ['pointerdown', 'wheel', 'keydown', 'touchstart'] as const;
+    const hand = () => setMoved(true);
+    for (const ev of hands) el.addEventListener(ev, hand, { capture: true, passive: true });
     const ro = new ResizeObserver(() => map?.invalidateSize());
     ro.observe(el);
     if (!positioned) fitAll();
@@ -221,6 +235,7 @@
     emitBounds(viewBounds());
     return () => {
       ro.disconnect();
+      for (const ev of hands) el.removeEventListener(ev, hand, { capture: true });
       emitBounds.cancel();
       emitMove.cancel();
       map?.remove();
@@ -239,6 +254,7 @@
     if (bounds && r !== routeShown) {
       map.closePopup();
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+      setMoved(false);
     }
     routeShown = r;
   });
@@ -271,6 +287,8 @@
   <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Re-center the map on every photo and video shown, and zoom to fit them">Re-center</button>
   {#if points.length === 0}
     <div class="note">No photos with a location yet.</div>
+  {:else if emptyView}
+    <div class="note">No photos or videos in this part of the map. Re-center shows where they are.</div>
   {/if}
   {#if unavailable}<div class="note off">Map unavailable</div>{/if}
   <div class="attr">© OpenStreetMap contributors</div>
