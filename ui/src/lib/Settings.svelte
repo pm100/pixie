@@ -17,10 +17,11 @@
   import type { ScanState } from './scanProgress';
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
+  import ActionBarSettings from './ActionBarSettings.svelte';
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
     /** The loading of the files found, and whether the Pause is on. */
     loading: LoadStatus;
     /** Which analyses are on, and a change to that. */
@@ -34,6 +35,8 @@
     analysisNote?: string | null; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
+    /** The actions on the action bars, and a change to them. */
+    actionBar: string[]; onactionbar: (next: string[]) => void;
     recentDays: number; onrecentdays: (n: number) => void;
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
     analysis: AnalysisView; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
@@ -94,6 +97,7 @@
       <p>The "recent" shortcut at the top of the date list shows items from the last
         <input class="days" type="number" min="1" max={MAX_RECENT_DAYS} step="1" value={recentDays} aria-label="Days counted as recent"
                onchange={(e) => { const n = Number(e.currentTarget.value); onrecentdays(n); e.currentTarget.value = String(parseRecentDays(n)); }} /> days.</p>
+      <ActionBarSettings chosen={actionBar} onchange={onactionbar} />
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}

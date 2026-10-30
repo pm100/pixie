@@ -11,8 +11,10 @@
   import LocationMap from './LocationMap.svelte';
   import PhotoActions from './PhotoActions.svelte';
 
-  let { photo, ontagschange, onopen }: {
+  let { photo, ontagschange, onopen, chosen }: {
     photo: Photo | null;
+    /** The actions chosen for the action bars (Settings, Browsing). */
+    chosen: string[];
     /** Open a tool in its tab, working on this photo. */
     onopen: (toolId: string, source: 'picked' | 'current') => void;
     /** Tags were added or removed here (the tag named): the tag list in the tree needs reading again. */
@@ -102,7 +104,7 @@
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
     {/if}
     <!-- After everything else (the map and place too), so it moves up and down with the details. -->
-    <div class="actions"><PhotoActions source="current" count={1} ids={[photo.id]} alignRight {onopen} /></div>
+    <div class="actions"><PhotoActions source="current" count={1} ids={[photo.id]} {chosen} limit={3} alignRight {onopen} /></div>
   {:else}
     <p class="hint">Select a photo to see its details.</p>
   {/if}
