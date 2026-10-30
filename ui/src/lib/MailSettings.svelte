@@ -149,7 +149,7 @@
       {#if result}<p class="result" class:bad={!result.ok} role="status">{result.text}</p>{/if}
 
       <div class="buttons">
-        <button onclick={save} disabled={busy !== ''}>Save</button>
+        <button class="primary" onclick={save} disabled={busy !== ''}>Save</button>
         <button onclick={test} disabled={busy !== '' || email.trim() === '' || (!hasPassword && password === '')}>
           {busy === 'testing' ? 'Sending…' : 'Send me a test email'}
         </button>
@@ -183,5 +183,4 @@
   .result.bad { color: #b00020; }
   .buttons { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
   .spacer { flex: 1; }
-  .danger { background: #b00020; color: #fff; border-color: #b00020; }
 </style>

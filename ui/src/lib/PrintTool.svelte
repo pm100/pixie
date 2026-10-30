@@ -74,7 +74,7 @@
     </div>
     <p class="hint">{plural(pages.length, 'page')}. The first is shown above.</p>
   {/if}
-  <button class="go" onclick={print} disabled={printing || pages.length === 0}>{printing ? 'Printing…' : 'Print…'}</button>
+  <button class="primary go" onclick={print} disabled={printing || pages.length === 0}>{printing ? 'Printing…' : 'Print…'}</button>
   {#if error}<span class="err" role="alert">{error}</span>{/if}
 </div>
 

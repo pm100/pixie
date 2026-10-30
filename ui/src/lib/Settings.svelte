@@ -134,7 +134,6 @@
   .page :global(p) { margin: 0 0 8px; }
   .opt { display: block; margin: 6px 0; }
   .err { color: #b00020; }
-  button.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
   .hint { color: #666; font-size: 13px; }
   .days { width: 4.5em; font: inherit; padding: 2px 4px; }
 </style>

@@ -63,5 +63,4 @@
   .where { color: #555; font-size: 12px; margin: 0 0 8px; }
   .ok { color: #2a7a2a; }
   .err { color: #b00020; }
-  .primary { font: inherit; padding: 4px 12px; }
 </style>

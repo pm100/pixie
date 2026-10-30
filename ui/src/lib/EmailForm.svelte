@@ -144,5 +144,4 @@
   .t { font-weight: 600; }
   .d { color: #555; font-size: 12.5px; line-height: 1.35; }
   .foot { display: flex; justify-content: flex-end; gap: 8px; }
-  .foot button.primary { background: #2f6fed; border-color: #2f6fed; color: #fff; }
 </style>

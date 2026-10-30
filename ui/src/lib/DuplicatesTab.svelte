@@ -168,8 +168,6 @@
   .status progress { width: 160px; }
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
   button { font: inherit; font-size: 13px; }
-  button.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
-  button.danger:disabled { opacity: .5; }
   .set { display: flex; gap: 14px; padding: 10px; border: 1px solid #d3d8e4; border-radius: 10px; background: #fafbfe; }
   .cover { flex: none; width: 128px; height: 128px; }
   .cover img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; background: #dde2ee; display: block; }

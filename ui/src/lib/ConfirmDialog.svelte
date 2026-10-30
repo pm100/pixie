@@ -18,7 +18,7 @@
     <p id="cd-msg">{message}</p>
     <div class="row">
       <button bind:this={cancelBtn} onclick={oncancel}>Cancel</button>
-      <button class:danger onclick={onconfirm}>{confirmLabel}</button>
+      <button class:danger class:primary={!danger} onclick={onconfirm}>{confirmLabel}</button>
     </div>
   </div>
 </div>
@@ -29,5 +29,4 @@
   h3 { margin: 0 0 8px; font-size: 16px; }
   p { margin: 0 0 16px; color: #333; }
   .row { display: flex; justify-content: flex-end; gap: 8px; }
-  .danger { color: #b00020; }
 </style>

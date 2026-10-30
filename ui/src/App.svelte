@@ -1384,6 +1384,9 @@
   /* Plain buttons look the same on every system (the Mac's own are tiny); any style written for a button wins over this. */
   :global(:where(button)) { font: inherit; font-size: 14px; padding: 5px 12px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; cursor: pointer; }
   :global(:where(button:disabled)) { opacity: .5; cursor: default; }
+  /* The one main action of a screen, dialog or panel is blue (class="primary"); an action that deletes or resets things is red (class="danger"); every other button stays white. */
+  :global(button.primary) { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+  :global(button.danger) { background: #b3261e; border-color: #b3261e; color: #fff; }
   :global(:where(select)) { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; }
   :global(:where(select:disabled)) { opacity: .5; }
   :global(:where(input[type='checkbox'], input[type='radio'])) { width: 16px; height: 16px; vertical-align: -3px; }

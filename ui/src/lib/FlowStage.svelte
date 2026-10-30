@@ -42,9 +42,7 @@
   .wz :global(.sub) { margin: 0; }
   .dlg :global(h1) { margin: 0 0 4px; font-size: 22px; }
   .dlg :global(.sub) { margin: 0 0 16px; color: #666; }
-  .dlg :global(button) { font: inherit; font-size: 14px; padding: 6px 14px; border-radius: 6px; border: 1px solid #c3c8d4; background: #fff; color: #111; cursor: pointer; }
-  .dlg :global(button.primary) { background: #2f6fed; border-color: #2f6fed; color: #fff; }
-  .dlg :global(button:disabled) { opacity: .5; cursor: default; }
+  .dlg :global(button) { padding: 6px 14px; }
   .dlg :global(.bar) { height: 8px; border-radius: 4px; background: #dde2ee; overflow: hidden; }
   .dlg :global(.bar > div) { height: 100%; background: #2f6fed; transition: width .2s; }
 </style>

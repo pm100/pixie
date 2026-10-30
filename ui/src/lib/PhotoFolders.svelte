@@ -70,7 +70,7 @@
   </select>
 </label>
 {#if ask}
-  <ConfirmDialog title="Remove this folder?" confirmLabel="Remove" danger
+  <ConfirmDialog title="Remove this folder?" confirmLabel="Remove"
     message={`Pixie will stop showing the photos and videos in ${ask.folder.path}. Your files are not deleted.`}
     onconfirm={confirmAsk} oncancel={() => (ask = null)} />
 {/if}
