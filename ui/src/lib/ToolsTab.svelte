@@ -11,6 +11,7 @@
   import Resizer from './Resizer.svelte';
   import Viewer from './Viewer.svelte';
   import WorkingOn from './WorkingOn.svelte';
+  import { plural } from './format';
   import { loadPref, savePref } from './prefs';
   import { firstTool, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { posterUrl, thumbUrl } from './url';
@@ -92,6 +93,10 @@
   });
 
   const ids = $derived(photos.map((p) => p.id));
+  // Videos cannot be printed: Print works on the pictures among them, and is greyed out when there are none.
+  const printable = $derived(photos.filter((p) => p.kind === 'photo'));
+  const videosLeft = $derived(photos.length - printable.length);
+  const noPrint = (id: string) => id === 'print' && photos.length > 0 && printable.length === 0;
   const isPicked = $derived(source === 'picked');
 </script>
 
@@ -104,7 +109,8 @@
   <div class="body" style:grid-template-columns={whole ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
     <nav aria-label={`${group} tools`}>
       {#each list as t (t.id)}
-        <button class:on={current.id === t.id} class:soon={!t.built} aria-current={current.id === t.id ? 'page' : undefined} onclick={() => choose(t.id)}>
+        <button class:on={current.id === t.id} class:soon={!t.built || (noPrint(t.id) && current.id !== t.id)} aria-current={current.id === t.id ? 'page' : undefined}
+                disabled={noPrint(t.id) && current.id !== t.id} title={noPrint(t.id) ? "Videos can't be printed" : undefined} onclick={() => choose(t.id)}>
           {t.label}{#if !t.built}<small>soon</small>{/if}
         </button>
       {/each}
@@ -124,7 +130,10 @@
         {#if current.id === 'email'}
           <div class="tool wide"><EmailForm {ids} limitMb={emailLimitMb} /></div>
         {:else if current.id === 'print'}
-          <PrintTool {photos} />
+          {#if videosLeft > 0}
+            <p class="note">{plural(videosLeft, 'video')} can't be printed{printable.length > 0 ? ' and left out' : ''}.</p>
+          {/if}
+          {#if printable.length > 0}<PrintTool photos={printable} />{/if}
         {:else if current.id === 'tags'}
           <div class="tool"><GroupTags {ids} {onchange} /></div>
         {:else}
@@ -195,6 +204,7 @@
   .none { padding: 40px 28px; color: #555; max-width: 520px; line-height: 1.5; }
   .none p { margin: 0 0 12px; }
   .side { min-width: 0; overflow-y: auto; overflow-x: hidden; border-right: 1px solid #e4e4e8; background: #fafafb; }
+  .note { margin: 0; padding: 10px 14px 0; font-size: 13px; color: #8a6d00; }
   .tool { padding: 12px 14px; font-size: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .tool.wide { align-items: stretch; }
   .grid { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 12px 14px; }

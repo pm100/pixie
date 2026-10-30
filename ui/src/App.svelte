@@ -1207,6 +1207,7 @@
       <div class="topbars">
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
+        <button class="linkbtn" onclick={() => void pickAllShown()} disabled={!pickAll.enabled} title={pickAll.title}>Pick all</button>
         {#if activeTag !== null}
           <span class="filter">Auto tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
@@ -1255,15 +1256,17 @@
       </div>
       <div class="tools second" bind:clientWidth={secondLineW}>
         <!-- Two boxed sections, each with its title: Picked (what is picked, and the buttons that act on it) and Map. -->
+        <!-- Only while something is picked: with nothing picked it would offer nothing. -->
+        {#if picked.size > 0}
         <div class="section" role="group" aria-label="Picked photos">
           <span class="stitle" title="The picked photos: the circle in a photo's top-left corner picks it">Picked ★ {picked.size.toLocaleString()}</span>
           <label class="check" class:off={picked.size === 0 && activeUtag !== 'picked'} title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>
             <input type="checkbox" checked={activeUtag === 'picked'} disabled={picked.size === 0 && activeUtag !== 'picked'} onchange={(e) => setUtag(e.currentTarget.checked ? 'picked' : null)} /> Filter
           </label>
-          <button class="linkbtn" onclick={() => void pickAllShown()} disabled={!pickAll.enabled} title={pickAll.title}>Pick all</button>
           <button class="linkbtn" onclick={clearAllPicks} disabled={picked.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear</button>
           <PhotoActions source="picked" count={picked.size} ids={pickedIds} chosen={barActions} limit={barLimit} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
         </div>
+        {/if}
         <div class="section" role="group" aria-label="Map">
           <span class="stitle">Map</span>
           <label class="check" title="Show a map above the photos">

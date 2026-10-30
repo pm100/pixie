@@ -7,7 +7,7 @@
   import TagAs from './TagAs.svelte';
   import { GROUPS, toolById } from './tools';
 
-  let { source, count, ids, chosen, limit = Infinity, showTag = false, alignRight = false, onopen, ontagchange = () => {} }: {
+  let { source, count, ids, chosen, limit = Infinity, showTag = false, alignRight = false, unavailable = {}, onopen, ontagchange = () => {} }: {
     /** Which photos the row acts on: the picked ones, or the chosen one. */
     source: 'picked' | 'current';
     /** How many photos there are to act on; the buttons are off when none. */
@@ -22,6 +22,8 @@
     showTag?: boolean;
     /** The popovers open towards the left (the row is at the right edge of the window). */
     alignRight?: boolean;
+    /** Actions that cannot be used on these photos right now, each with the reason (shown as its tooltip); they are greyed out. */
+    unavailable?: Record<string, string>;
     /** Open a tool in its tab, working on those photos. */
     onopen: (toolId: string, source: 'picked' | 'current') => void;
     /** Something was tagged (with the tag named): the tag lists need reading again. */
@@ -84,7 +86,7 @@
     {#if id === 'tag'}
       <button class="act" disabled={!usable} aria-haspopup="dialog" aria-expanded={open === 'tag'} onclick={(e) => toggle('tag', e)}>Tag…</button>
     {:else}
-      <button class="act" disabled={!usable} onclick={() => go(id)} title="{label(id)}: {what}">{label(id)}</button>
+      <button class="act" disabled={!usable || id in unavailable} onclick={() => go(id)} title={unavailable[id] ?? `${label(id)}: ${what}`}>{label(id)}</button>
     {/if}
   {/each}
   <button class="act" bind:this={moreBtn} disabled={!usable} aria-haspopup="menu" aria-expanded={open === 'more'} onclick={(e) => toggle('more', e)}>More ▾</button>
@@ -103,7 +105,7 @@
       {#each more as g (g.id)}
         <h4>{g.label}</h4>
         {#each g.actions as a (a.id)}
-          <button role="menuitem" class:soon={!a.built} aria-disabled={!a.built} disabled={!a.built} onclick={() => go(a.id)}>{a.label}{#if !a.built}<small>soon</small>{/if}</button>
+          <button role="menuitem" class:soon={!a.built || a.id in unavailable} aria-disabled={!a.built || a.id in unavailable} disabled={!a.built || a.id in unavailable} title={unavailable[a.id]} onclick={() => go(a.id)}>{a.label}{#if !a.built}<small>soon</small>{/if}</button>
         {/each}
       {/each}
       <div class="sep"></div>
