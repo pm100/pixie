@@ -17,7 +17,8 @@
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
-  import DuplicatesTab from './lib/DuplicatesTab.svelte';
+  import { directCount, parseBar } from './lib/actionBar';
+  import PhotoActions from './lib/PhotoActions.svelte';
   import { dupPass, type DupStatus } from './lib/dupes';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
@@ -47,9 +48,11 @@
   import { run } from './lib/selection';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
   import Shell from './lib/Shell.svelte';
+  import { pickAllState } from './lib/pickAll';
   import Tabs from './lib/Tabs.svelte';
   import { visibleTabs, type TabId } from './lib/tabs';
   import ToolsTab from './lib/ToolsTab.svelte';
+  import { isToolGroup, toolById } from './lib/tools';
   import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
@@ -345,6 +348,12 @@
       await loadPicks();
     }
   }
+  /** Pick every photo the filters show (up to the limit; see pickAllState) to the ones picked now. */
+  const pickAll = $derived(pickAllState(total, activeUtag === 'picked', undefined, picked.size));
+  async function pickAllShown() {
+    if (!pickAll.enabled) return;
+    await pickPositions(Array.from({ length: total }, (_, i) => i));
+  }
   async function clearAllPicks() {
     picked = new Set();
     try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
@@ -372,8 +381,8 @@
     if (!next.dupes && before.dupes) { refresh(true).catch((e) => (message = String(e))); void loadFolderInfos(); } // every copy shows again
   }
   // A tab whose analysis was switched off is gone: leave it.
-  $effect(() => { if ((tab === 'faces' && !analysisOptions.faces) || (tab === 'dupes' && !analysisOptions.dupes)) tab = 'browse'; });
-  const tabs = $derived(visibleTabs({ create: false, share: false, people: analysisOptions.faces, dupes: analysisOptions.dupes }));
+  $effect(() => { if (tab === 'faces' && !analysisOptions.faces) tab = 'browse'; });
+  const tabs = $derived(visibleTabs({ people: analysisOptions.faces }));
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -1080,15 +1089,27 @@
     if (mode === 'map') loadPoints();
   }
 
-  /** The Email and Print buttons in Browse's details: the Tools tab opens at that tool, working on that one photo. */
-  let toolsStart = $state<{ photo: Photo; page: 'email' | 'print' } | null>(null);
-  function workOn(page: 'email' | 'print') {
-    if (!selectedPhoto) return;
-    toolsStart = { photo: selectedPhoto, page };
-    tab = 'tools';
+  /** Which photos Send, Create and Organize work on (Picked, Current or a tag). Shared, so the choice carries from one of those tabs to the next. */
+  let workSource = $state('picked');
+  /** The tool a tab is to open at (from an Email button, the More menu or Ask Pixie); otherwise a tab opens at the tool it was last left at. */
+  let toolStart = $state<string | null>(null);
+  /** Open a tool in its tab, working on the picked photos or on the photo chosen here. */
+  function openTool(toolId: string, source: 'picked' | 'current') {
+    const t = toolById(toolId);
+    if (!t) return;
+    workSource = source;
+    toolStart = toolId;
+    pickTab(t.group);
   }
-  // Opening Tools any other way starts it as usual.
-  $effect(() => { if (tab !== 'tools') toolsStart = null; });
+  // Opening a tool tab any other way starts it as usual.
+  $effect(() => { if (!isToolGroup(tab)) toolStart = null; });
+  /** The photos the buttons beside Picked act on. */
+  const pickedIds = $derived([...picked]);
+  /** The buttons on the action bars (Settings, Browsing), and how many of them fit in Browse's second line. */
+  let barActions = $state(parseBar(loadPref<unknown>('actionBar', null)));
+  function setBarActions(next: string[]) { barActions = parseBar(next); savePref('actionBar', barActions); }
+  let secondLineW = $state(0);
+  const barLimit = $derived(secondLineW === 0 ? barActions.length : directCount(secondLineW, barActions.length));
 
   // Details for the chosen photo (fetched by index in the current view).
   $effect(() => {
@@ -1182,13 +1203,18 @@
       <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
-    <div class="browse" inert={tab === 'settings' || tab === 'faces' || tab === 'dupes' || tab === 'tools'}>
+    <div class="browse" inert={tab !== 'browse'}>
       <div class="topbars">
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
+        <button class="linkbtn" onclick={() => void pickAllShown()} disabled={!pickAll.enabled} title={pickAll.title}>Pick all</button>
         {#if activeTag !== null}
           <span class="filter">Auto tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
+        {/if}
+        {#if activeUtag === 'picked'}
+          <span class="filter">Picked ★
+            <button onclick={() => setUtag(null)} aria-label="Show all photos again" title="Show all photos again">✕</button></span>
         {/if}
         {#if activeUtag !== null && activeUtag !== 'picked'}
           <span class="filter">Tagged “{activeUtag.replace(/^tag:/, '')}”
@@ -1228,20 +1254,27 @@
         {/if}
         {#if offerClearAll(activeNames)}<button class="linkbtn" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
       </div>
-      <div class="tools second">
-        <!-- Picked: always here. Pressing it shows only the picked photos (and again, all); Clear takes everything off Picked. -->
-        <span class="pickedbox">
-          <button class="pickedbtn" class:on={activeUtag === 'picked'} aria-pressed={activeUtag === 'picked'} onclick={() => setUtag(activeUtag === 'picked' ? null : 'picked')}
-                  title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>★ Picked {picked.size.toLocaleString()}</button>
+      <div class="tools second" bind:clientWidth={secondLineW}>
+        <!-- Two boxed sections, each with its title: Picked (what is picked, and the buttons that act on it) and Map. -->
+        <!-- Only while something is picked: with nothing picked it would offer nothing. -->
+        {#if picked.size > 0}
+        <div class="section" role="group" aria-label="Picked photos">
+          <span class="stitle" title="The picked photos: the circle in a photo's top-left corner picks it">Picked ★ {picked.size.toLocaleString()}</span>
+          <label class="check" class:off={picked.size === 0 && activeUtag !== 'picked'} title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>
+            <input type="checkbox" checked={activeUtag === 'picked'} disabled={picked.size === 0 && activeUtag !== 'picked'} onchange={(e) => setUtag(e.currentTarget.checked ? 'picked' : null)} /> Filter
+          </label>
           <button class="linkbtn" onclick={clearAllPicks} disabled={picked.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear</button>
-        </span>
-        <div class="viewctl">
+          <PhotoActions source="picked" count={picked.size} ids={pickedIds} chosen={barActions} limit={barLimit} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
+        </div>
+        {/if}
+        <div class="section" role="group" aria-label="Map">
+          <span class="stitle">Map</span>
           <label class="check" title="Show a map above the photos">
-            <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Map
+            <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Display
           </label>
           <!-- Only while the map is on; then the grid follows the part of the map in view, and a pill says so. -->
           <label class="check" class:off={mode !== 'map'} title={mode === 'map' ? 'Show only the photos in the part of the map you can see' : 'Turn the map on to filter by it'}>
-            <input type="checkbox" checked={areaOnly} disabled={mode !== 'map'} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter by map
+            <input type="checkbox" checked={areaOnly} disabled={mode !== 'map'} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter
           </label>
         </div>
       </div>
@@ -1294,7 +1327,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} onemail={() => workOn('email')} onprint={() => workOn('print')} ontagschange={(t) => void utagChanged(t)} />
+          <Details photo={selectedPhoto} chosen={barActions} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}
@@ -1305,21 +1338,19 @@
         <PeopleTab active={tab === 'faces'} status={peopleState} onchange={peopleTabChanged} />
       </div>
     {/if}
-    {#if tab === 'tools'}
-      <div class="page-over">
-        <ToolsTab active={tab === 'tools'} start={toolsStart} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)} />
-      </div>
-    {/if}
-    {#if tab === 'dupes'}
-      <div class="page-over">
-        <DuplicatesTab active={tab === 'dupes'} onchange={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
-      </div>
+    {#if isToolGroup(tab)}
+      {#key tab}
+        <div class="page-over">
+          <ToolsTab group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
+                    dupes={analysisOptions.dupes} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
+        </div>
+      {/key}
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
         <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} {recentDays} onrecentdays={setRecentDays}
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
       </div>
     {/if}
@@ -1361,19 +1392,18 @@
   .browse { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .topbars { border-bottom: 1px solid #eee; }
   .tools { display: flex; gap: 12px; align-items: center; padding: 6px 14px; }
-  .tools.second { padding-top: 0; }
+  .tools.second { padding-top: 0; flex-wrap: wrap; row-gap: 4px; align-items: stretch; }
+  /* A section of the line: a box with its title at the left. */
+  .section { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 3px 10px; min-height: 26px; box-sizing: border-box; border: 1px solid #b8bdca; border-radius: 6px; background: #f6f8fc; }
+  .stitle { font-size: 13px; font-weight: 700; color: #333; font-variant-numeric: tabular-nums; }
   .content { flex: 1; min-height: 0; }
   .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */
-  .pickedbox { display: inline-flex; align-items: center; gap: 2px; }
-  .pickedbtn { padding: 2px 10px; border-radius: 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
-  .pickedbtn.on { background: #e3ecff; border-color: #2f6fed; color: #1a3f9a; }
   .linkbtn:disabled { opacity: .5; cursor: default; text-decoration: none; }
   .linkbtn { border: 0; background: none; padding: 2px 4px; font: inherit; font-size: 13px; color: #1a3f9a; cursor: pointer; }
   .linkbtn:hover { text-decoration: underline; }
-  .viewctl { margin-left: auto; display: flex; gap: 16px; align-items: center; }
   /* Two independent switches: the map, and whether the grid follows it. */
   .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #333; cursor: pointer; }
   .check.off { color: #999; cursor: default; }

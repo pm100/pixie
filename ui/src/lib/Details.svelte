@@ -9,13 +9,14 @@
   import TagAs from './TagAs.svelte';
   import { tagsOnAll } from './userTags';
   import LocationMap from './LocationMap.svelte';
+  import PhotoActions from './PhotoActions.svelte';
 
-  let { photo, ontagschange, onemail, onprint }: {
+  let { photo, ontagschange, onopen, chosen }: {
     photo: Photo | null;
-    /** The Email button was pressed: the Tools tab has the email form. */
-    onemail: () => void;
-    /** The Print button was pressed: the Tools tab has the print setup. */
-    onprint: () => void;
+    /** The actions chosen for the action bars (Settings, Browsing). */
+    chosen: string[];
+    /** Open a tool in its tab, working on this photo. */
+    onopen: (toolId: string, source: 'picked' | 'current') => void;
     /** Tags were added or removed here (the tag named): the tag list in the tree needs reading again. */
     ontagschange: (tag: string) => void;
   } = $props();
@@ -98,11 +99,12 @@
       </dd>
       {#if tags.length > 0}<dt>Shows</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
-    <p class="actions"><button onclick={onemail} title="Email this photo (opens the Email tool)">Email</button> <button onclick={onprint} title="Print this photo (opens the Print tool)">Print</button></p>
     {#if lat != null && lon != null}
       <LocationMap {lat} {lon} />
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
     {/if}
+    <!-- After everything else (the map and place too), so it moves up and down with the details. -->
+    <div class="actions"><PhotoActions source="current" count={1} ids={[photo.id]} {chosen} limit={3} alignRight ontagchange={tagsChanged} unavailable={photo.kind === 'video' ? { print: "Videos can't be printed" } : {}} {onopen} /></div>
   {:else}
     <p class="hint">Select a photo to see its details.</p>
   {/if}
@@ -125,6 +127,6 @@
   .chip.utag { background: #e3ecff; border-radius: 4px; }
   .x { border: 0; background: none; padding: 0 0 0 5px; color: inherit; opacity: .7; cursor: pointer; line-height: 1; }
   .x:hover { opacity: 1; }
-  .actions { margin: 0 0 12px; }
+  .actions { margin: 0 0 16px; }
   .place { margin: 0 0 16px; }
 </style>
