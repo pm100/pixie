@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, locationCounts, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -34,6 +34,7 @@
   import { loadPref, savePref } from './lib/prefs';
   import { folderName, plural } from './lib/format';
   import { shouldFit, type MapChange } from './lib/mapFit';
+  import { missingFromMap } from './lib/mapNote';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
   import BackgroundProgress from './lib/BackgroundProgress.svelte';
@@ -184,11 +185,12 @@
   async function syncFilters(): Promise<boolean> {
     try {
       const f = await activeFilters();
-      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera || f.utag !== activeUtag;
+      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera || f.utag !== activeUtag || f.missing !== activeMissing;
       activeTag = f.tag;
       activeUtag = f.utag;
       activePerson = f.person;
       activeCamera = f.camera;
+      activeMissing = f.missing;
       return changed;
     } catch { return false; }
   }
@@ -201,7 +203,7 @@
   async function setUtag(next: string | null) {
     try { await setUserTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -214,7 +216,7 @@
     const before = activeUtag;
     await syncFilters();
     if (!listingAffected(before, touched, activeUtag === before)) return; // the listing is as it was: keep what is selected
-    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
     refresh().catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
   }
@@ -222,7 +224,7 @@
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag) };
+    view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag, activeMissing) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -232,11 +234,24 @@
   let peopleList = $state<PersonInfo[]>([]), activePerson = $state<number | null>(null);
   /** The camera chosen in the tree, by its tidied name ("Pixel 7"). */
   let activeCamera = $state<string | null>(null);
+  /** The kind of missing data chosen in the tree (`location`: only items with no position). */
+  let activeMissing = $state<string | null>(null);
+
+  async function setMissing(next: string | null) {
+    try { await setMissingFilter(next); } catch (e) { message = String(e); return; }
+    await syncFilters();
+    // An item with no position can never be inside a map area, so the two cannot be on together.
+    if (next !== null && areaOnly) { areaOnly = false; pendingBounds = null; }
+    view = { ...view, bounds: next !== null ? null : view.bounds, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
+    selected = null;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
+  }
 
   async function setCamera(next: string | null) {
     try { await setCameraFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag, activeMissing) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -272,7 +287,7 @@
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
     if (await syncFilters()) { // a filter was on that the screen did not show: show it now
-      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag) };
+      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
       refresh(true).catch((e) => (message = String(e)));
     }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
@@ -285,7 +300,7 @@
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag) };
+    view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag, activeMissing) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -517,13 +532,13 @@
   /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
     try {
-      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null), setUserTagFilter(null)]);
+      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null), setMissingFilter(null), setUserTagFilter(null)]);
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
     tripKey = null;
     areaOnly = false;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag), since: null, until: null, folderId: null, kind: null, bounds: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
@@ -584,7 +599,7 @@
   let trips = $state<Trip[]>([]);
 
   /** What the grid says when nothing matches. */
-  const emptyMessage = $derived(view.search ? (activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+  const emptyMessage = $derived(view.search ? (activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
 
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
@@ -592,6 +607,7 @@
     utag: activeUtag,
     person: activeInfo === null ? null : personLabel(activeInfo),
     camera: activeCamera,
+    missing: activeMissing,
     folder: view.folderId === null ? null : (folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'),
     trip: tripKey === null ? null : (trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'),
     date: periodKey !== null ? `Showing only ${periodLabel(periodKey)}` : recentOn ? recentLabel(recentDays) : null,
@@ -811,14 +827,16 @@
   /** The counts beside the entries of the left-hand tree under the filters in force; null until first counted. */
   let facets = $state<Facets | null>(null);
   const facetsLatest = createLatest();
+  /** The line under the map about items it cannot show (none while they are the ones listed). */
+  const mapReminder = $derived(activeMissing === null ? missingFromMap(facets?.noLocation ?? 0) : null);
   $effect(() => {
     // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
     // refresh of the listing (a scan added photos, a duplicate was hidden...).
-    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, utag = activeUtag, list = trips, chosenTrip = tripKey, days = recentDays;
+    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, utag = activeUtag, missing = activeMissing, list = trips, chosenTrip = tripKey, days = recentDays;
     version;
     const token = facetsLatest.next();
     const timer = setTimeout(() => {
-      facetCounts(v, tag, person, camera, utag, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days))
+      facetCounts(v, tag, person, camera, utag, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days), missing)
         .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
         .catch(() => { /* the entries keep the counts they came with */ });
     }, 120);
@@ -880,7 +898,10 @@
     if (trackIds.length > 0 && trackLoad !== null && !scanning && trackView.finished) trackIds = [];
   });
   const trackNames = $derived(folderInfos.filter((f) => trackIds.includes(f.id)).map((f) => folderName(f.path)).join(', '));
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined, on: analysisOptions }));
+  /** How many of the library's items have no location (the Locations line of Settings, Picture analysis). */
+  let libLocations = $state<{ without: number; undated: number; total: number } | null>(null);
+  const refreshLocations = () => { locationCounts().then((c) => (libLocations = c)).catch(() => { /* the line just stays as it was */ }); };
+  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined, on: analysisOptions, locations: libLocations }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -1137,6 +1158,7 @@
     peopleStatus().then((s) => (peopleState = s)).catch(() => {});
     duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {});
     loadTags();
+    refreshLocations();
     void loadUserTags();
     loadPeople();
     // Re-scan all known folders on launch to pick up changes.
@@ -1168,6 +1190,7 @@
       }),
       listen<{ folders: number; found: number }>('scan-done', (e) => {
         loadTags();
+        refreshLocations();
         loadPeople();
         scanning = false;
         scanFolder = null;
@@ -1232,6 +1255,10 @@
           <span class="filter">Camera “{activeCamera}”
             <button onclick={() => setCamera(null)} aria-label="Clear camera" title="Clear camera">✕</button></span>
         {/if}
+        {#if activeMissing !== null}
+          <span class="filter">No location
+            <button onclick={() => setMissing(null)} aria-label="Show items with or without a location" title="Show items with or without a location">✕</button></span>
+        {/if}
         {#if view.kind !== null}
           <span class="filter">{view.kind === 'photo' ? 'Photos only' : 'Videos only'}
             <button onclick={() => setKind(null)} aria-label="Show photos and videos" title="Show photos and videos">✕</button></span>
@@ -1277,8 +1304,8 @@
             <input type="checkbox" checked={mode === 'map'} onchange={(e) => setMapShown(e.currentTarget.checked)} /> Display
           </label>
           <!-- Only while the map is on; then the grid follows the part of the map in view, and a pill says so. -->
-          <label class="check" class:off={mode !== 'map'} title={mode === 'map' ? 'Show only the photos in the part of the map you can see' : 'Turn the map on to filter by it'}>
-            <input type="checkbox" checked={areaOnly} disabled={mode !== 'map'} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter
+          <label class="check" class:off={mode !== 'map' || activeMissing !== null} title={activeMissing !== null ? 'Items with no location are not on the map, so they cannot be filtered by it' : mode === 'map' ? 'Show only the photos in the part of the map you can see' : 'Turn the map on to filter by it'}>
+            <input type="checkbox" checked={areaOnly} disabled={mode !== 'map' || activeMissing !== null} onchange={(e) => setAreaOnly(e.currentTarget.checked)} /> Filter
           </label>
         </div>
       </div>
@@ -1296,7 +1323,7 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} utag={activeUtag} onutag={setUtag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
-               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
+               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
@@ -1306,11 +1333,16 @@
           {#if mode === 'map'}
             <div class="mapsplit">
               <div class="maptop">
-                <PhotoMap {points} {fitMap} onhand={(moved) => (mapMoved = moved)} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
+                <div class="mapbox">
+                <PhotoMap {points} {fitMap} onhand={(moved) => (mapMoved = moved)} emptyNote={activeMissing !== null ? 'These items have no location, so none can be shown on the map.' : undefined} initial={mapStart} route={tripKey !== null ? routeData : null} stopNames={routeNames}
                           onbounds={setBounds}
                           onpin={revealPhoto}
                           onopenphoto={(p) => (soloPhoto = p)}
                           onmove={(v) => { lastMap = v; savePref('mapView', v); }} />
+                </div>
+                {#if mapReminder !== null}
+                  <p class="reminder" role="status">{mapReminder} <button class="linkbtn" onclick={() => setMissing('location')} title="Show only the items that have no location">Show them</button></p>
+                {/if}
               </div>
               <div class="mapbottom">
                 {#if total === 0 && !scanning}
@@ -1420,7 +1452,9 @@
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }
   .mapsplit { display: flex; flex-direction: column; height: 100%; }
-  .maptop { flex: 0 0 45%; min-height: 220px; margin-bottom: 8px; }
+  .maptop { flex: 0 0 45%; min-height: 220px; margin-bottom: 8px; display: flex; flex-direction: column; }
+  .mapbox { flex: 1; min-height: 0; }
+  .reminder { margin: 4px 0 0; font-size: 12px; color: #6a5a1a; }
   /* A line from edge to edge of the panel (past the Shell's 8px side padding), with space either side of it, between the map and the photo list. */
   .mapbottom { flex: 1; min-height: 0; margin: 0 -8px; border-top: 1px solid #b8bdca; padding: 8px 8px 0; box-sizing: border-box; }
   .empty.small { margin-top: 24px; }

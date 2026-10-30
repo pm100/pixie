@@ -4,7 +4,10 @@ import type { MediaKind } from './api';
 export type ActiveFilters = {
   tag: string | null; person: string | null; camera?: string | null;
   /** Picked or one of your own tags, as the library names it: `picked` or `tag:<name>`. */
-  utag?: string | null; folder: string | null; trip: string | null;
+  utag?: string | null;
+  /** The kind of missing data chosen in the tree (`location`). */
+  missing?: string | null;
+  folder: string | null; trip: string | null;
   /** A chosen date ("September 2026") or Last 30 days; the two replace each other, so there is at most one. */
   date: string | null;
   kind: MediaKind | null;
@@ -19,6 +22,7 @@ export function filterNames(f: ActiveFilters): string[] {
     f.utag == null ? null : f.utag === 'picked' ? 'Picked' : `Tagged “${f.utag.replace(/^tag:/, '')}”`,
     f.person !== null ? `Person “${f.person}”` : null,
     f.camera != null ? `Camera “${f.camera}”` : null,
+    f.missing === 'location' ? 'No location' : null,
     f.kind !== null ? (f.kind === 'photo' ? 'Photos only' : 'Videos only') : null,
     f.area ? 'In the map area' : null,
     f.folder !== null ? `Folder “${f.folder}”` : null,

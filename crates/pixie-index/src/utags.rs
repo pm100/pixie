@@ -315,7 +315,7 @@ mod tests {
         db.tag_photos(&[p[0], p[1]], "t").unwrap();
         db.set_pick(p[3], true).unwrap();
         fn ask(utag: Option<&UserTagFilter>) -> FacetAsk<'_> {
-            FacetAsk { tag: None, person: None, camera: None, utag, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None }
+            FacetAsk { tag: None, person: None, camera: None, utag, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None }
         }
         let q = PhotoQuery::default();
         assert_eq!(db.facet_counts(&q, &ask(None)).unwrap().photos, 4);

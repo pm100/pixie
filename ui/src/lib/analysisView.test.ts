@@ -169,3 +169,25 @@ describe('a load: the photos of the folders just added', () => {
     expect(counter(v, 'tags').text).toBe('Paused');
   });
 });
+
+describe('the Locations line', () => {
+  it('says how many items of the whole library have no location, after the analyses, and counts as done', () => {
+    const v = analysisView(input({ locations: { without: 312, total: 14214 } }));
+    expect(v.counters.map((c) => c.label)).toEqual(['Auto tags', 'People', 'Locations']);
+    expect(counter(v, 'location')).toMatchObject({ text: '312 of 14,214 items have no location', done: true });
+  });
+  it('agrees with one item', () => {
+    expect(counter(analysisView(input({ locations: { without: 1, total: 1 } })), 'location').text).toBe('1 of 1 item has no location');
+  });
+  it('is left out when no item lacks a location, when it is not known, and for a load of new folders', () => {
+    expect(analysisView(input({ locations: { without: 0, total: 50 } })).counters.map((c) => c.key)).toEqual(['tags', 'faces']);
+    expect(analysisView(input({ locations: null })).counters.map((c) => c.key)).toEqual(['tags', 'faces']);
+    const load: LoadProgress = { photos: 1, shown: 1, hashed: 1, tagged: 1, scanned: 1, faces: 0, pending: 0, pending_videos: 0, duplicates: 0 };
+    expect(analysisView(input({ load, locations: { without: 3, total: 9 } })).counters.map((c) => c.key)).not.toContain('location');
+  });
+  it('does not hold up "Done" or move the bar', () => {
+    const v = analysisView(input({ tags: status({ done: 5, total: 5 }), faces: status({ done: 5, total: 5 }), locations: { without: 2, total: 5 } }));
+    expect(v.finished).toBe(true);
+    expect(v.headline).toBe('Done');
+  });
+});

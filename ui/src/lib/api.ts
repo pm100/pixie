@@ -221,10 +221,14 @@ export const tripRoute = (since: number, until: number, homeLat: number, homeLon
 export const suggestHome = () => invoke<[number, number] | null>('suggest_home');
 export const renameTrip = (since: number, until: number, name: string) => invoke<void>('rename_trip', { since, until, name });
 /** The tag and person the listings are really restricted to. */
-export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null; utag: string | null }>('active_filters');
+export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null; utag: string | null; missing: string | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 /** Show only photos taken with this camera, by its tidied name (null turns it off). */
 export const setCameraFilter = (camera: string | null) => invoke<void>('set_camera_filter', { camera });
+/** Show only the items missing a kind of data (`location`: no position); null turns it off. */
+export const setMissingFilter = (kind: string | null) => invoke<void>('set_missing_filter', { kind });
+/** How many of the items Browse lists have no position, and how many there are. */
+export const locationCounts = () => invoke<{ without: number; undated: number; total: number }>('location_counts');
 
 // ---- the People tab ----
 import type { FaceOrder, FaceOverview, FacePerson, FaceTile, FaceView, Suggestion as FaceSuggestion, UnsortedFace } from './people';
@@ -266,8 +270,8 @@ import type { LoadProgress } from './analysisView';
 import type { FacetCounts } from './facets';
 /** The counts for the left-hand tree under the filters in force (see `facets.ts`). */
 export const facetCounts = (
-  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, utag: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number,
-) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, utag, tripDates, tripWindows, recentSince });
+  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, utag: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number, missing: string | null,
+) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, utag, tripDates, tripWindows, recentSince, missing });
 /** How far the analysis has got for the photos of these folders (the load screen's counters). */
 export const loadProgress = (folderIds: number[]) => invoke<LoadProgress>('load_progress', { folderIds });
 export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');

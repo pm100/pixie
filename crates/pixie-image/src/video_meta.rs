@@ -141,6 +141,66 @@ fn sanitize(lat: Option<f64>, lon: Option<f64>) -> (Option<f64>, Option<f64>) {
     }
 }
 
+/// Latitude and longitude, in decimal degrees, from an ISO 6709 string such as "+46.5487+7.8748/" or "+46.5487+007.8748+420.5/"
+/// (an altitude may follow). Android writes the longitude with as many digits as it needs; the reader in nom-exif only takes
+/// the fixed width form, so a video from Switzerland got no position.
+fn parse_iso6709(s: &str) -> Option<(f64, f64)> {
+    let s = s.trim().trim_end_matches('/');
+    let starts: Vec<usize> = s.char_indices().filter(|(_, c)| *c == '+' || *c == '-').map(|(i, _)| i).collect();
+    if starts.len() < 2 || starts[0] != 0 {
+        return None;
+    }
+    let lat = s[starts[0]..starts[1]].parse::<f64>().ok()?;
+    let lon = s[starts[1]..starts.get(2).copied().unwrap_or(s.len())].parse::<f64>().ok()?;
+    Some((lat, lon))
+}
+
+/// The position in the `©xyz` atom of a `udta` box (two bytes of length, two of language, then the ISO 6709 text).
+fn xyz_position(moov_children: &[([u8; 4], &[u8])]) -> Option<(f64, f64)> {
+    let udta = moov_children.iter().find(|(k, _)| k == b"udta")?.1;
+    let xyz = children(udta).into_iter().find(|(k, _)| k == &[0xA9, b'x', b'y', b'z'])?.1;
+    parse_iso6709(std::str::from_utf8(xyz.get(4..)?).ok()?)
+}
+
+/// The `mdta` metadata of a `meta` box (QuickTime style, as Android and iPhone write it): the names in `keys`, each given
+/// the value of its `ilst` item. The box may or may not start with a version and flags field.
+fn mdta_values(meta: &[u8]) -> Vec<(String, String)> {
+    let body = if meta.get(8..12) == Some(b"hdlr") { &meta[4..] } else { meta };
+    let parts = children(body);
+    let Some(keys) = parts.iter().find(|(k, _)| k == b"keys").map(|(_, p)| *p) else { return Vec::new() };
+    let mut names = Vec::new();
+    let mut at = 8; // version and flags, then the number of keys
+    while at + 8 <= keys.len() {
+        let size = be32(keys, at).unwrap_or(0) as usize;
+        if size < 8 || at + size > keys.len() {
+            break;
+        }
+        names.push(String::from_utf8_lossy(&keys[at + 8..at + size]).into_owned());
+        at += size;
+    }
+    let Some(ilst) = parts.iter().find(|(k, _)| k == b"ilst").map(|(_, p)| *p) else { return Vec::new() };
+    children(ilst)
+        .into_iter()
+        .filter_map(|(index, item)| {
+            let name = names.get((u32::from_be_bytes(index) as usize).checked_sub(1)?)?;
+            let data = children(item).into_iter().find(|(k, _)| k == b"data")?.1;
+            Some((name.clone(), String::from_utf8_lossy(data.get(8..)?).into_owned()))
+        })
+        .collect()
+}
+
+/// The phone an Android video came from, as "Google Pixel 7": Android names it in its own `com.android.*` keys, not the
+/// standard model tag that iPhone videos fill in.
+fn android_camera(moov_children: &[([u8; 4], &[u8])]) -> Option<String> {
+    let values: Vec<(String, String)> = moov_children.iter().filter(|(k, _)| k == b"meta").flat_map(|(_, p)| mdta_values(p)).collect();
+    let get = |name: &str| values.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let model = get("com.android.model")?;
+    Some(match get("com.android.manufacturer") {
+        Some(make) if !model.to_lowercase().starts_with(&make.to_lowercase()) => format!("{make} {model}"),
+        _ => model,
+    })
+}
+
 /// Best-effort metadata for a video; never fails. Dimensions are as displayed.
 pub fn read_video_meta(path: &Path) -> PhotoMeta {
     let mut meta = PhotoMeta { kind: MediaKind::Video, ..Default::default() };
@@ -175,6 +235,14 @@ pub fn read_video_meta(path: &Path) -> PhotoMeta {
         if let Some(g) = info.gps_info() {
             (meta.gps_lat, meta.gps_lon) = sanitize(g.latitude_decimal(), g.longitude_decimal());
         }
+    }
+    if meta.gps_lat.is_none() {
+        if let Some((lat, lon)) = xyz_position(&kids) {
+            (meta.gps_lat, meta.gps_lon) = sanitize(Some(lat), Some(lon));
+        }
+    }
+    if meta.camera.is_none() {
+        meta.camera = android_camera(&kids);
     }
     let nom_date = info.as_ref().and_then(|i| i.get(TrackInfoTag::CreateDate)).and_then(|v| v.as_datetime()).map(|d| match d.aware() {
         Some(dt) => dt.timestamp(),
@@ -237,6 +305,49 @@ mod tests {
         assert!((m.gps_lat.unwrap() - 20.6858).abs() < 1e-4);
         assert!((m.gps_lon.unwrap() + 156.4440).abs() < 1e-4);
         assert_eq!(m.taken_at, Some(T - 10 * 3600)); // Hawaii: 09:41 local, not 19:41 UTC
+    }
+
+    #[test]
+    fn a_longitude_written_with_fewer_than_three_digits_is_still_read() {
+        // Android writes "+46.5487+7.8748/" (Switzerland), not the fixed width "+046.5487+007.8748/"; with an altitude too.
+        let d = tempfile::tempdir().unwrap();
+        for (iso, lat, lon) in [("+46.5487+7.8748/", 46.5487, 7.8748), ("+46.5487+007.8748+420.5/", 46.5487, 7.8748), ("-33.8688+151.2093/", -33.8688, 151.2093), ("+36.9605-122.0564/", 36.9605, -122.0564)] {
+            let m = read_video_meta(&write(&d, "s.mp4", &mp4(&Mp4Spec { iso6709: Some(iso.into()), ..spec() })));
+            assert!((m.gps_lat.unwrap() - lat).abs() < 1e-4 && (m.gps_lon.unwrap() - lon).abs() < 1e-4, "{iso}: {:?} {:?}", m.gps_lat, m.gps_lon);
+        }
+    }
+
+    #[test]
+    fn the_phone_model_is_read_from_the_android_metadata_keys() {
+        fn bx(kind: &[u8], payload: &[u8]) -> Vec<u8> {
+            let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(kind);
+            v.extend_from_slice(payload);
+            v
+        }
+        let key = |name: &str| {
+            let mut v = ((name.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(b"mdta");
+            v.extend_from_slice(name.as_bytes());
+            v
+        };
+        let item = |index: u32, value: &str| {
+            let mut data = vec![0, 0, 0, 1, 0, 0, 0, 0]; // utf-8, no locale
+            data.extend_from_slice(value.as_bytes());
+            bx(&index.to_be_bytes(), &bx(b"data", &data))
+        };
+        let mut keys = vec![0, 0, 0, 0, 0, 0, 0, 3]; // version and flags, three keys
+        for k in ["com.android.capture.fps", "com.android.model", "com.android.manufacturer"] {
+            keys.extend(key(k));
+        }
+        let ilst = [item(1, "30"), item(2, "Pixel 7"), item(3, "Google")].concat();
+        let mut meta = vec![0, 0, 0, 0]; // a full box
+        meta.extend(bx(b"hdlr", &[0; 24]));
+        meta.extend(bx(b"keys", &keys));
+        meta.extend(bx(b"ilst", &ilst));
+        let file = [bx(b"ftyp", b"isom    isom"), bx(b"moov", &bx(b"meta", &meta))].concat();
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_video_meta(&write(&d, "p.mp4", &file)).camera.as_deref(), Some("Google Pixel 7"));
     }
 
     #[test]

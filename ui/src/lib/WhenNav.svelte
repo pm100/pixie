@@ -13,7 +13,7 @@
     groups: DayGroup[];
     /** The chosen period (a filter, like any other), if any: `y:2025`, `m:2025-06`, `d:2025-06-14` or `undated`. */
     period: string | null;
-    /** A click on a year, month, day or Undated chooses it as the date filter (the same one again clears it). */
+    /** A click on a year, month or day chooses it as the date filter (the same one again clears it). */
     onperiod: (key: string) => void;
   } = $props();
 
@@ -94,12 +94,9 @@
 
 <div class="when">
   {#each entries as e (e.node.key)}
+    <!-- (Items with no date are listed under Missing data.) -->
     {#if e.kind === 'year'}
       {@render yearBlock(e.node)}
-    {:else}
-      <button class="yr" class:active={marked.has('undated')} aria-pressed={marked.has('undated')} title="Show only the photos that have no date" onclick={() => onperiod('undated')}>
-        <span class="tw"></span><span class="y">Undated</span>{#if marked.has('undated')}<Check />{/if}<span class="n">{e.node.count.toLocaleString()}</span>
-      </button>
     {/if}
   {:else}
     <p class="empty">No photos yet.</p>
@@ -112,7 +109,6 @@
   .yr, .day { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; background: none; font: inherit; text-align: left; padding: 4px 8px 4px 20px; border-radius: 4px; cursor: pointer; }
   .yr:hover, .day:hover, .chip:not(.none):hover { background: #eef2fb; }
   .yr.active, .day.active { background: #e3ecff; }
-  .tw { width: 16px; flex: none; }
   .y { font-weight: 600; color: #333; }
   .n { margin-left: auto; color: #888; font-size: 12px; font-variant-numeric: tabular-nums; }
   /* Month tiles keep one size whatever the width of the pane: always four to a row, so three rows. */

@@ -183,6 +183,16 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (photo_id, tag)
      );
      CREATE INDEX idx_user_tags_tag ON user_tags(tag);",
+    // V21: a date a camera shows when its clock was never set (1904, 1970, 1980 or 2000, see `pixie_core::is_clock_default`) is no date.
+    "UPDATE photos SET taken_at = NULL
+      WHERE (taken_at >= -2082844800 AND taken_at < -2082844800 + 86400)
+         OR (taken_at >= 0 AND taken_at < 86400)
+         OR (taken_at >= 315532800 AND taken_at < 315532800 + 86400)
+         OR (taken_at >= 946684800 AND taken_at < 946684800 + 86400);",
+    // V22: videos that lack a camera or a position are read again (a quick scan skips a file whose size and time are the same):
+    // Android names its phone in its own keys, and writes a longitude with fewer than three digits, which were not read before.
+    "ALTER TABLE photos ADD COLUMN reread INTEGER NOT NULL DEFAULT 0;
+     UPDATE photos SET reread = 1 WHERE kind = 1 AND (camera IS NULL OR camera = '' OR gps_lat IS NULL OR gps_lon IS NULL);",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +201,8 @@ pub struct PhotoStat {
     pub size: i64,
     pub mtime: i64,
     pub missing: bool,
+    /// The file is to be read again whatever its size and time (see migration V22).
+    pub reread: bool,
 }
 
 /// What else the tree's counts depend on besides the view's own filters.
@@ -210,6 +222,8 @@ pub struct FacetAsk<'a> {
     pub trip_windows: &'a [(i64, i64)],
     /// The start of "Last 30 days" (unix seconds): count the items taken since then.
     pub recent_since: Option<i64>,
+    /// The kind of missing data chosen in the tree ("location": only items with no position).
+    pub missing: Option<&'a str>,
 }
 
 /// The photos the view shows, minus the filters named: the base every count in the tree is taken from.
@@ -225,7 +239,7 @@ struct FacetBase {
 impl FacetBase {
     /// `q` without its folder / kind / date window as asked, with the chosen tag / person as asked. (The view's own
     /// tag and person hits are never used here: they are passed in.)
-    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>) -> FacetBase {
+    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>, missing: Option<&str>) -> FacetBase {
         let mut q = *q;
         q.search = false;
         if no_folder {
@@ -248,6 +262,9 @@ impl FacetBase {
         }
         if camera.is_some() {
             sql.push_str(" AND camera IN (SELECT raw FROM camera_norm WHERE name = :camera)");
+        }
+        if missing == Some("location") {
+            sql.push_str(" AND (gps_lat IS NULL OR gps_lon IS NULL)");
         }
         match utag {
             Some(UserTagFilter::Picked) => sql.push_str(" AND id IN (SELECT photo_id FROM picks)"),
@@ -446,7 +463,7 @@ fn sync_camera_names(c: &Connection) -> Result<()> {
 pub(crate) fn refresh_hits(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute("DELETE FROM search_hits", []).map_err(db_err)?;
     let mut sets = Vec::new();
-    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits"), ("camera", "camera_hits"), ("utag", "utag_hits")] {
+    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits"), ("camera", "camera_hits"), ("missing", "missing_hits"), ("utag", "utag_hits")] {
         let n: i64 = tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get(0)).map_err(db_err)?;
         if n > 0 {
             sets.push(format!("SELECT photo_id FROM {table}"));
@@ -553,6 +570,7 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS tag_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS person_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS camera_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS missing_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS utag_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS camera_norm (raw TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
@@ -621,8 +639,8 @@ impl Db {
 
     pub fn find_photo_stat(&self, path: &str) -> Result<Option<PhotoStat>> {
         self.conn()
-            .query_row("SELECT id, size, mtime, missing FROM photos WHERE path = ?1", params![path], |r| {
-                Ok(PhotoStat { id: r.get(0)?, size: r.get(1)?, mtime: r.get(2)?, missing: r.get::<_, i64>(3)? != 0 })
+            .query_row("SELECT id, size, mtime, missing, reread FROM photos WHERE path = ?1", params![path], |r| {
+                Ok(PhotoStat { id: r.get(0)?, size: r.get(1)?, mtime: r.get(2)?, missing: r.get::<_, i64>(3)? != 0, reread: r.get::<_, i64>(4)? != 0 })
             })
             .optional()
             .map_err(db_err)
@@ -654,6 +672,7 @@ impl Db {
                     hash      = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN NULL ELSE photos.hash END,
                     dup       = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN 0 ELSE photos.dup END,
                     keep_pick = CASE WHEN photos.size != excluded.size OR photos.mtime != excluded.mtime THEN 0 ELSE photos.keep_pick END,
+                    reread = 0,
                     missing = 0
                  RETURNING id",
                 params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms],
@@ -836,7 +855,7 @@ impl Db {
         };
 
         // Media types: everything but the media type.
-        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag);
+        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
         for (kind, n) in pairs(format!("SELECT kind, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY kind", base.sql), &base)? {
             if kind == 1 {
                 out.videos = n;
@@ -845,16 +864,16 @@ impl Db {
             }
         }
         // Folders: everything but the folder.
-        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag);
+        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
         out.folders = pairs(format!("SELECT folder_id, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY folder_id", base.sql), &base)?;
         // People: everything but the person.
-        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag);
+        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag, ask.missing);
         out.people = pairs(
             format!("SELECT person_id, COUNT(DISTINCT photo_id) FROM faces WHERE person_id IS NOT NULL AND photo_id IN ({}) GROUP BY person_id", base.sql),
             &base,
         )?;
         // Auto tags: everything but the tag; then the different photos in each group of tags.
-        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag);
+        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag, ask.missing);
         {
             let c = self.conn();
             let mut s = c.prepare(&format!("SELECT tag, COUNT(DISTINCT photo_id) FROM photo_tags WHERE photo_id IN ({}) GROUP BY tag", base.sql)).map_err(db_err)?;
@@ -880,7 +899,7 @@ impl Db {
         }
         // Trips: everything but the date window when that came from a trip.
         if !ask.trip_windows.is_empty() {
-            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag);
+            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
             let mut times: Vec<i64> = {
                 let c = self.conn();
                 let mut s = c.prepare(&format!("SELECT taken_at FROM photos WHERE taken_at IS NOT NULL AND id IN ({})", base.sql)).map_err(db_err)?;
@@ -896,7 +915,7 @@ impl Db {
         }
         // Last 30 days is a date choice like the others: everything but the date window.
         if let Some(since) = ask.recent_since {
-            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag);
+            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
             let mut params = base.params();
             params.push((":recent_since", &since));
             let c = self.conn();
@@ -904,18 +923,27 @@ impl Db {
                 .query_row(&format!("SELECT COUNT(*) FROM photos WHERE taken_at >= :recent_since AND id IN ({})", base.sql), params.as_slice(), |r| r.get(0))
                 .map_err(db_err)?;
         }
-        // Cameras: everything but the camera, grouped by the tidied name.
-        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag);
+        // Cameras: everything but the camera, grouped by the tidied name. Every camera of the library is listed, with 0 when the
+        // filters leave it nothing (the tree dims such an entry rather than dropping it).
+        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag, ask.missing);
         {
             let c = self.conn();
             let mut s = c
                 .prepare(&format!(
-                    "SELECT n.name, COUNT(*) AS cnt FROM photos p JOIN camera_norm n ON n.raw = p.camera WHERE p.id IN ({}) GROUP BY n.name ORDER BY cnt DESC, n.name",
+                    "SELECT n.name, COUNT(CASE WHEN p.id IN ({}) THEN 1 END) AS cnt FROM photos p JOIN camera_norm n ON n.raw = p.camera WHERE p.missing = 0 AND p.dup = 0 GROUP BY n.name ORDER BY cnt DESC, n.name",
                     base.sql
                 ))
                 .map_err(db_err)?;
             out.cameras = s.query_map(base.params().as_slice(), |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         }
+        // Missing data, no location: everything but that choice, and not the map area (an area holds only located items).
+        let mut whole = *q;
+        whole.bounds = None;
+        let base = FacetBase::new(&whole, false, false, false, ask.tag, ask.person, ask.camera, ask.utag, None);
+        out.no_location = self
+            .conn()
+            .query_row(&format!("SELECT COUNT(*) FROM photos WHERE (gps_lat IS NULL OR gps_lon IS NULL) AND id IN ({})", base.sql), base.params().as_slice(), |r| r.get(0))
+            .map_err(db_err)?;
         Ok(out)
     }
 
@@ -1123,7 +1151,7 @@ impl Db {
             tx.execute("INSERT OR IGNORE INTO face_meta(id, rev) VALUES (1, 0)", []).map_err(db_err)?;
             tx.execute("UPDATE face_meta SET rev = 0, loose = 0", []).map_err(db_err)?;
             // the filters held in memory
-            for t in ["search_hits", "text_hits", "tag_hits", "person_hits", "camera_hits", "utag_hits", "filter_state", "camera_norm"] {
+            for t in ["search_hits", "text_hits", "tag_hits", "person_hits", "camera_hits", "missing_hits", "utag_hits", "filter_state", "camera_norm"] {
                 tx.execute(&format!("DELETE FROM {t}"), []).map_err(db_err)?;
             }
             tx.commit().map_err(db_err)?;
@@ -1538,6 +1566,41 @@ impl Db {
         refresh_hits(&tx)?;
         tx.commit().map_err(db_err)?;
         Ok(())
+    }
+
+    /// Show only the items missing this kind of data ("location": no position); `None` turns the filter off.
+    pub fn set_missing_filter(&self, kind: Option<&str>) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM missing_hits", []).map_err(db_err)?;
+        match kind {
+            Some("location") => {
+                tx.execute("INSERT INTO missing_hits(photo_id) SELECT id FROM photos WHERE gps_lat IS NULL OR gps_lon IS NULL", []).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('missing', 'location')", []).map_err(db_err)?;
+            }
+            _ => {
+                tx.execute("DELETE FROM filter_state WHERE name = 'missing'", []).map_err(db_err)?;
+            }
+        }
+        refresh_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Of the items Browse can list: how many have no position, how many have no date, and how many there are.
+    pub fn location_counts(&self) -> Result<(i64, i64, i64)> {
+        self.conn()
+            .query_row(
+                "SELECT COALESCE(SUM(gps_lat IS NULL OR gps_lon IS NULL), 0), COALESCE(SUM(taken_at IS NULL), 0), COUNT(*) FROM photos WHERE missing = 0 AND dup = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(db_err)
+    }
+
+    /// The kind of missing data the listings are restricted to, if any.
+    pub fn active_missing(&self) -> Result<Option<String>> {
+        self.conn().query_row("SELECT value FROM filter_state WHERE name = 'missing'", [], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err).map(Option::flatten)
     }
 
     /// Show only photos with this tag; `None` turns the tag filter off.
@@ -2458,6 +2521,57 @@ mod tests {
     }
 
     #[test]
+    fn v21_migration_clears_dates_that_are_a_clock_that_was_never_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v20.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for m in &MIGRATIONS[..20] {
+                c.execute_batch(m).unwrap();
+            }
+            c.pragma_update(None, "user_version", 20).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            for (name, t) in [("cam1980", 315_532_800 + 105), ("olympus2000", 946_684_800), ("real", 1_577_934_245)] {
+                c.execute("INSERT INTO photos(folder_id, path, size, mtime, taken_at) VALUES (1, ?1, 1, 1, ?2)", params![format!("/p/{name}.jpg"), t]).unwrap();
+            }
+        }
+        let db = Db::open(&p).unwrap();
+        let dates: Vec<(String, Option<i64>)> = db.list_photos(0, 10).unwrap().into_iter().map(|p| (p.path, p.meta.taken_at)).collect();
+        assert!(dates.contains(&("/p/cam1980.jpg".into(), None)) && dates.contains(&("/p/olympus2000.jpg".into(), None)), "{dates:?}");
+        assert!(dates.contains(&("/p/real.jpg".into(), Some(1_577_934_245))), "{dates:?}");
+    }
+
+    #[test]
+    fn v22_migration_flags_videos_missing_a_camera_or_a_position_to_be_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v21.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for m in &MIGRATIONS[..21] {
+                c.execute_batch(m).unwrap();
+            }
+            c.pragma_update(None, "user_version", 21).unwrap();
+            c.execute("INSERT INTO folders(id, path) VALUES (1, '/p')", []).unwrap();
+            // name, kind, camera, gps_lat
+            for (name, kind, camera, lat) in [("nocam.mp4", 1, None, Some(1.0)), ("nogps.mp4", 1, Some("iPhone"), None), ("whole.mp4", 1, Some("iPhone"), Some(1.0)), ("nocam.jpg", 0, None, None)] {
+                c.execute(
+                    "INSERT INTO photos(folder_id, path, size, mtime, kind, camera, gps_lat, gps_lon) VALUES (1, ?1, 1, 1, ?2, ?3, ?4, ?4)",
+                    params![format!("/p/{name}"), kind, camera, lat],
+                )
+                .unwrap();
+            }
+        }
+        let db = Db::open(&p).unwrap();
+        let flagged = |name: &str| db.find_photo_stat(&format!("/p/{name}")).unwrap().unwrap().reread;
+        assert!(flagged("nocam.mp4") && flagged("nogps.mp4"));
+        assert!(!flagged("whole.mp4") && !flagged("nocam.jpg"), "only videos that lack something");
+        // Saving the item again, as a scan does after reading the file, clears the flag.
+        let stat = db.find_photo_stat("/p/nocam.mp4").unwrap().unwrap();
+        db.upsert_photo(1, "/p/nocam.mp4", stat.size, stat.mtime, &PhotoMeta::default()).unwrap();
+        assert!(!flagged("nocam.mp4"));
+    }
+
+    #[test]
     fn migrations_run_once_and_reopen_cleanly() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.db");
@@ -3081,9 +3195,47 @@ mod tests {
     }
 
     #[test]
+    fn the_library_counts_its_items_without_a_position() {
+        let (db, _) = geo_library();
+        let (without, undated, total) = db.location_counts().unwrap();
+        assert_eq!((without, undated, total), (1, 0, 7), "nogps.jpg of the seven items; every one has a date");
+    }
+
+    #[test]
+    fn the_no_location_filter_lists_only_items_without_a_position_and_is_counted_apart_from_the_map_area() {
+        let (db, _) = geo_library();
+        let ask = |missing: Option<&'static str>| FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing };
+        let all = PhotoQuery { search: true, ..Default::default() };
+        assert_eq!(db.count_photos_in(&all).unwrap(), 0, "no hit set is active yet, so the search flag matches nothing");
+        db.set_missing_filter(Some("location")).unwrap();
+        assert_eq!(db.active_missing().unwrap().as_deref(), Some("location"));
+        assert_eq!(file_names(&db, &all), ["nogps.jpg"]);
+        // The other counts follow it; its own count does not, and ignores the map area (an area can never hold an item with no position).
+        let area = Bounds { south: 40.0, west: 0.0, north: 50.0, east: 15.0 };
+        let q = PhotoQuery { bounds: Some(area), ..Default::default() };
+        let c = db.facet_counts(&q, &ask(Some("location"))).unwrap();
+        assert_eq!(c.no_location, 1);
+        db.set_missing_filter(None).unwrap();
+        assert_eq!(db.active_missing().unwrap(), None);
+        let c = db.facet_counts(&q, &ask(None)).unwrap();
+        assert_eq!(c.no_location, 1, "the area is ignored");
+        let kind_video = PhotoQuery { kind: Some(MediaKind::Video), ..Default::default() };
+        assert_eq!(db.facet_counts(&kind_video, &ask(None)).unwrap().no_location, 0, "it follows the other filters");
+    }
+
+    #[test]
+    fn a_camera_the_filters_leave_nothing_for_is_listed_with_a_count_of_0() {
+        let (db, _) = camera_library();
+        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
+        let videos = PhotoQuery { kind: Some(MediaKind::Video), ..Default::default() };
+        let c = db.facet_counts(&videos, &ask).unwrap();
+        assert_eq!(c.cameras, [("Pixel 7".to_string(), 0), ("Samsung SM-G930A".to_string(), 0)], "both stay, with nothing in them, in name order");
+    }
+
+    #[test]
     fn the_camera_counts_group_by_tidied_name_and_leave_out_their_own_filter() {
         let (db, _) = camera_library();
-        let ask = |camera: Option<&'static str>| FacetAsk { tag: None, person: None, camera, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
+        let ask = |camera: Option<&'static str>| FacetAsk { tag: None, person: None, camera, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
         let c = db.facet_counts(&PhotoQuery::default(), &ask(None)).unwrap();
         assert_eq!(c.cameras, [("Pixel 7".to_string(), 2), ("Samsung SM-G930A".to_string(), 1)], "most first; no camera is not listed");
         // choosing a camera narrows the other counts but not the Cameras list itself
@@ -3109,7 +3261,7 @@ mod tests {
         assert_eq!(db.count_photos_in(&q(Some(UNDATED), None, Some(MediaKind::Video))).unwrap(), 1);
         assert_eq!(db.count_photos_in(&q(Some(0), Some(i64::MAX), None)).unwrap(), 1);
         // The counts beside the tree's entries follow it too.
-        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None };
+        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
         let facets = db.facet_counts(&none, &ask).unwrap();
         assert_eq!((facets.photos, facets.videos), (1, 1));
     }
@@ -3154,7 +3306,7 @@ mod tests {
         let person = person_of(&db, &[p2, p3], [1.0, 0.0]);
         let groups = vec![vec!["beach".to_string(), "dog".to_string()]];
         let windows = [(0, 500), (500, 3000)];
-        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, camera: None, utag: None, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250) };
+        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, camera: None, utag: None, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250), missing: None };
         let tags = |f: &FacetCounts| {
             let mut t = f.tags.clone();
             t.sort();

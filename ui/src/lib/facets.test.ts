@@ -84,3 +84,11 @@ describe('emptyLast', () => {
     expect(out[1].kids.map((k) => k.id)).toEqual(['x1', 'x2']);
   });
 });
+
+describe('no location', () => {
+  it('is carried into the indexed counts, and is 0 from an older backend that does not send it', () => {
+    expect(indexFacets({ ...counts, no_location: 12 }, []).noLocation).toBe(12);
+    const { no_location: _n, ...old } = { ...counts, no_location: 0 };
+    expect(indexFacets(old as FacetCounts, []).noLocation).toBe(0);
+  });
+});

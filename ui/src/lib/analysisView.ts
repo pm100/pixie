@@ -6,7 +6,7 @@ import type { DupStatus } from './dupes';
 export type CounterKey = 'tags' | 'faces' | 'dupes';
 
 /** One row under the overall bar: the analysis and what it has found so far. */
-export type Counter = { key: CounterKey; label: string; text: string; done: boolean };
+export type Counter = { key: CounterKey | 'location'; label: string; text: string; done: boolean };
 
 /** Something the user can act on: a model that failed (Retry), or the analysis being paused (Resume). */
 export type Problem = { key: CounterKey; kind: 'error' | 'paused'; text: string };
@@ -45,6 +45,8 @@ export type AnalysisInput = {
   load?: LoadProgress | null;
   /** Which analyses are switched on (all, by default). One that is off is not listed and nothing waits for it. */
   on?: Partial<Record<CounterKey, boolean>>;
+  /** For the whole library: how many items have no location, of how many. Not an analysis: it is a line of its own, once some have none. */
+  locations?: { without: number; total: number } | null;
 };
 
 const n = (x: number) => x.toLocaleString();
@@ -136,6 +138,11 @@ export function analysisView(o: AnalysisInput): AnalysisView {
   } else if (finished) {
     fraction = 1;
     headline = 'Done';
+  }
+  // Not an analysis, so it does not count towards finished or the bar: only said, for the whole library.
+  const lw = o.locations;
+  if (load === undefined && lw && lw.without > 0) {
+    counters.push({ key: 'location', label: 'Locations', text: `${n(lw.without)} of ${plural(lw.total, 'item')} ${lw.without === 1 ? 'has' : 'have'} no location`, done: true });
   }
   return {
     headline, fraction, counters, problems, finished,

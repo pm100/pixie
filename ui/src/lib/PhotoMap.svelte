@@ -9,7 +9,7 @@
   import { tripDates } from './trips';
   import { posterUrl, thumbUrl, tileTemplate } from './url';
 
-  let { points, fitMap = 0, initial, route = null, stopNames = [], onbounds, onmove, onhand = () => {}, onpin, onopenphoto }: {
+  let { points, fitMap = 0, initial, route = null, stopNames = [], onbounds, onmove, onhand = () => {}, onpin, onopenphoto, emptyNote = 'No photos with a location yet.' }: {
     points: GeoPoint[];
     /** Changes whenever a choice is made in the browse tree: once the new points are in, the map shows all of them. */
     fitMap?: number;
@@ -26,6 +26,8 @@
     onpin: (p: Photo) => void;
     /** The photo in the pin popup was clicked: open it. */
     onopenphoto: (p: Photo) => void;
+    /** What the map says when there is nothing to put on it. */
+    emptyNote?: string;
   } = $props();
 
   let el: HTMLDivElement;
@@ -286,7 +288,7 @@
   <div class="map" bind:this={el}></div>
   <button class="showall" onclick={() => { map?.closePopup(); fitAll(); }} disabled={points.length === 0} title="Re-center the map on every photo and video shown, and zoom to fit them">Re-center</button>
   {#if points.length === 0}
-    <div class="note">No photos with a location yet.</div>
+    <div class="note">{emptyNote}</div>
   {:else if emptyView}
     <div class="note">No photos or videos in this part of the map. Re-center shows where they are.</div>
   {/if}

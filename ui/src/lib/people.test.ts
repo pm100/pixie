@@ -165,3 +165,10 @@ describe('lookingForPeople', () => {
     expect(lookingForPeople({ ...base, total: 0, done: 0 })).toBe(false);
   });
 });
+
+describe('hitsActive with missing data', () => {
+  it('is on when only the no-location choice is on', () => {
+    expect(hitsActive(null, null, null, null, 'location')).toBe(true);
+    expect(hitsActive(null, null, null, null, null)).toBe(false);
+  });
+});

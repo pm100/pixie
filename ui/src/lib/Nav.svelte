@@ -16,7 +16,7 @@
   import { faceUrl } from './url';
   import { countOf, emptyLast, tripsHeld, type Facets } from './facets';
 
-  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, missing = null, onmissing = () => {}, noLocation = 0, libMissing = { location: false, date: false }, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -37,6 +37,10 @@
     analysisOn?: { tags: boolean; faces: boolean }; onopenanalysis?: () => void;
     /** The cameras (tidied names) with their counts under the filters in force, and the one chosen. */
     cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
+    /** Missing data: the kind chosen as a filter (`location`: items with no position) and how many items have none, under the other filters. Items with no date are counted from `groups`. */
+    missing?: string | null; onmissing?: (kind: string | null) => void; noLocation?: number;
+    /** Whether the whole library has any item missing a position, or a date: the rows are listed for as long as it has, and dimmed when the filters leave them nothing. */
+    libMissing?: { location: boolean; date: boolean };
     /** Your own tags with their photo counts, and the one chosen (`tag:<name>`; Picked is chosen in Browse's top line). */
     userTags?: UserTagCount[]; utag?: string | null; onutag?: (key: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
@@ -112,8 +116,10 @@
     mytags: utag === null || utag === 'picked' ? '' : utag.replace(/^tag:/, ''),
     tags: tag !== null ? tagLabel(tag) : '',
     cameras: camera ?? '',
-    when: period !== null ? periodLabel(period) : recent ? recentText : '',
+    when: period !== null && period !== 'undated' ? periodLabel(period) : recent ? recentText : '',
+    missing: missing === 'location' ? 'No location' : period === 'undated' ? 'No date' : '',
   });
+  const noDate = $derived(groups.find((g) => g.day === null)?.count ?? 0);
 
   let renaming = $state<number | null>(null), renameText = $state('');
   // The box starts with exactly what the node says, on one line with ": " between its two lines; what is typed
@@ -259,7 +265,7 @@
     {@render head('cameras', 'Cameras')}
     {#if !folded('cameras')}
       {#each cameras as [name, n] (name)}
-        <button class="item" class:active={camera === name} aria-pressed={camera === name} title={camera === name ? 'Stop showing only this camera' : 'Show only the photos from this camera'} onclick={() => oncamera(camera === name ? null : name)}>
+        <button class="item" class:active={camera === name} class:zero={facets && n === 0 && camera !== name} aria-pressed={camera === name} title={camera === name ? 'Stop showing only this camera' : 'Show only the photos from this camera'} onclick={() => oncamera(camera === name ? null : name)}>
           <span class="mark">{#if camera === name}<Check />{/if}</span><span class="grow" use:clipTitle>{name}</span><span class="n">{n.toLocaleString()}</span>
         </button>
       {/each}
@@ -279,6 +285,22 @@
     {/if}
   {/if}
 
+  <!-- Items that lack a piece of data, shown only while there are some (or one of these is chosen, to clear it). -->
+  {#if libMissing.location || libMissing.date || missing !== null || period === 'undated'}
+    {@render head('missing', 'Missing data')}
+    {#if !folded('missing')}
+      {#if libMissing.location || missing === 'location'}
+        <button class="item" class:active={missing === 'location'} class:zero={noLocation === 0 && missing !== 'location'} aria-pressed={missing === 'location'} title={missing === 'location' ? 'Stop showing only the items with no location' : 'Show only the items that have no location'} onclick={() => onmissing(missing === 'location' ? null : 'location')}>
+          <span class="mark">{#if missing === 'location'}<Check />{/if}</span><span class="grow">No location</span><span class="n">{noLocation.toLocaleString()}</span>
+        </button>
+      {/if}
+      {#if libMissing.date || period === 'undated'}
+        <button class="item" class:active={period === 'undated'} class:zero={noDate === 0 && period !== 'undated'} aria-pressed={period === 'undated'} title={period === 'undated' ? 'Stop showing only the items with no date' : 'Show only the items that have no date'} onclick={() => onperiod('undated')}>
+          <span class="mark">{#if period === 'undated'}<Check />{/if}</span><span class="grow">No date</span><span class="n">{noDate.toLocaleString()}</span>
+        </button>
+      {/if}
+    {/if}
+  {/if}
 </nav>
 
 <style>

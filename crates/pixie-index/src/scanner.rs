@@ -170,7 +170,7 @@ fn settle_chunk(db: &Db, folder_id: FolderId, mode: ScanMode, chunk: Vec<Listed>
             continue;
         };
         match db.find_photo_stat(&path)? {
-            Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing => stats.unchanged += 1,
+            Some(s) if mode == ScanMode::Quick && s.size == size && s.mtime == mtime && !s.missing && !s.reread => stats.unchanged += 1,
             existing => todo.push(Candidate { folder_id, path, size, mtime, is_update: existing.is_some(), kind }),
         }
     }
@@ -336,8 +336,11 @@ pub fn scan_folder_with(
             if meta.width.is_none() {
                 stats.unreadable += 1;
             }
-            if meta.taken_at.is_none() {
-                meta.taken_at = Some(c.mtime / 1000);
+            match meta.taken_at {
+                None => meta.taken_at = Some(c.mtime / 1000),
+                // A clock that was never set: no date, rather than the file's own (a copy's) time.
+                Some(t) if pixie_core::is_clock_default(t) => meta.taken_at = None,
+                Some(_) => {}
             }
             let id = match db.upsert_photo(folder_id, &c.path, c.size, c.mtime, &meta) {
                 Ok(id) => id,
@@ -456,6 +459,16 @@ mod tests {
         scan(&db, f);
         let p = &db.list_photos(0, 10).unwrap()[0];
         assert_eq!(p.meta.taken_at, Some(1_577_934_245));
+    }
+
+    #[test]
+    fn a_date_from_a_clock_that_was_never_set_means_no_date_not_the_mtime() {
+        let (dir, db, f) = setup();
+        fs::write(dir.path().join("a.jpg"), jpeg_with_exif(20, 10, 1, Some("1980:01:01 00:01:45"))).unwrap();
+        fs::write(dir.path().join("b.jpg"), jpeg_with_exif(20, 10, 1, Some("2020:01:02 03:04:05"))).unwrap();
+        scan(&db, f);
+        let dates: Vec<Option<i64>> = db.list_photos(0, 10).unwrap().iter().map(|p| p.meta.taken_at).collect();
+        assert!(dates.contains(&None) && dates.contains(&Some(1_577_934_245)), "{dates:?}");
     }
 
     #[test]

@@ -31,3 +31,9 @@ describe('Picked and your own tags', () => {
     expect(filterNames({ ...none, utag: null })).toEqual([]);
   });
 });
+
+describe('missing data', () => {
+  it('reads "No location" after the camera, before the media type', () => {
+    expect(filterNames({ ...none, camera: 'Pixel 7', missing: 'location', kind: 'photo' })).toEqual(['Camera “Pixel 7”', 'No location', 'Photos only']);
+  });
+});

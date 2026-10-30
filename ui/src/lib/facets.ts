@@ -16,6 +16,8 @@ export type FacetCounts = {
   recent: number;
   /** Each camera by its tidied name with its count, most first. */
   cameras: [string, number][];
+  /** Items with no position, under the filters except the map area and the "no location" choice itself. */
+  no_location?: number;
 };
 
 /** The same, ready to look up by what the tree shows. An entry that is not in a map matches nothing (0). */
@@ -31,6 +33,7 @@ export type Facets = {
   recent: number;
   /** Each camera by its tidied name with its count, most first. */
   cameras: [string, number][];
+  noLocation: number;
 };
 
 /** `trips` are the trips whose windows were asked for, in that order. */
@@ -45,6 +48,7 @@ export function indexFacets(f: FacetCounts, trips: Pick<Trip, 'since'>[]): Facet
     trips: new Map(trips.map((t, i) => [t.since, f.trips[i] ?? 0])),
     recent: f.recent ?? 0, // an older backend does not send it
     cameras: f.cameras ?? [],
+    noLocation: f.no_location ?? 0,
   };
 }
 
