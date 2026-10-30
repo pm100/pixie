@@ -18,7 +18,7 @@
     chosen: string[];
     /** How many buttons fit; the rest of the chosen ones go under More. */
     limit?: number;
-    /** This row offers Tag…. */
+    /** Tag… is a button on this row (it is always under More). */
     showTag?: boolean;
     /** The popovers open towards the left (the row is at the right edge of the window). */
     alignRight?: boolean;
@@ -58,14 +58,15 @@
     window.addEventListener('scroll', close, true);
     return () => { window.removeEventListener('resize', close); window.removeEventListener('scroll', close, true); };
   });
-  function away(e: MouseEvent) { if (open && root && e.target instanceof Node && !root.contains(e.target)) open = null; }
+  // The path is taken when the click happens: a More item has already left the page by the time this runs, so asking where its target is now would call it an outside click.
+  function away(e: MouseEvent) { if (open && root && !e.composedPath().includes(root)) open = null; }
   function keys(e: KeyboardEvent) { if (e.key === 'Escape' && open) { open = null; e.stopPropagation(); } }
 
   /** Everything not shown as a button, by tab, for More: the ones not built yet are greyed. */
   const more = $derived(GROUPS.filter((g) => g.id !== 'cleanup')
     .map((g) => ({
       ...g,
-      actions: BAR_ACTIONS.filter((a) => offered(a.id) && !shown.includes(a.id) && (a.id === 'tag' ? 'organize' : toolById(a.id)?.group) === g.id),
+      actions: BAR_ACTIONS.filter((a) => !shown.includes(a.id) && (a.id === 'tag' ? 'organize' : toolById(a.id)?.group) === g.id),
     }))
     .filter((g) => g.actions.length > 0));
   function go(id: string) {
@@ -108,8 +109,6 @@
           <button role="menuitem" class:soon={!a.built || a.id in unavailable} aria-disabled={!a.built || a.id in unavailable} disabled={!a.built || a.id in unavailable} title={unavailable[a.id]} onclick={() => go(a.id)}>{a.label}{#if !a.built}<small>soon</small>{/if}</button>
         {/each}
       {/each}
-      <div class="sep"></div>
-      <button role="menuitem" onclick={() => go('email')}>All tools…</button>
     </div>
   {/if}
 </span>
@@ -125,5 +124,4 @@
   .menu button:hover:not(:disabled) { background: #2f6fed; color: #fff; }
   .menu button.soon { color: #9a9aa4; cursor: default; }
   .menu small { margin-left: 6px; font-size: 11px; color: #b0b0b8; }
-  .sep { height: 1px; background: #e4e4e8; margin: 4px 0; }
 </style>

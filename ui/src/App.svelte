@@ -348,8 +348,8 @@
       await loadPicks();
     }
   }
-  /** Pick every photo the filters show (up to the limit; see pickAllState). */
-  const pickAll = $derived(pickAllState(total, activeUtag === 'picked'));
+  /** Pick every photo the filters show (up to the limit; see pickAllState) to the ones picked now. */
+  const pickAll = $derived(pickAllState(total, activeUtag === 'picked', undefined, picked.size));
   async function pickAllShown() {
     if (!pickAll.enabled) return;
     await pickPositions(Array.from({ length: total }, (_, i) => i));

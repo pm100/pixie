@@ -4,7 +4,12 @@ import { PICK_ALL_LIMIT, pickAllState } from './pickAll';
 describe('pickAllState', () => {
   it('is available for a set that fits', () => {
     expect(pickAllState(312, false)).toEqual({ enabled: true, title: 'Pick all 312 photos shown' });
+    expect(pickAllState(1, false).title).toBe('Pick the 1 photo shown');
     expect(pickAllState(PICK_ALL_LIMIT, false).enabled).toBe(true);
+  });
+  it('says the photos are added to the ones picked now', () => {
+    expect(pickAllState(312, false, undefined, 5).title).toBe('Pick all 312 photos shown, adding them to the 5 picked now');
+    expect(pickAllState(312, false, undefined, 1).title).toBe('Pick all 312 photos shown, adding them to the 1 picked now');
   });
   it('is off when nothing is shown', () => {
     expect(pickAllState(0, false)).toEqual({ enabled: false, title: 'No photos are shown' });
