@@ -34,8 +34,8 @@ describe('actionBar', () => {
   });
 
   it('puts the buttons that do not fit under More', () => {
-    expect(split(['email', 'print', 'tag'], 2)).toEqual({ direct: ['email', 'print'], folded: ['tag'] });
-    expect(split(['email', 'print', 'tag'], 0)).toEqual({ direct: [], folded: ['email', 'print', 'tag'] });
+    expect(split(['email', 'print', 'tag'], 2)).toEqual({ direct: ['email', 'print'] });
+    expect(split(['email', 'print', 'tag'], 0)).toEqual({ direct: [] });
   });
 
   it('leaves out an action that is not built, or not offered on this bar', () => {

@@ -5,13 +5,11 @@
   import { BAR_ACTIONS, split } from './actionBar';
   import GroupTags from './GroupTags.svelte';
   import TagAs from './TagAs.svelte';
-  import { GROUPS, toolById } from './tools';
+  import { GROUPS, toolById, worksOnWholeLibrary } from './tools';
 
-  let { source, count, ids, chosen, limit = Infinity, showTag = false, alignRight = false, unavailable = {}, onopen, ontagchange = () => {} }: {
+  let { source, ids, chosen, limit = Infinity, showTag = false, alignRight = false, unavailable = {}, onopen, ontagchange = () => {} }: {
     /** Which photos the row acts on: the picked ones, or the chosen one. */
     source: 'picked' | 'current';
-    /** How many photos there are to act on; the buttons are off when none. */
-    count: number;
     /** Those photos' ids (for the tags). */
     ids: number[];
     /** The actions chosen for the bar (Settings, Browsing). */
@@ -30,7 +28,6 @@
     ontagchange?: (tag: string) => void;
   } = $props();
 
-  const usable = $derived(count > 0);
   const what = $derived(source === 'picked' ? 'the picked photos' : 'this photo');
   const offered = (id: string) => id !== 'tag' || showTag;
   const shown = $derived(split(chosen, limit, offered).direct);
@@ -41,16 +38,22 @@
   let moreBtn: HTMLElement | undefined = $state();
   /** The popover is fixed to the window (so a pane it sits in cannot clip it), under the button that opened it. */
   let popStyle = $state('');
+  /** Under the button, or over it when there is more room there (the details row sits low in the window); the popover scrolls if it is still too tall. */
   function placeUnder(el: HTMLElement) {
     const r = el.getBoundingClientRect();
-    popStyle = alignRight ? `top:${Math.round(r.bottom + 4)}px;right:${Math.round(window.innerWidth - r.right)}px` : `top:${Math.round(r.bottom + 4)}px;left:${Math.round(r.left)}px`;
+    const below = window.innerHeight - r.bottom - 8;
+    const above = r.top - 8;
+    const up = below < 300 && above > below;
+    const side = alignRight ? `right:${Math.round(window.innerWidth - r.right)}px` : `left:${Math.round(r.left)}px`;
+    popStyle = up
+      ? `bottom:${Math.round(window.innerHeight - r.top + 4)}px;max-height:${Math.round(above)}px;${side}`
+      : `top:${Math.round(r.bottom + 4)}px;max-height:${Math.round(below)}px;${side}`;
   }
   function toggle(which: 'tag' | 'more', e: MouseEvent) {
     if (open === which) { open = null; return; }
     placeUnder(e.currentTarget as HTMLElement);
     open = which;
   }
-  $effect(() => { if (!usable) open = null; });
   $effect(() => {
     if (!open) return;
     const close = () => (open = null);
@@ -63,7 +66,7 @@
   function keys(e: KeyboardEvent) { if (e.key === 'Escape' && open) { open = null; e.stopPropagation(); } }
 
   /** Everything not shown as a button, by tab, for More: the ones not built yet are greyed. */
-  const more = $derived(GROUPS.filter((g) => g.id !== 'cleanup')
+  const more = $derived(GROUPS.filter((g) => !worksOnWholeLibrary(g.id))
     .map((g) => ({
       ...g,
       actions: BAR_ACTIONS.filter((a) => !shown.includes(a.id) && (a.id === 'tag' ? 'organize' : toolById(a.id)?.group) === g.id),
@@ -85,12 +88,12 @@
 <span class="actions" role="group" aria-label="Actions on {what}" bind:this={root}>
   {#each shown as id (id)}
     {#if id === 'tag'}
-      <button class="act" disabled={!usable} aria-haspopup="dialog" aria-expanded={open === 'tag'} onclick={(e) => toggle('tag', e)}>Tag…</button>
+      <button class="act" aria-haspopup="dialog" aria-expanded={open === 'tag'} onclick={(e) => toggle('tag', e)}>Tag…</button>
     {:else}
-      <button class="act" disabled={!usable || id in unavailable} onclick={() => go(id)} title={unavailable[id] ?? `${label(id)}: ${what}`}>{label(id)}</button>
+      <button class="act" disabled={id in unavailable} onclick={() => go(id)} title={unavailable[id] ?? `${label(id)}: ${what}`}>{label(id)}</button>
     {/if}
   {/each}
-  <button class="act" bind:this={moreBtn} disabled={!usable} aria-haspopup="menu" aria-expanded={open === 'more'} onclick={(e) => toggle('more', e)}>More ▾</button>
+  <button class="act" bind:this={moreBtn} aria-haspopup="menu" aria-expanded={open === 'more'} onclick={(e) => toggle('more', e)}>More ▾</button>
   {#if open === 'tag'}
     <div class="pop" style={popStyle} role="dialog" aria-label="Tags">
       {#if ids.length === 1}
@@ -117,7 +120,7 @@
   .actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
   .act { border: 1px solid #b8bdca; background: #fff; border-radius: 4px; padding: 2px 10px; font: inherit; font-size: 13px; cursor: pointer; }
   .act:disabled { opacity: .5; cursor: default; }
-  .pop { position: fixed; z-index: 60; min-width: 240px; background: #fff; border: 1px solid #c5c8d2; border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); padding: 6px 4px; }
+  .pop { position: fixed; z-index: 60; min-width: 240px; background: #fff; border: 1px solid #c5c8d2; border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); padding: 6px 4px; overflow-y: auto; }
   .menu { min-width: 220px; padding: 4px 0; }
   .menu h4 { margin: 6px 14px 2px; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #7a7a86; font-weight: 600; }
   .menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; font: inherit; padding: 5px 14px; cursor: pointer; }

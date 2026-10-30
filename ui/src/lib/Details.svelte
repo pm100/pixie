@@ -104,7 +104,7 @@
       {#if lines.primary}<div class="place"><strong>{lines.primary}</strong>{#if lines.secondary}<br />{lines.secondary}{/if}</div>{/if}
     {/if}
     <!-- After everything else (the map and place too), so it moves up and down with the details. -->
-    <div class="actions"><PhotoActions source="current" count={1} ids={[photo.id]} {chosen} limit={3} alignRight ontagchange={tagsChanged} unavailable={photo.kind === 'video' ? { print: "Videos can't be printed" } : {}} {onopen} /></div>
+    <div class="actions"><PhotoActions source="current" ids={[photo.id]} {chosen} limit={3} alignRight ontagchange={tagsChanged} unavailable={photo.kind === 'video' ? { print: "Videos can't be printed" } : {}} {onopen} /></div>
   {:else}
     <p class="hint">Select a photo to see its details.</p>
   {/if}

@@ -13,7 +13,7 @@
   import WorkingOn from './WorkingOn.svelte';
   import { plural } from './format';
   import { loadPref, savePref } from './prefs';
-  import { firstTool, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
+  import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { posterUrl, thumbUrl } from './url';
 
   let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, dupes, onduplicates }: {
@@ -44,6 +44,7 @@
   const features = $derived({ dupes });
   const list = $derived(toolsIn(group, features));
   const whole = $derived(worksOnWholeLibrary(group));
+  const groupLabel = $derived(GROUPS.find((g) => g.id === group)?.label ?? group);
 
   // The widths of the tools list and of the options column; the photos take the rest. Remembered, as Browse's panes are.
   let navW = $state(loadPref('tools.nav', 230));
@@ -57,6 +58,11 @@
     savePref(`tools.tool.${group}`, id);
   }
 
+  // The photo chosen in Browse, kept while this tab is open: Browse lets go of it when it refreshes (a rescan, a tag change), which must not change what the tools work on.
+  let held = $state<Photo | null>(null);
+  $effect(() => { if (photo) held = photo; });
+  const here = $derived(photo ?? held);
+
   // With nothing picked, start on the photo chosen in Browse (once, when the tab opens); and never work on the current photo when there is none.
   let started = false;
   $effect(() => {
@@ -64,11 +70,13 @@
     started = true;
     untrack(() => { if (!whole && source === 'picked' && picks.size === 0 && photo) source = 'current'; });
   });
-  $effect(() => { if (source === 'current' && !photo) source = 'picked'; });
+  $effect(() => { if (source === 'current' && !here) source = 'picked'; });
   // A tag that has no photos left is gone from the list: go back to Picked.
   $effect(() => { if (source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'picked'; });
 
   let photos = $state<Photo[]>([]);
+  /** The source `photos` was read for. */
+  let listed = '';
   let error = $state('');
   let broken = $state<Record<number, boolean>>({});
   /** The photo clicked here (blue outline); double-click or Enter opens the viewer. */
@@ -84,11 +92,15 @@
   $effect(() => {
     picks; userTags; // read again whenever the picks or the tags change
     const from = source;
-    const one = photo;
+    const one = here;
     if (!active || whole) return;
-    if (from === 'current') { photos = one ? [one] : []; return; }
+    // Another set of photos: the old list must not stay on show (and be acted on) while the new one is read, or if it cannot be.
+    if (from !== listed) { listed = from; photos = []; }
+    if (from === 'current') { photos = one ? [one] : []; error = ''; return; }
     let live = true;
-    (from === 'picked' ? listPicked() : listTagged(from.slice(4))).then((l) => { if (live) photos = l; }).catch((e) => { if (live) error = String(e); });
+    (from === 'picked' ? listPicked() : listTagged(from.slice(4)))
+      .then((l) => { if (live) { photos = l; error = ''; } })
+      .catch((e) => { if (live) { photos = []; error = String(e); } });
     return () => { live = false; };
   });
 
@@ -104,10 +116,10 @@
   {#if whole}
     <div class="scope"><b>Whole library.</b> {current.label} works on every photo, not on the ones you picked.</div>
   {:else}
-    <WorkingOn bind:source pickedCount={picks.size} hasPhoto={photo !== null} {userTags} count={photos.length} {onclear} {error} />
+    <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={photos.length} {onclear} {error} />
   {/if}
   <div class="body" style:grid-template-columns={whole ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
-    <nav aria-label={`${group} tools`}>
+    <nav aria-label={`${groupLabel} tools`}>
       {#each list as t (t.id)}
         <button class:on={current.id === t.id} class:soon={!t.built || (noPrint(t.id) && current.id !== t.id)} aria-current={current.id === t.id ? 'page' : undefined}
                 disabled={noPrint(t.id) && current.id !== t.id} title={noPrint(t.id) ? "Videos can't be printed" : undefined} onclick={() => choose(t.id)}>
@@ -133,7 +145,7 @@
           {#if videosLeft > 0}
             <p class="note">{plural(videosLeft, 'video')} can't be printed{printable.length > 0 ? ' and left out' : ''}.</p>
           {/if}
-          {#if printable.length > 0}<PrintTool photos={printable} />{/if}
+          <PrintTool photos={printable} />
         {:else if current.id === 'tags'}
           <div class="tool"><GroupTags {ids} {onchange} /></div>
         {:else}

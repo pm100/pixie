@@ -1,7 +1,7 @@
 <script lang="ts">
   /** The email form for some photos: what is being sent and whether it thinks that fits in an email, the subject (proposed),
    *  who to send it to and some text (both optional), and the ways to send (smaller copies, several emails, as it is). Used in
-   *  the Tools tab and, in a dialog, by the Email button. Pixie cannot tell when a message was refused; the person tries
+   *  the Send tab and, in a dialog, by the Email button. Pixie cannot tell when a message was refused; the person tries
    *  again and chooses another way. */
   import { emailInfo, emailPhotos } from './api';
   import { badAddress } from './emailTo';

@@ -83,7 +83,7 @@ export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_pho
 export const pickMany = (ids: number[]) => invoke<void>('pick_many', { ids });
 /** The ids of the picked photos, in the order picked. */
 export const pickIds = () => invoke<number[]>('pick_ids');
-/** The picked photos themselves, newest first (the Tools tab). */
+/** The picked photos themselves, newest first (the Send, Create and Organize tabs). */
 export const listPicked = () => invoke<Photo[]>('list_picked');
 
 /** The user's own tags (not the Auto tags): a tag and how many photos in Browse have it. */

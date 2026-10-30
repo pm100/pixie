@@ -30,7 +30,7 @@ Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows a
 **What is in your photos** (all analysed on your computer, in one background pass)
 - **Auto tags.** Labels such as Beach, Museum or Dog, grouped into categories you can browse by.
 - **People.** Pixie finds faces and groups them into people. Name a group in the People tab and the rest of that person's photos follow. A walk-through lets you confirm uncertain matches, ignore groups, and move faces out of a wrong group.
-- **Duplicates.** Files that appear more than once are found and shown as one item in Browse. The Duplicates tab lets you pick which copy to keep. Nothing is deleted for good.
+- **Duplicates.** Files that appear more than once are found and shown as one item in Browse. Clean up > Duplicates lets you pick which copy to keep. Nothing is deleted for good.
 
 Planned next: a Windows wallpaper and lock-screen slideshow, simple editing, print, collages and emailing photos to people by nickname. The design is in [`docs/superpowers/specs`](docs/superpowers/specs).
 

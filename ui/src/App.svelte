@@ -298,7 +298,7 @@
 
   let settingsPage = $state<SettingsPage>('folders');
   let folderInfos = $state<FolderInfo[]>([]);
-  // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Tools tab holds them.
+  // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Send, Create and Organize tabs work on them.
   let picked = $state<ReadonlySet<number>>(new Set());
   async function loadPicks() {
     try { picked = new Set(await pickIds()); } catch { /* the next time */ }
@@ -1101,8 +1101,8 @@
     toolStart = toolId;
     pickTab(t.group);
   }
-  // Opening a tool tab any other way starts it as usual.
-  $effect(() => { if (!isToolGroup(tab)) toolStart = null; });
+  // The start tool is for the tab it was meant for, once: opening any other tab, or this one later, starts it as usual (at the tool it was last left at).
+  $effect(() => { if (toolStart !== null && !(isToolGroup(tab) && toolById(toolStart)?.group === tab)) toolStart = null; });
   /** The photos the buttons beside Picked act on. */
   const pickedIds = $derived([...picked]);
   /** The buttons on the action bars (Settings, Browsing), and how many of them fit in Browse's second line. */
@@ -1260,11 +1260,11 @@
         {#if picked.size > 0}
         <div class="section" role="group" aria-label="Picked photos">
           <span class="stitle" title="The picked photos: the circle in a photo's top-left corner picks it">Picked ★ {picked.size.toLocaleString()}</span>
-          <label class="check" class:off={picked.size === 0 && activeUtag !== 'picked'} title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>
-            <input type="checkbox" checked={activeUtag === 'picked'} disabled={picked.size === 0 && activeUtag !== 'picked'} onchange={(e) => setUtag(e.currentTarget.checked ? 'picked' : null)} /> Filter
+          <label class="check" title={activeUtag === 'picked' ? 'Show all photos again' : 'Show only the picked photos'}>
+            <input type="checkbox" checked={activeUtag === 'picked'} onchange={(e) => setUtag(e.currentTarget.checked ? 'picked' : null)} /> Filter
           </label>
-          <button class="linkbtn" onclick={clearAllPicks} disabled={picked.size === 0} title="Take everything off Picked (the photos stay in the library)">Clear</button>
-          <PhotoActions source="picked" count={picked.size} ids={pickedIds} chosen={barActions} limit={barLimit} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
+          <button class="linkbtn" onclick={clearAllPicks} title="Take everything off Picked (the photos stay in the library)">Clear</button>
+          <PhotoActions source="picked" ids={pickedIds} chosen={barActions} limit={barLimit} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
         </div>
         {/if}
         <div class="section" role="group" aria-label="Map">

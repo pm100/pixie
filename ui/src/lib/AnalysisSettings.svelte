@@ -49,7 +49,7 @@
 <ul class="about">
   <li><b>Auto tags</b>: labels such as Beach, Museum or Dog, which you can browse by in the left-hand list.</li>
   <li><b>People</b>: finds the faces and groups them into people, so you can name them and browse by person.</li>
-  <li><b>Duplicates</b>: finds files that are in your folders more than once, so you can tidy them up on the Duplicates tab. Extra copies are hidden from Browse.</li>
+  <li><b>Duplicates</b>: finds files that are in your folders more than once, so you can tidy them up in Clean up > Duplicates. Extra copies are hidden from Browse.</li>
 </ul>
 
 <style>
