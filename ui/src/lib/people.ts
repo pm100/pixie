@@ -9,6 +9,14 @@ export type PeopleStatus = AnalysisStatus & { rev: number };
 
 const n = (x: number) => x.toLocaleString();
 
+/** A name typed all in lower case starts each part (split at spaces and hyphens) with a capital: "paul moore" becomes "Paul Moore".
+ *  A name that already has a capital anywhere is left as typed, so "van der Berg" and "McDonald" stay. */
+export function capitalizeName(text: string): string {
+  const t = text.trim();
+  if (t === '' || /\p{Lu}/u.test(t)) return t;
+  return t.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, c: string) => sep + c.toUpperCase());
+}
+
 export const personLabel = (p: { name: string | null }): string => (p.name ? p.name : 'Unnamed person');
 
 /** One line for Settings: what the face scan is doing right now. */

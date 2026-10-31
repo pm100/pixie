@@ -39,14 +39,23 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+const isDrive = (s: string) => /^[A-Za-z]:$/.test(s);
 const cut = (p: string) => Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
 export const basename = (p: string): string => p.slice(cut(p) + 1);
 /** The name to show for a folder: its last part, or the whole path for a drive root (`P:\`) or `/`, which have none. */
 export function folderName(p: string): string {
   const name = basename(p.replace(/[\\/]+$/, ''));
-  return name === '' || /^[A-Za-z]:$/.test(name) ? p : name;
+  // `P:` alone means "the current folder on drive P", so a drive root is always shown with its separator.
+  if (isDrive(name)) return /[\\/]$/.test(p) ? p : `${p}\\`;
+  return name === '' ? p : name;
 }
-export const dirname = (p: string): string => (cut(p) < 0 ? '' : p.slice(0, cut(p)));
+/** The folder a path is in; for a file in the root of a drive that is `P:\`, not `P:`, and `/` for one in the root of `/`. */
+export function dirname(p: string): string {
+  const i = cut(p);
+  if (i < 0) return '';
+  const dir = p.slice(0, i);
+  return dir === '' || isDrive(dir) ? p.slice(0, i + 1) : dir;
+}
 
 export function formatGps(lat: number | null, lon: number | null): string | null {
   if (lat === null || lon === null) return null;

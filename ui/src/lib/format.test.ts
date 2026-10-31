@@ -32,6 +32,11 @@ describe('sizes and paths', () => {
     expect(basename('plain.jpg')).toBe('plain.jpg');
     expect(dirname('plain.jpg')).toBe('');
   });
+  it('keeps the separator on a drive root, since "P:" alone means the current folder on that drive', () => {
+    expect(dirname('P:\\a.jpg')).toBe('P:\\');
+    expect(dirname('E:/a.jpg')).toBe('E:/');
+    expect(dirname('/a.jpg')).toBe('/');
+  });
 });
 
 describe('formatGps', () => {
@@ -68,6 +73,9 @@ describe('folderName', () => {
     expect(folderName('P:\\')).toBe('P:\\');
     expect(folderName('E:/')).toBe('E:/');
     expect(folderName('/')).toBe('/');
+  });
+  it('shows a drive root with its backslash even when the path was stored without it', () => {
+    expect(folderName('P:')).toBe('P:\\');
   });
 });
 

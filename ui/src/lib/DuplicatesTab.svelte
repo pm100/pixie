@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { duplicateGroups, duplicateStatus, removeDuplicates, setDuplicateKeeper } from './api';
   import { dupLine, extrasOf, totalSize, type DupGroup, type DupStatus } from './dupes';
-  import { formatBytes, formatDateTime } from './format';
+  import { dirname, formatBytes, formatDateTime } from './format';
   import { thumbUrl } from './url';
   import VideoPoster from './VideoPoster.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
@@ -54,7 +54,6 @@
   const more = $derived(status !== null && loaded && status.groups !== loadedGroups);
   const checking = $derived(status !== null && status.done < status.total);
   const extras = $derived(extrasOf(groups));
-  const dirOf = (path: string) => path.replace(/[\\/][^\\/]*$/, '');
   const nameOf = (path: string) => path.replace(/^.*[\\/]/, '');
   const coverOf = (g: DupGroup) => g.photos.find((p) => p.id === g.keeper) ?? g.photos[0];
 
@@ -130,7 +129,7 @@
               <label class="copy" class:keep={p.id === g.keeper}>
                 <input type="radio" name={g.hash} checked={p.id === g.keeper} disabled={busy} onchange={() => keep(p.id)} />
                 <span class="mark">{p.id === g.keeper ? 'Keep' : 'Extra'}</span>
-                <span class="where" title={p.path}><strong>{nameOf(p.path)}</strong> <span class="dir">{dirOf(p.path)}</span></span>
+                <span class="where" title={p.path}><strong>{nameOf(p.path)}</strong> <span class="dir">{dirname(p.path)}</span></span>
                 <span class="meta">{formatDateTime(p.taken_at)} · {formatBytes(p.size)}</span>
               </label>
             {/each}

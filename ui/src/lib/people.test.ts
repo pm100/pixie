@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clickSelection, lookingForPeople, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
+import { capitalizeName, clickSelection, lookingForPeople, sectionCount, toCandidates, faceCardLine, firstSection, peopleLine, personLabel, personRows, pickable, refreshOffered, suggestionLine, verdict, type FaceOverview, type PeopleStatus, type PersonInfo } from './people';
 import { faceUrl } from './url';
 import { hitsActive } from './tagNav';
 
@@ -7,6 +7,21 @@ const status = (o: Partial<PeopleStatus> = {}): PeopleStatus => ({
   models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, rev: 0, error: null, ...o,
 });
 const people = (n: number): PersonInfo[] => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: null, count: n - i, face_id: i + 100 }));
+
+describe('capitalizeName', () => {
+  it('starts each part of a name typed in lower case with a capital', () => {
+    expect(capitalizeName('paul moore')).toBe('Paul Moore');
+    expect(capitalizeName('mary-jane smith')).toBe('Mary-Jane Smith');
+    expect(capitalizeName('  alex  ')).toBe('Alex');
+  });
+  it('leaves a name alone when the person already used a capital, so van der Berg or McDonald stay as typed', () => {
+    expect(capitalizeName('Ludwig van der Berg')).toBe('Ludwig van der Berg');
+    expect(capitalizeName('mcDonald')).toBe('mcDonald');
+  });
+  it('keeps an empty name empty', () => {
+    expect(capitalizeName('   ')).toBe('');
+  });
+});
 
 describe('personLabel', () => {
   it('uses the name, or says the person is unnamed', () => {

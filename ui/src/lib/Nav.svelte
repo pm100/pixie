@@ -135,8 +135,8 @@
   const focusOnMount = (el: HTMLInputElement) => { el.focus(); el.select(); };
 </script>
 
-{#snippet head(id: SectionId, title: string)}
-  <button class="head" aria-expanded={!folded(id)} onclick={() => ontoggle(id)}>
+{#snippet head(id: SectionId, title: string, why?: string)}
+  <button class="head" aria-expanded={!folded(id)} title={why} onclick={() => ontoggle(id)}>
     <Chevron open={!folded(id)} />{title}
     {#if folded(id) && chosen[id]}<span class="chosen" use:clipTitle>· {chosen[id]}</span>{/if}
   </button>
@@ -150,15 +150,13 @@
   {/if}
 
   {#if !analysisOn.faces}
-    {@render head('people', 'People')}
+    {@render head('people', 'People', 'People is turned off, so no faces are being looked for. Turn it on in Settings → Picture analysis.')}
     {#if !folded('people')}
-      <p class="hint">People is turned off, so no faces are being looked for. Turn it on in Settings → Picture analysis.</p>
       <button class="item more" title="Open the Picture analysis settings" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
     {/if}
   {:else if people.length === 0 && facesFound}
-    {@render head('people', 'People')}
+    {@render head('people', 'People', 'Nobody is named yet. Name people in the People tab and they will appear here.')}
     {#if !folded('people')}
-      <p class="hint">Nobody is named yet. Name people in the People tab and they will appear here.</p>
       <button class="item more" title="Go to the People tab, to name the faces found" onclick={onnamepeople}><span class="mark"></span>Name people…</button>
     {/if}
   {:else if people.length > 0}
@@ -178,7 +176,7 @@
     {/if}
   {/if}
 
-  {@render head('mytags', 'Tags')}
+  {@render head('mytags', 'Tags', userTags.length === 0 ? 'Tag photos in the details panel on the right and your tags are listed here.' : undefined)}
   {#if !folded('mytags')}
     {#each userTags as t (t.name)}
       {@const key = `tag:${t.name}`}
@@ -186,13 +184,11 @@
         <span class="mark">{#if utag === key}<Check />{/if}</span><span class="grow" use:clipTitle>{t.name}</span><span class="n">{t.count.toLocaleString()}</span>
       </button>
     {/each}
-    {#if userTags.length === 0}<p class="hint">Tag photos in the details panel on the right and your tags are listed here.</p>{/if}
   {/if}
 
   {#if !analysisOn.tags}
-    {@render head('tags', 'Auto tags')}
+    {@render head('tags', 'Auto tags', 'Auto tags are turned off, so photos are not being labelled. Turn them on in Settings → Picture analysis.')}
     {#if !folded('tags')}
-      <p class="hint">Auto tags are turned off, so photos are not being labelled. Turn them on in Settings → Picture analysis.</p>
       <button class="item more" title="Open the Picture analysis settings" onclick={onopenanalysis}><span class="mark"></span>Open Settings…</button>
     {/if}
   {:else if tags.length > 0}
@@ -215,13 +211,12 @@
     {/if}
   {/if}
 
-  {@render head('trips', 'Trips')}
+  {@render head('trips', 'Trips', !tripsReady ? 'Trips are runs of days spent away from home. Pixie needs to know where home is first.' : trips.length === 0 ? 'No trips found. A smaller home radius or a shorter minimum length in Settings may find some.' : undefined)}
   {#if !folded('trips')}
     {#if !tripsReady}
-      <p class="hint">Trips are runs of days spent away from home. Pixie needs to know where home is first.</p>
       <button class="item more" title="Open the Trips settings, to say where home is" onclick={onsettrips}><span class="mark"></span>Set up trips…</button>
     {:else if trips.length === 0}
-      <p class="hint">No trips found. A smaller home radius or a shorter minimum length in Settings may find some.</p>
+      <!-- Nothing to list: the heading's tooltip says why. -->
     {:else}
       {#each shownYears as g (g.year)}
         {@const held = tripsHeld(g.trips, facets ?? null)}
@@ -332,7 +327,6 @@
   .item.offline .grow, .item.offline .n { opacity: .55; }
   .offnote { font-size: 11px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
   .item.active { background: #e3ecff; font-weight: 600; }
-  .hint { margin: 2px 8px 4px 20px; font-size: 12px; color: #777; }
   .row { position: relative; }
   .edit { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); border: 0; background: none; cursor: pointer; color: #777; font-size: 12px; padding: 2px 4px; visibility: hidden; }
   .row:hover .edit, .edit:focus-visible { visibility: visible; }

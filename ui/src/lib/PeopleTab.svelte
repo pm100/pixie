@@ -7,7 +7,7 @@
   import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import {
-    clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, lookingForPeople, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
+    capitalizeName, clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, lookingForPeople, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
     type FaceOrder, type FaceOverview, type FacePerson, type FaceTile, type PeopleStatus, type Section, type UnsortedFace,
   } from './people';
   import FaceGrid from './FaceGrid.svelte';
@@ -198,7 +198,7 @@
 
   // ---- groups and people
   const assign = (p: FacePerson, into: number) => act(async () => { await assignGroup(p.id, into); });
-  const name = (p: FacePerson, text: string) => act(async () => { await renamePerson(p.id, text); });
+  const name = (p: FacePerson, text: string) => act(async () => { await renamePerson(p.id, capitalizeName(text)); });
 
   const ignoreSelected = () => act(() => ignoreFaces(ids()));
   const unignoreSelected = () => act(() => unignoreFaces(ids()));
