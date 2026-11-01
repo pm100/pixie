@@ -21,7 +21,7 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
+  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, master = null, onmaster = () => {}, onfeeds = () => {}, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
     /** The loading of the files found, and whether the Pause is on. */
     loading: LoadStatus;
     /** Which analyses are on, and a change to that. */
@@ -33,6 +33,8 @@
     analysing?: { ids: number[]; fraction: number | null } | null;
     /** Says what the Picture analysis numbers are about when they are for the folders just added. */
     analysisNote?: string | null; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
+    /** The master folder (null while there is none), choosing and clearing it, and whether a folder's new items wait for review. */
+    master?: string | null; onmaster?: (path: string | null) => void; onfeeds?: (id: number, feeds: boolean) => void;
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     /** The actions on the action bars, and a change to them. */
@@ -88,7 +90,7 @@
   </nav>
   <div class="page">
     {#if page === 'folders'}
-      <PhotoFolders {folders} {folderStates} {analysing} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {networkRescan} {onnetworkrescan} />
+      <PhotoFolders {folders} {folderStates} {analysing} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {master} {onmaster} {onfeeds} {networkRescan} {onnetworkrescan} />
     {:else if page === 'viewing'}
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>

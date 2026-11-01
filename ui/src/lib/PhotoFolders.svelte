@@ -6,7 +6,7 @@
   import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
   import { scanText, type ScanState } from './scanProgress';
 
-  let { folders, folderStates = {}, analysing = null, scanning, scanFolder, scan, onstop, onadd, onremove, networkRescan, onnetworkrescan }: {
+  let { folders, folderStates = {}, analysing = null, scanning, scanFolder, scan, onstop, onadd, onremove, master = null, onmaster = () => {}, onfeeds = () => {}, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
@@ -15,6 +15,10 @@
     /** The folder the running scan is on, and what it has reported so far. */
     scanFolder: number | null; scan: ScanState; onstop: () => void;
     onremove: (id: number) => Promise<void>;
+    /** The master folder, or null while there is none: then nothing of the master feature is shown but the choice to set one. */
+    master?: string | null; onmaster?: (path: string | null) => void;
+    /** Whether new items found in a folder wait for review before they are copied into the master. */
+    onfeeds?: (id: number, feeds: boolean) => void;
     /** Whether, and how often, folders on the network are scanned again. */
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void;
   } = $props();
@@ -49,6 +53,13 @@
       {:else}
         <span class="n">{plural(f.count, 'item')}{#if analysing && analysing.fraction !== null && analysing.ids.includes(f.id)} · {Math.floor(analysing.fraction * 100)}% analysed{/if}</span>
       {/if}
+      {#if master !== null && f.path === master}
+        <span class="badge" title="Approved photos are copied into this folder">Master folder</span>
+      {:else if master !== null}
+        <label class="feeds" title="New photos found in this folder wait for your approval before they are copied into the master folder">
+          <input type="checkbox" checked={f.feeds_master} onchange={(e) => onfeeds(f.id, e.currentTarget.checked)} /> Feeds the master
+        </label>
+      {/if}
       {#if busy}
         <button onclick={onstop} title="Stop this scan; what was read so far is kept">Stop</button>
       {/if}
@@ -58,6 +69,17 @@
 </ul>
 {#if error}<p class="err">{error}</p>{/if}
 <button onclick={onadd} title="Choose another folder of photos and videos to add to the library">Add folder…</button>
+
+<h3>Master folder</h3>
+<p class="hint">A folder that holds the photos you share, such as a family drive. Pixie copies new photos into it once you have approved them; nothing is copied before that. Until you choose one, none of this is used.</p>
+<label class="opt">
+  Master folder:
+  <select value={master ?? ''} disabled={folders.length === 0} title="Choose which of your folders holds the photos you share, or None to go without one. No files are moved or deleted"
+          aria-label="Master folder" onchange={(e) => onmaster(e.currentTarget.value === '' ? null : e.currentTarget.value)}>
+    <option value="">None</option>
+    {#each folders as f (f.id)}<option value={f.path}>{f.path}</option>{/each}
+  </select>
+</label>
 
 <h3>Keeping up to date</h3>
 <p class="hint">Pixie automatically detects new or changed local files. How often should Pixie check network files?</p>
@@ -88,5 +110,7 @@
   li.offline .path, li.offline .n { opacity: .55; }
   .offnote { font-size: 12px; color: #8a5a00; background: #fff1d6; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
   .none { color: #777; }
+  .badge { font-size: 12px; color: #1a3f9a; background: #e3ecff; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
+  .feeds { font-size: 12px; color: #555; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
   .err { color: #b00020; }
 </style>

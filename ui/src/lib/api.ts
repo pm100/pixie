@@ -19,7 +19,7 @@ export interface Photo {
 export type MediaKind = 'photo' | 'video';
 export interface Folder { id: number; path: string }
 /** A watched folder with its number of live items, for the Settings page. */
-export interface FolderInfo { id: number; path: string; count: number }
+export interface FolderInfo { id: number; path: string; count: number; feeds_master: boolean }
 export type SortOrder = 'newest' | 'oldest';
 /** What the library is showing: a sort order and optional folder, kind and map-area filters. */
 export interface View {
@@ -221,12 +221,32 @@ export const tripRoute = (since: number, until: number, homeLat: number, homeLon
 export const suggestHome = () => invoke<[number, number] | null>('suggest_home');
 export const renameTrip = (since: number, until: number, name: string) => invoke<void>('rename_trip', { since, until, name });
 /** The tag and person the listings are really restricted to. */
-export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null; utag: string | null; missing: string | null }>('active_filters');
+export const activeFilters = () => invoke<{ tag: string | null; person: number | null; camera: string | null; utag: string | null; missing: string | null; share: string | null }>('active_filters');
 export const setPersonFilter = (person: number | null) => invoke<void>('set_person_filter', { person });
 /** Show only photos taken with this camera, by its tidied name (null turns it off). */
 export const setCameraFilter = (camera: string | null) => invoke<void>('set_camera_filter', { camera });
 /** Show only the items missing a kind of data (`location`: no position); null turns it off. */
 export const setMissingFilter = (kind: string | null) => invoke<void>('set_missing_filter', { kind });
+/** The master folder, or null while there is none (then none of the master feature is shown). */
+export const getMasterFolder = () => invoke<string | null>('get_master_folder');
+export const setMasterFolder = (path: string | null) => invoke<void>('set_master_folder', { path });
+/** Whether new items found in a folder are held for review before they are copied into the master. */
+export const setFolderFeeds = (id: number, feeds: boolean) => invoke<void>('set_folder_feeds', { id, feeds });
+/** Items held for review, and items kept private. */
+/** Whether one photo is private (3), approved (2), held for review (1) or none of these (0). */
+export const photoShare = (id: number) => invoke<number>('photo_share', { id });
+export const shareCounts =() => invoke<{ held: number; private: number }>('share_counts');
+/** Show only the items held for review (`new`) or kept private (`private`); null turns it off. */
+export const setShareFilter = (kind: string | null) => invoke<void>('set_share_filter', { kind });
+/** "Share these": approve every held item the listing shows. Returns how many. */
+export const approveHeldShown = (
+  folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
+  since: number | null = null, until: number | null = null, search = false,
+) => invoke<number>('approve_held_shown', { folderId, kind, bounds, maxId, since, until, search });
+/** Keep these items out of the master and anything shared; returns how many were held or approved. */
+export const makePrivate = (ids: number[]) => invoke<number>('make_private', { ids });
+/** Put these private items back to being held for review. */
+export const releasePrivate = (ids: number[]) => invoke<number>('release_private', { ids });
 /** The person's date rules, and saving them (this applies them to the whole library at once; the number is how many items changed date). */
 import type { DateRules } from './dateRules';
 export const getDateRules = () => invoke<DateRules>('get_date_rules');
@@ -277,8 +297,8 @@ import type { LoadProgress } from './analysisView';
 import type { FacetCounts } from './facets';
 /** The counts for the left-hand tree under the filters in force (see `facets.ts`). */
 export const facetCounts = (
-  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, utag: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number, missing: string | null,
-) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, utag, tripDates, tripWindows, recentSince, missing });
+  view: Pick<View, 'folderId' | 'kind' | 'bounds' | 'maxId' | 'since' | 'until'>, tag: string | null, person: number | null, camera: string | null, utag: string | null, tripDates: boolean, tripWindows: [number, number][], recentSince: number, missing: string | null, share: string | null = null,
+) => invoke<FacetCounts>('facet_counts', { folderId: view.folderId, kind: view.kind, bounds: view.bounds, maxId: view.maxId, since: view.since, until: view.until, tag, person, camera, utag, tripDates, tripWindows, recentSince, missing, share });
 /** How far the analysis has got for the photos of these folders (the load screen's counters). */
 export const loadProgress = (folderIds: number[]) => invoke<LoadProgress>('load_progress', { folderIds });
 export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');

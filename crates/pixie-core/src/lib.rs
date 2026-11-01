@@ -106,7 +106,18 @@ pub struct FolderInfo {
     pub id: FolderId,
     pub path: String,
     pub count: i64,
+    /// New items found here are held for review before they are copied into the master folder (see `Db::set_master_folder`).
+    pub feeds_master: bool,
 }
+
+/// Where an item stands with the master folder. Without a master folder every item is `NONE`.
+pub const SHARE_NONE: i64 = 0;
+/// New, not yet shared: found in a folder that feeds the master and waiting for the person to look at it.
+pub const SHARE_HELD: i64 = 1;
+/// Looked at and approved: to be copied into the master.
+pub const SHARE_APPROVED: i64 = 2;
+/// Kept out of the master and out of anything shared.
+pub const SHARE_PRIVATE: i64 = 3;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

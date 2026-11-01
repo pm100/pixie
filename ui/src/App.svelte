@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, approveHeldShown, makePrivate, releasePrivate, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -15,6 +15,7 @@
   import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
+  import { reviewLine, type ShareChoice } from './lib/master';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
   import { directCount, parseBar } from './lib/actionBar';
@@ -198,12 +199,13 @@
   async function syncFilters(): Promise<boolean> {
     try {
       const f = await activeFilters();
-      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera || f.utag !== activeUtag || f.missing !== activeMissing;
+      const changed = f.tag !== activeTag || f.person !== activePerson || f.camera !== activeCamera || f.utag !== activeUtag || f.missing !== activeMissing || f.share !== activeShare;
       activeTag = f.tag;
       activeUtag = f.utag;
       activePerson = f.person;
       activeCamera = f.camera;
       activeMissing = f.missing;
+      activeShare = f.share as ShareChoice | null;
       return changed;
     } catch { return false; }
   }
@@ -216,7 +218,7 @@
   async function setUtag(next: string | null) {
     try { await setUserTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -229,7 +231,7 @@
     const before = activeUtag;
     await syncFilters();
     if (!listingAffected(before, touched, activeUtag === before)) return; // the listing is as it was: keep what is selected
-    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
     refresh().catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints();
   }
@@ -237,7 +239,7 @@
   async function setTag(next: string | null) {
     try { await setTagFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag, activeMissing) };
+    view = { ...view, search: hitsActive(next, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -255,16 +257,76 @@
     await syncFilters();
     // An item with no position can never be inside a map area, so the two cannot be on together.
     if (next !== null && areaOnly) { areaOnly = false; pendingBounds = null; }
-    view = { ...view, bounds: next !== null ? null : view.bounds, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
+    view = { ...view, bounds: next !== null ? null : view.bounds, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
 
+  // The master folder: none until one is chosen, and nothing of the feature shows without one. `activeShare` is the New / Private choice in the tree.
+  let master = $state<string | null>(null), shareState = $state({ held: 0, private: 0 }), activeShare = $state<ShareChoice | null>(null);
+  async function loadShare() {
+    try {
+      master = await getMasterFolder();
+      shareState = master === null ? { held: 0, private: 0 } : await fetchShareCounts();
+      if (master === null && activeShare !== null) await setShare(null);
+    } catch { /* the entries stay as they were */ }
+  }
+  async function setShare(next: ShareChoice | null) {
+    try { await setShareFilter(next); } catch (e) { message = String(e); return; }
+    await syncFilters();
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
+    selected = null;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') { askFit('filter'); loadPoints(); }
+  }
+  /** Items changed hands (approved, made private, a scan held some): the counts and the listing are read again. */
+  async function shareChanged() {
+    await syncFilters();
+    await loadShare();
+    view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
+    selected = null;
+    refresh(true).catch((e) => (message = String(e)));
+    if (mode === 'map') loadPoints();
+  }
+  /** One photo was made private or taken out of private in the details panel: counts and listing are read again, and the
+   * selection stays where it is (in New the photo leaves the list and the next one takes its place, for stepping through). */
+  async function sharePhotoChanged() {
+    await syncFilters();
+    await loadShare();
+    refresh().catch((e) => (message = String(e)));
+  }
+  /** "Share these": approve every new item the grid shows. */
+  async function shareThese() {
+    try { await approveHeldShown(shown.folderId, shown.kind, shown.bounds, shown.maxId, shown.since, shown.until, shown.search); } catch (e) { message = String(e); return; }
+    await shareChanged();
+  }
+  /** "Make private": keep the picked items out of the master and anything shared. */
+  async function keepPicked() {
+    try { await makePrivate([...picked]); } catch (e) { message = String(e); return; }
+    await shareChanged();
+  }
+  /** Private items that are picked go back to being new. */
+  async function holdPicked() {
+    try { await releasePrivate([...picked]); } catch (e) { message = String(e); return; }
+    await shareChanged();
+  }
+  /** The master is one of the watched folders (or none): nothing is scanned, the folder is already known. */
+  async function chooseMaster(path: string | null) {
+    try { await setMasterFolder(path); } catch (e) { message = String(e); return; }
+    await shareChanged();
+    await loadFolderInfos();
+  }
+  async function feedsMaster(id: number, feeds: boolean) {
+    try { await setFolderFeeds(id, feeds); } catch (e) { message = String(e); }
+    await shareChanged(); // what is in the folder is held (or let go) at once
+    await loadFolderInfos();
+  }
+
   async function setCamera(next: string | null) {
     try { await setCameraFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag, activeMissing) };
+    view = { ...view, search: hitsActive(activeTag, activePerson, next, activeUtag, activeMissing, activeShare) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -300,7 +362,7 @@
     if (!latestPeople.isCurrent(token)) return;
     peopleList = list;
     if (await syncFilters()) { // a filter was on that the screen did not show: show it now
-      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing) };
+      view = { ...view, search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare) };
       refresh(true).catch((e) => (message = String(e)));
     }
     if (activePerson !== null && !list.some((p) => p.id === activePerson)) await setPerson(null); // merged away or hidden
@@ -313,7 +375,7 @@
   async function setPerson(next: number | null) {
     try { await setPersonFilter(next); } catch (e) { message = String(e); return; }
     await syncFilters();
-    view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag, activeMissing) };
+    view = { ...view, search: hitsActive(activeTag, next, activeCamera, activeUtag, activeMissing, activeShare) };
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
@@ -416,6 +478,7 @@
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
     void refreshFolderStates();
+    void loadShare();
   }
 
   // While photos are still being found and stored, the counts beside the folders follow along (every 3 seconds), not
@@ -427,6 +490,7 @@
       if (!working || countsBusy || document.visibilityState !== 'visible') return;
       countsBusy = true;
       try { folderInfos = await listFolderInfo(); } catch { /* the next time */ }
+      void loadShare();
       countsBusy = false;
     }, 3000);
     return () => clearInterval(t);
@@ -545,13 +609,13 @@
   /** "Show all": drop every filter (tag, person, folder, trip, dates and media type) in one go. */
   async function showAll() {
     try {
-      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null), setMissingFilter(null), setUserTagFilter(null)]);
+      await Promise.all([setTagFilter(null), setPersonFilter(null), setCameraFilter(null), setMissingFilter(null), setShareFilter(null), setUserTagFilter(null)]);
     } catch (e) { message = String(e); }
     await syncFilters();
     periodKey = null;
     tripKey = null;
     areaOnly = false;
-    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing), since: null, until: null, folderId: null, kind: null, bounds: null };
+    view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selected = null;
     refresh(true).catch((e) => (message = String(e)));
@@ -612,7 +676,7 @@
   let trips = $state<Trip[]>([]);
 
   /** What the grid says when nothing matches. */
-  const emptyMessage = $derived(view.search ? (activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+  const emptyMessage = $derived(view.search ? (activeShare === 'new' ? 'Nothing here is waiting to be shared.' : activeShare === 'private' ? 'Nothing here is private.' : activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
 
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
@@ -621,6 +685,7 @@
     person: activeInfo === null ? null : personLabel(activeInfo),
     camera: activeCamera,
     missing: activeMissing,
+    share: activeShare,
     folder: view.folderId === null ? null : (folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'),
     trip: tripKey === null ? null : (trips.find((t) => t.since === tripKey) ? tripTitle(trips.find((t) => t.since === tripKey)!) : 'unknown'),
     date: periodKey !== null ? `Showing only ${periodLabel(periodKey)}` : recentOn ? recentLabel(recentDays) : null,
@@ -845,11 +910,11 @@
   $effect(() => {
     // Anything that changes what the tree's counts mean: the view's filters, the chosen tag and person, the trips, and a
     // refresh of the listing (a scan added photos, a duplicate was hidden...).
-    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, utag = activeUtag, missing = activeMissing, list = trips, chosenTrip = tripKey, days = recentDays;
+    const v = view, tag = activeTag, person = activePerson, camera = activeCamera, utag = activeUtag, missing = activeMissing, share = activeShare, list = trips, chosenTrip = tripKey, days = recentDays;
     version;
     const token = facetsLatest.next();
     const timer = setTimeout(() => {
-      facetCounts(v, tag, person, camera, utag, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days), missing)
+      facetCounts(v, tag, person, camera, utag, chosenTrip !== null, list.map((t): [number, number] => [t.since, t.until]), recentSince(Math.floor(Date.now() / 1000), days), missing, share)
         .then((f) => { if (facetsLatest.isCurrent(token)) facets = indexFacets(f, list); })
         .catch(() => { /* the entries keep the counts they came with */ });
     }, 120);
@@ -1278,6 +1343,10 @@
           <span class="filter">No location
             <button onclick={() => setMissing(null)} aria-label="Show items with or without a location" title="Show items with or without a location">✕</button></span>
         {/if}
+        {#if activeShare !== null}
+          <span class="filter">{activeShare === 'new' ? 'New, not yet shared' : 'Private'}
+            <button onclick={() => setShare(null)} aria-label="Stop showing only {activeShare === 'new' ? 'the new items' : 'the private items'}" title="Stop showing only {activeShare === 'new' ? 'the new items' : 'the private items'}">✕</button></span>
+        {/if}
         {#if view.kind !== null}
           <span class="filter">{view.kind === 'photo' ? 'Photos only' : 'Videos only'}
             <button onclick={() => setKind(null)} aria-label="Show photos and videos" title="Show photos and videos">✕</button></span>
@@ -1304,6 +1373,18 @@
         {/if}
         {#if offerClearAll(activeNames)}<button class="linkbtn" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
       </div>
+      {#if master !== null && activeShare !== null}
+        <div class="review" role="group" aria-label={activeShare === 'new' ? 'Review the new items' : 'Private items'}>
+          {#if activeShare === 'new'}
+            <span class="rline">{reviewLine(shareState.held)} Pick any to keep out, then choose Make private; Share these approves everything shown here.</span>
+            <button class="primary" disabled={total === 0} onclick={shareThese} title="Approve every item shown here to be copied into the master folder">Share these</button>
+            <button disabled={picked.size === 0} onclick={keepPicked} title={picked.size === 0 ? 'Pick the photos to keep private first: the circle in a photo’s top-left corner picks it' : 'Keep the picked photos out of the master folder and anything shared'}>Make private</button>
+          {:else}
+            <span class="rline">These items are kept out of the master folder and out of anything shared. Their tags and names stay on this computer.</span>
+            <button disabled={picked.size === 0} onclick={holdPicked} title={picked.size === 0 ? 'Pick the photos to hold for review again first: the circle in a photo’s top-left corner picks it' : 'Hold the picked photos for review again, as new items'}>Hold for review</button>
+          {/if}
+        </div>
+      {/if}
       <div class="tools second" bind:clientWidth={secondLineW}>
         <!-- Two boxed sections, each with its title: Picked (what is picked, and the buttons that act on it) and Map. -->
         <!-- Only while something is picked: with nothing picked it would offer nothing. -->
@@ -1342,7 +1423,7 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} utag={activeUtag} onutag={setUtag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
-               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
+               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} {master} shareCounts={shareState} share={activeShare} onshare={setShare} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
@@ -1382,7 +1463,7 @@
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} chosen={barActions} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
+          <Details photo={selectedPhoto} chosen={barActions} {master} onsharechange={sharePhotoChanged} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}
@@ -1403,7 +1484,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh}
+        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master} onmaster={chooseMaster} onfeeds={feedsMaster}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
@@ -1458,6 +1539,8 @@
   .stitle { font-size: 13px; font-weight: 700; color: #333; font-variant-numeric: tabular-nums; }
   .content { flex: 1; min-height: 0; }
   .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
+  .review { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid #e4e4e8; background: #f4f7ff; font-size: 13px; }
+  .rline { flex: 1 1 24em; color: #3a4258; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */

@@ -1,18 +1,23 @@
 <script lang="ts">
-  import { facesFor, placeFor, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
+  import { facesFor, makePrivate, photoShare, placeFor, releasePrivate, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
   import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
   import { basename, dirname, formatBytes, formatDateTime, formatDuration, formatGps } from './format';
   import { createLatest } from './latest';
+  import { SHARE_PRIVATE } from './master';
   import { placeLines } from './placeLines';
   import TagAs from './TagAs.svelte';
   import { tagsOnAll } from './userTags';
   import LocationMap from './LocationMap.svelte';
   import PhotoActions from './PhotoActions.svelte';
 
-  let { photo, ontagschange, onopen, chosen }: {
+  let { photo, ontagschange, onopen, chosen, master = null, onsharechange = () => {} }: {
     photo: Photo | null;
+    /** The master folder, or null while there is none: then nothing about sharing is shown. */
+    master?: string | null;
+    /** The photo was made private or taken out of private: the tree's counts and the listing need reading again. */
+    onsharechange?: () => void;
     /** The actions chosen for the action bars (Settings, Browsing). */
     chosen: string[];
     /** Open a tool in its tab, working on this photo. */
@@ -58,6 +63,24 @@
     tagsChanged(name);
   }
 
+  // Whether the photo is private. Re-read when the selection changes; a slow answer for an old selection is dropped.
+  let isPrivate = $state(false);
+  const shareLatest = createLatest();
+  $effect(() => {
+    const id = photoId;
+    const on = master !== null;
+    const token = shareLatest.next();
+    isPrivate = false;
+    if (id === null || !on) return;
+    photoShare(id).then((s) => { if (shareLatest.isCurrent(token)) isPrivate = s === SHARE_PRIVATE; }).catch(() => {});
+  });
+  async function setPrivate(on: boolean) {
+    if (photoId === null) return;
+    isPrivate = on;
+    try { await (on ? makePrivate([photoId]) : releasePrivate([photoId])); } catch { isPrivate = !on; return; }
+    onsharechange();
+  }
+
   // The people in the photo. Re-read when the selection changes; a slow answer for an old selection is dropped.
   let faces = $state<FaceInfo[]>([]);
   const facesLatest = createLatest();
@@ -97,6 +120,13 @@
         {#each onPhoto as t (t)}<span class="chip utag">{t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
         <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
       </dd>
+      {#if master !== null}
+        <dt>Sharing</dt><dd>
+          <label class="opt" title="Keep this photo out of the master folder and anything shared. Its tags and names stay on this computer">
+            <input type="checkbox" checked={isPrivate} aria-label="Private" onchange={(e) => setPrivate(e.currentTarget.checked)} /> Private
+          </label>
+        </dd>
+      {/if}
       {#if tags.length > 0}<dt>AutoTags</dt><dd class="chips">{#each tags as t (t.tag)}<span class="chip auto" title="Confidence {Math.round(t.score * 100)}%">{tagLabel(t.tag)}</span>{/each}</dd>{/if}
     </dl>
     {#if lat != null && lon != null}

@@ -1,6 +1,6 @@
 /** The top-level sections of the Browse list. */
-export type SectionId = 'library' | 'people' | 'trips' | 'mytags' | 'tags' | 'cameras' | 'when' | 'folders' | 'missing';
-export const SECTION_IDS: SectionId[] = ['library', 'people', 'trips', 'mytags', 'tags', 'cameras', 'when', 'folders', 'missing'];
+export type SectionId = 'library' | 'people' | 'trips' | 'mytags' | 'tags' | 'cameras' | 'when' | 'folders' | 'missing' | 'sharing';
+export const SECTION_IDS: SectionId[] = ['library', 'people', 'trips', 'mytags', 'tags', 'cameras', 'when', 'folders', 'missing', 'sharing'];
 
 /** The collapsed sections after the user clicks the heading of `id`. */
 export function toggleSection(collapsed: SectionId[], id: SectionId): SectionId[] {

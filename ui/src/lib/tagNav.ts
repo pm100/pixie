@@ -19,6 +19,6 @@ export function tagTree(tags: TagCount[]): TagGroup[] {
 /** The category a tag is listed under, if it is in the list. */
 export const categoryOf = (tags: TagCount[], tag: string | null): string | null => (tag === null ? null : (tags.find((t) => t.tag === tag)?.category ?? null));
 
-/** The listing is restricted to hits when a tag, a person, a camera, Picked or one of your own tags, or a kind of missing data is applied. */
-export const hitsActive = (tag: string | null, person: number | null = null, camera: string | null = null, utag: string | null = null, missing: string | null = null): boolean =>
-  tag !== null || person !== null || camera !== null || utag !== null || missing !== null;
+/** The listing is restricted to hits when a tag, a person, a camera, Picked or one of your own tags, a kind of missing data, or New / Private is applied. */
+export const hitsActive = (tag: string | null, person: number | null = null, camera: string | null = null, utag: string | null = null, missing: string | null = null, share: string | null = null): boolean =>
+  tag !== null || person !== null || camera !== null || utag !== null || missing !== null || share !== null;

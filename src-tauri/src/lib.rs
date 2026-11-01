@@ -436,12 +436,13 @@ async fn facet_counts(
     trip_windows: Vec<(i64, i64)>,
     recent_since: Option<i64>,
     missing: Option<String>,
+    share: Option<String>,
 ) -> Result<pixie_core::FacetCounts, String> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let groups: Vec<Vec<String>> = pixie_analysis::tags::CATEGORIES.iter().map(|(_, labels)| labels.iter().map(|l| l.to_string()).collect()).collect();
         let utag = utag.as_deref().and_then(pixie_core::UserTagFilter::parse);
-        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, camera: camera.as_deref(), utag: utag.as_ref(), trip_dates, tag_groups: &groups, trip_windows: &trip_windows, recent_since, missing: missing.as_deref() };
+        let ask = pixie_index::FacetAsk { tag: tag.as_deref(), person, camera: camera.as_deref(), utag: utag.as_ref(), trip_dates, tag_groups: &groups, trip_windows: &trip_windows, recent_since, missing: missing.as_deref(), share: share.as_deref() };
         let mut counts = db.facet_counts(&query_of(None, folder_id, kind, bounds, max_id, since, until, None), &ask).map_err(|e| e.to_string())?;
         counts.tag_group_names = pixie_analysis::tags::CATEGORIES.iter().map(|(name, _)| name.to_string()).collect();
         Ok(counts)
@@ -748,12 +749,14 @@ struct ActiveFilters {
     utag: Option<String>,
     /// The kind of missing data chosen in the tree ("location").
     missing: Option<String>,
+    /// "new" or "private" when the tree is showing items held for review or kept private.
+    share: Option<String>,
 }
 
 #[tauri::command]
 fn active_filters(state: tauri::State<AppState>) -> Result<ActiveFilters, PixieError> {
     let (tag, person, camera) = state.db.active_filters()?;
-    Ok(ActiveFilters { tag, person, camera, utag: state.db.active_user_tag()?, missing: state.db.active_missing()? })
+    Ok(ActiveFilters { tag, person, camera, utag: state.db.active_user_tag()?, missing: state.db.active_missing()?, share: state.db.active_share()? })
 }
 
 /// Show only photos taken with this camera, by its tidied name (null turns it off). List with the `search` flag.
@@ -807,6 +810,82 @@ fn location_counts(state: tauri::State<AppState>) -> Result<LocationCounts, Pixi
 #[tauri::command]
 fn set_missing_filter(state: tauri::State<AppState>, kind: Option<String>) -> Result<(), PixieError> {
     state.db.set_missing_filter(kind.as_deref())
+}
+
+/// The master folder, or null while there is none (then none of the master feature is shown).
+#[tauri::command]
+fn get_master_folder(state: tauri::State<AppState>) -> Result<Option<String>, PixieError> {
+    state.db.master_folder()
+}
+
+/// Choose the master folder (null goes without one).
+#[tauri::command]
+fn set_master_folder(state: tauri::State<AppState>, path: Option<String>) -> Result<(), PixieError> {
+    state.db.set_master_folder(path.as_deref())
+}
+
+/// Whether new items found in a folder are held for review before they are copied into the master.
+#[tauri::command]
+fn set_folder_feeds(state: tauri::State<AppState>, id: i64, feeds: bool) -> Result<(), PixieError> {
+    state.db.set_folder_feeds(id, feeds)
+}
+
+#[derive(Serialize)]
+struct ShareCounts {
+    held: i64,
+    private: i64,
+}
+
+/// How many items are held for review and how many are private.
+#[tauri::command]
+fn share_counts(state: tauri::State<AppState>) -> Result<ShareCounts, PixieError> {
+    let (held, private) = state.db.share_counts()?;
+    Ok(ShareCounts { held, private })
+}
+
+/// Show only the items held for review ("new") or kept private ("private"); null turns it off. List with the `search` flag.
+#[tauri::command]
+fn set_share_filter(state: tauri::State<AppState>, kind: Option<String>) -> Result<(), PixieError> {
+    state.db.set_share_filter(kind.as_deref())
+}
+
+/// Approve the held items among `ids` to be copied into the master ("Share these"). Returns how many.
+#[tauri::command]
+fn approve_held(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
+    state.db.approve_held(&ids)
+}
+
+/// "Share these": approve every held item the listing shows (same arguments as `count_photos`). Returns how many.
+#[tauri::command]
+fn approve_held_shown(
+    state: tauri::State<AppState>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+    max_id: Option<i64>,
+    since: Option<i64>,
+    until: Option<i64>,
+    search: Option<bool>,
+) -> Result<usize, PixieError> {
+    state.db.approve_held_in(&query_of(None, folder_id, kind, bounds, max_id, since, until, search))
+}
+
+/// Keep the held items among `ids` out of the master and anything shared ("Make private"). Returns how many.
+#[tauri::command]
+fn make_private(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
+    state.db.make_private(&ids)
+}
+
+/// Whether one item is private (3), approved (2), held for review (1) or none of these (0), for the details panel.
+#[tauri::command]
+fn photo_share(state: tauri::State<AppState>, id: i64) -> Result<i64, PixieError> {
+    state.db.photo_share(id)
+}
+
+/// Take private items among `ids` out of private: held for review again, or ordinary where their folder does not feed the master. Returns how many.
+#[tauri::command]
+fn release_private(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
+    state.db.release_private(&ids)
 }
 
 /// Show only photos with this person (null turns it off). List with the `search` flag, like a text search.
@@ -1870,7 +1949,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, set_folder_feeds, share_counts, set_share_filter, approve_held, approve_held_shown, make_private, release_private, photo_share, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])

@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{SHARE_APPROVED, SHARE_HELD, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -203,6 +203,11 @@ const MIGRATIONS: &[&str] = &[
      UPDATE photos SET reread = 1
       WHERE taken_at IS NULL OR taken_at = mtime / 1000
          OR date(taken_at, 'unixepoch') IN ('1904-01-01', '1970-01-01', '1980-01-01', '2000-01-01');",
+    // V25: the master folder. `folders.feeds_master` says new items found in a folder are held for review; `photos.share` is where
+    // an item stands (see `pixie_core::SHARE_HELD` and the others). Items already in the library are not held.
+    "ALTER TABLE folders ADD COLUMN feeds_master INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE photos ADD COLUMN share INTEGER NOT NULL DEFAULT 0;
+     CREATE INDEX idx_photos_share ON photos(share) WHERE share != 0;",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +239,8 @@ pub struct FacetAsk<'a> {
     pub recent_since: Option<i64>,
     /// The kind of missing data chosen in the tree ("location": only items with no position).
     pub missing: Option<&'a str>,
+    /// Where items stand with the master folder, chosen in the tree ("new" or "private").
+    pub share: Option<&'a str>,
 }
 
 /// The photos the view shows, minus the filters named: the base every count in the tree is taken from.
@@ -246,10 +253,19 @@ struct FacetBase {
     utag: Option<UserTagFilter>,
 }
 
+/// The `share` value of the items a tree choice ("new", "private") stands for.
+fn share_of(kind: &str) -> Option<i64> {
+    match kind {
+        "new" => Some(SHARE_HELD),
+        "private" => Some(SHARE_PRIVATE),
+        _ => None,
+    }
+}
+
 impl FacetBase {
     /// `q` without its folder / kind / date window as asked, with the chosen tag / person as asked. (The view's own
     /// tag and person hits are never used here: they are passed in.)
-    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>, missing: Option<&str>) -> FacetBase {
+    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>, missing: Option<&str>, share: Option<&str>) -> FacetBase {
         let mut q = *q;
         q.search = false;
         if no_folder {
@@ -275,6 +291,9 @@ impl FacetBase {
         }
         if missing == Some("location") {
             sql.push_str(" AND (gps_lat IS NULL OR gps_lon IS NULL)");
+        }
+        if let Some(s) = share.and_then(share_of) {
+            sql.push_str(&format!(" AND share = {s}"));
         }
         match utag {
             Some(UserTagFilter::Picked) => sql.push_str(" AND id IN (SELECT photo_id FROM picks)"),
@@ -469,11 +488,18 @@ fn sync_camera_names(c: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Turn the New / Private choice off (there is no master folder to hold or keep anything for).
+fn drop_share_filter(tx: &rusqlite::Transaction) -> Result<()> {
+    tx.execute("DELETE FROM share_hits", []).map_err(db_err)?;
+    tx.execute("DELETE FROM filter_state WHERE name = 'share'", []).map_err(db_err)?;
+    refresh_hits(tx)
+}
+
 /// Rebuild `search_hits` as the photos in every active hit set (text search, tag, person and camera filters).
 pub(crate) fn refresh_hits(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute("DELETE FROM search_hits", []).map_err(db_err)?;
     let mut sets = Vec::new();
-    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits"), ("camera", "camera_hits"), ("missing", "missing_hits"), ("utag", "utag_hits")] {
+    for (name, table) in [("text", "text_hits"), ("tag", "tag_hits"), ("person", "person_hits"), ("camera", "camera_hits"), ("missing", "missing_hits"), ("share", "share_hits"), ("utag", "utag_hits")] {
         let n: i64 = tx.query_row("SELECT COUNT(*) FROM filter_state WHERE name = ?1", params![name], |r| r.get(0)).map_err(db_err)?;
         if n > 0 {
             sets.push(format!("SELECT photo_id FROM {table}"));
@@ -581,6 +607,7 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS person_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS camera_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS missing_hits (photo_id INTEGER PRIMARY KEY);
+             CREATE TEMP TABLE IF NOT EXISTS share_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS utag_hits (photo_id INTEGER PRIMARY KEY);
              CREATE TEMP TABLE IF NOT EXISTS camera_norm (raw TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
@@ -626,13 +653,13 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(
-                "SELECT f.id, f.path, COUNT(p.id) FROM folders f
+                "SELECT f.id, f.path, COUNT(p.id), f.feeds_master FROM folders f
                  LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0 AND p.dup = 0
                  GROUP BY f.id ORDER BY f.path",
             )
             .map_err(db_err)?;
         let rows = s
-            .query_map([], |r| Ok(FolderInfo { id: r.get(0)?, path: r.get(1)?, count: r.get(2)? }))
+            .query_map([], |r| Ok(FolderInfo { id: r.get(0)?, path: r.get(1)?, count: r.get(2)?, feeds_master: r.get::<_, i64>(3)? != 0 }))
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -643,6 +670,14 @@ impl Db {
     pub fn remove_folder(&self, id: FolderId) -> Result<()> {
         let mut c = self.conn();
         let tx = c.transaction().map_err(db_err)?;
+        // Removing the master folder takes the master away.
+        let master = tx.query_row("SELECT value FROM settings WHERE key = 'master_folder'", [], |r| r.get::<_, String>(0)).optional().map_err(db_err)?;
+        let path = tx.query_row("SELECT path FROM folders WHERE id = ?1", params![id], |r| r.get::<_, String>(0)).optional().map_err(db_err)?;
+        if master.is_some() && master == path {
+            tx.execute("DELETE FROM settings WHERE key = 'master_folder'", []).map_err(db_err)?;
+            tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_HELD]).map_err(db_err)?;
+            drop_share_filter(&tx)?;
+        }
         let affected = people_in(&tx, "p.folder_id = ?1", params![id])?; // its photos' faces go with the cascade
         tx.execute("DELETE FROM folders WHERE id = ?1", params![id]).map_err(db_err)?;
         refresh_people(&tx, &affected)?;
@@ -681,8 +716,11 @@ impl Db {
         refresh_people(&c, &affected)?;
         c
             .query_row(
-                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)
+                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at, share)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13,
+                         -- a new item in a folder that feeds the master is held for review (only while there is a master)
+                         (SELECT CASE WHEN f.feeds_master = 1 AND EXISTS (SELECT 1 FROM settings WHERE key = 'master_folder') THEN 1 ELSE 0 END
+                            FROM folders f WHERE f.id = ?1))
                  ON CONFLICT(path) DO UPDATE SET
                     folder_id = excluded.folder_id, size = excluded.size, mtime = excluded.mtime,
                     width = excluded.width, height = excluded.height, taken_at = excluded.taken_at,
@@ -875,7 +913,7 @@ impl Db {
         };
 
         // Media types: everything but the media type.
-        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
+        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
         for (kind, n) in pairs(format!("SELECT kind, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY kind", base.sql), &base)? {
             if kind == 1 {
                 out.videos = n;
@@ -884,16 +922,16 @@ impl Db {
             }
         }
         // Folders: everything but the folder.
-        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
+        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
         out.folders = pairs(format!("SELECT folder_id, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY folder_id", base.sql), &base)?;
         // People: everything but the person.
-        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag, ask.missing);
+        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag, ask.missing, ask.share);
         out.people = pairs(
             format!("SELECT person_id, COUNT(DISTINCT photo_id) FROM faces WHERE person_id IS NOT NULL AND photo_id IN ({}) GROUP BY person_id", base.sql),
             &base,
         )?;
         // Auto tags: everything but the tag; then the different photos in each group of tags.
-        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag, ask.missing);
+        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
         {
             let c = self.conn();
             let mut s = c.prepare(&format!("SELECT tag, COUNT(DISTINCT photo_id) FROM photo_tags WHERE photo_id IN ({}) GROUP BY tag", base.sql)).map_err(db_err)?;
@@ -919,7 +957,7 @@ impl Db {
         }
         // Trips: everything but the date window when that came from a trip.
         if !ask.trip_windows.is_empty() {
-            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
+            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
             let mut times: Vec<i64> = {
                 let c = self.conn();
                 let mut s = c.prepare(&format!("SELECT taken_at FROM photos WHERE taken_at IS NOT NULL AND id IN ({})", base.sql)).map_err(db_err)?;
@@ -935,7 +973,7 @@ impl Db {
         }
         // Last 30 days is a date choice like the others: everything but the date window.
         if let Some(since) = ask.recent_since {
-            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag, ask.missing);
+            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
             let mut params = base.params();
             params.push((":recent_since", &since));
             let c = self.conn();
@@ -945,7 +983,7 @@ impl Db {
         }
         // Cameras: everything but the camera, grouped by the tidied name. Every camera of the library is listed, with 0 when the
         // filters leave it nothing (the tree dims such an entry rather than dropping it).
-        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag, ask.missing);
+        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag, ask.missing, ask.share);
         {
             let c = self.conn();
             let mut s = c
@@ -959,7 +997,7 @@ impl Db {
         // Missing data, no location: everything but that choice, and not the map area (an area holds only located items).
         let mut whole = *q;
         whole.bounds = None;
-        let base = FacetBase::new(&whole, false, false, false, ask.tag, ask.person, ask.camera, ask.utag, None);
+        let base = FacetBase::new(&whole, false, false, false, ask.tag, ask.person, ask.camera, ask.utag, None, ask.share);
         out.no_location = self
             .conn()
             .query_row(&format!("SELECT COUNT(*) FROM photos WHERE (gps_lat IS NULL OR gps_lon IS NULL) AND id IN ({})", base.sql), base.params().as_slice(), |r| r.get(0))
@@ -1171,7 +1209,7 @@ impl Db {
             tx.execute("INSERT OR IGNORE INTO face_meta(id, rev) VALUES (1, 0)", []).map_err(db_err)?;
             tx.execute("UPDATE face_meta SET rev = 0, loose = 0", []).map_err(db_err)?;
             // the filters held in memory
-            for t in ["search_hits", "text_hits", "tag_hits", "person_hits", "camera_hits", "missing_hits", "utag_hits", "filter_state", "camera_norm"] {
+            for t in ["search_hits", "text_hits", "tag_hits", "person_hits", "camera_hits", "missing_hits", "share_hits", "utag_hits", "filter_state", "camera_norm"] {
                 tx.execute(&format!("DELETE FROM {t}"), []).map_err(db_err)?;
             }
             tx.commit().map_err(db_err)?;
@@ -1665,6 +1703,169 @@ impl Db {
         refresh_hits(&tx)?;
         tx.commit().map_err(db_err)?;
         Ok(())
+    }
+
+    // ---- the master folder ----
+
+    /// The master folder (see `set_master_folder`), or None while there is none. Nothing of the master feature shows without one.
+    pub fn master_folder(&self) -> Result<Option<String>> {
+        self.get_setting("master_folder")
+    }
+
+    /// Choose the master folder (it is watched like any other, added when it is new to the library), or None to go without one: items
+    /// held for review or approved go back to being ordinary items. Items marked private stay marked, for when a master is chosen again.
+    pub fn set_master_folder(&self, path: Option<&str>) -> Result<()> {
+        match path {
+            Some(p) => {
+                let changed = self.master_folder()?.as_deref() != Some(p);
+                let id = self.add_folder(p)?;
+                let mut c = self.conn();
+                let tx = c.transaction().map_err(db_err)?;
+                if changed {
+                    // Approvals were for the old master.
+                    tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_APPROVED]).map_err(db_err)?;
+                }
+                // The master is where things are copied to, so it never feeds itself.
+                tx.execute("UPDATE folders SET feeds_master = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('master_folder', ?1)", params![p]).map_err(db_err)?;
+                // Folders that were set to feed a master hold what is in them again.
+                tx.execute("UPDATE photos SET share = ?1 WHERE share = 0 AND folder_id IN (SELECT id FROM folders WHERE feeds_master = 1)", params![SHARE_HELD]).map_err(db_err)?;
+                tx.commit().map_err(db_err)?;
+            }
+            None => {
+                let mut c = self.conn();
+                let tx = c.transaction().map_err(db_err)?;
+                tx.execute("DELETE FROM settings WHERE key = 'master_folder'", []).map_err(db_err)?;
+                // An approval was for that master, so it goes too; private marks stay.
+                tx.execute("UPDATE photos SET share = 0 WHERE share IN (?1, ?2)", params![SHARE_HELD, SHARE_APPROVED]).map_err(db_err)?;
+                drop_share_filter(&tx)?;
+                tx.commit().map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether new items found in this folder are held for review. The master folder itself never feeds the master.
+    pub fn set_folder_feeds(&self, id: FolderId, feeds: bool) -> Result<()> {
+        let master = self.master_folder()?;
+        let c = self.conn();
+        let path: Option<String> = c.query_row("SELECT path FROM folders WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(db_err)?;
+        let feeds = feeds && path.is_some() && path != master;
+        c.execute("UPDATE folders SET feeds_master = ?2 WHERE id = ?1", params![id, feeds]).map_err(db_err)?;
+        // What is in the folder already is held at once (or let go again); what the person already decided stays as it is.
+        if feeds {
+            c.execute("UPDATE photos SET share = ?2 WHERE folder_id = ?1 AND share = 0", params![id, SHARE_HELD]).map_err(db_err)?;
+        } else {
+            c.execute("UPDATE photos SET share = 0 WHERE folder_id = ?1 AND share = ?2", params![id, SHARE_HELD]).map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    /// How many items Browse can list are held for review, and how many are private.
+    pub fn share_counts(&self) -> Result<(i64, i64)> {
+        self.conn()
+            .query_row(
+                "SELECT COALESCE(SUM(share = ?1), 0), COALESCE(SUM(share = ?2), 0) FROM photos WHERE missing = 0 AND dup = 0 AND share != 0",
+                params![SHARE_HELD, SHARE_PRIVATE],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)
+    }
+
+    /// Show only the items held for review ("new") or kept private ("private"); `None` turns it off. Without a master folder there is
+    /// nothing to show, so it is off.
+    pub fn set_share_filter(&self, kind: Option<&str>) -> Result<()> {
+        let master = self.master_folder()?.is_some();
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        match kind.and_then(share_of).filter(|_| master) {
+            Some(s) => {
+                tx.execute("DELETE FROM share_hits", []).map_err(db_err)?;
+                tx.execute("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE share = ?1", params![s]).map_err(db_err)?;
+                tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('share', ?1)", params![kind]).map_err(db_err)?;
+                refresh_hits(&tx)?;
+            }
+            None => drop_share_filter(&tx)?,
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The share choice the listings are restricted to, if any.
+    pub fn active_share(&self) -> Result<Option<String>> {
+        self.conn().query_row("SELECT value FROM filter_state WHERE name = 'share'", [], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err).map(Option::flatten)
+    }
+
+    /// The items a share choice is on are held in `share_hits` when it is made: bring that up to date after items change hands.
+    fn rebuild_share_hits(tx: &rusqlite::Transaction) -> Result<()> {
+        let kind = tx.query_row("SELECT value FROM filter_state WHERE name = 'share'", [], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err)?.flatten();
+        if let Some(s) = kind.as_deref().and_then(share_of) {
+            tx.execute("DELETE FROM share_hits", []).map_err(db_err)?;
+            tx.execute("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE share = ?1", params![s]).map_err(db_err)?;
+            refresh_hits(tx)?;
+        }
+        Ok(())
+    }
+
+    fn move_share(&self, ids: &[PhotoId], from: &[i64], to: i64) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let mut n = 0;
+        for id in ids {
+            let marks = vec!["?"; from.len()].join(",");
+            let mut args: Vec<rusqlite::types::Value> = vec![to.into(), (*id).into()];
+            args.extend(from.iter().map(|f| rusqlite::types::Value::from(*f)));
+            n += tx.execute(&format!("UPDATE photos SET share = ?1 WHERE id = ?2 AND share IN ({marks})"), rusqlite::params_from_iter(args)).map_err(db_err)?;
+        }
+        Db::rebuild_share_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// "Share these": the held items among `ids` are approved to be copied into the master. Returns how many.
+    pub fn approve_held(&self, ids: &[PhotoId]) -> Result<usize> {
+        self.move_share(ids, &[SHARE_HELD], SHARE_APPROVED)
+    }
+
+    /// "Share these": every held item the query lists (the view's filters, with the New choice) is approved. Returns how many.
+    pub fn approve_held_in(&self, q: &PhotoQuery) -> Result<usize> {
+        let filter = Filter::of(q);
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let sql = format!("UPDATE photos SET share = {SHARE_APPROVED} WHERE share = {SHARE_HELD} AND id IN (SELECT id FROM photos WHERE missing = 0{})", filter.sql());
+        let n = tx.execute(&sql, filter.params().as_slice()).map_err(db_err)?;
+        Db::rebuild_share_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// "Make private": the items among `ids` are kept out of the master and out of anything shared, whatever their state.
+    pub fn make_private(&self, ids: &[PhotoId]) -> Result<usize> {
+        self.move_share(ids, &[SHARE_NONE, SHARE_HELD, SHARE_APPROVED], SHARE_PRIVATE)
+    }
+
+    /// Take private items among `ids` out of private: held for review again when their folder feeds the master, ordinary otherwise.
+    pub fn release_private(&self, ids: &[PhotoId]) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let mut n = 0;
+        for id in ids {
+            n += tx
+                .execute(
+                    "UPDATE photos SET share = CASE WHEN folder_id IN (SELECT id FROM folders WHERE feeds_master = 1) THEN ?1 ELSE ?2 END
+                     WHERE id = ?3 AND share = ?4",
+                    params![SHARE_HELD, SHARE_NONE, id, SHARE_PRIVATE],
+                )
+                .map_err(db_err)?;
+        }
+        Db::rebuild_share_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// The share state of one item (`SHARE_NONE` when it is not found).
+    pub fn photo_share(&self, id: PhotoId) -> Result<i64> {
+        Ok(self.conn().query_row("SELECT share FROM photos WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(db_err)?.unwrap_or(SHARE_NONE))
     }
 
     /// Of the items Browse can list: how many have no position, how many have no date, and how many there are.
@@ -3370,7 +3571,7 @@ mod tests {
     #[test]
     fn the_no_location_filter_lists_only_items_without_a_position_and_is_counted_apart_from_the_map_area() {
         let (db, _) = geo_library();
-        let ask = |missing: Option<&'static str>| FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing };
+        let ask = |missing: Option<&'static str>| FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing, share: None };
         let all = PhotoQuery { search: true, ..Default::default() };
         assert_eq!(db.count_photos_in(&all).unwrap(), 0, "no hit set is active yet, so the search flag matches nothing");
         db.set_missing_filter(Some("location")).unwrap();
@@ -3392,7 +3593,7 @@ mod tests {
     #[test]
     fn a_camera_the_filters_leave_nothing_for_is_listed_with_a_count_of_0() {
         let (db, _) = camera_library();
-        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
+        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share: None };
         let videos = PhotoQuery { kind: Some(MediaKind::Video), ..Default::default() };
         let c = db.facet_counts(&videos, &ask).unwrap();
         assert_eq!(c.cameras, [("Pixel 7".to_string(), 0), ("Samsung SM-G930A".to_string(), 0)], "both stay, with nothing in them, in name order");
@@ -3401,7 +3602,7 @@ mod tests {
     #[test]
     fn the_camera_counts_group_by_tidied_name_and_leave_out_their_own_filter() {
         let (db, _) = camera_library();
-        let ask = |camera: Option<&'static str>| FacetAsk { tag: None, person: None, camera, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
+        let ask = |camera: Option<&'static str>| FacetAsk { tag: None, person: None, camera, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share: None };
         let c = db.facet_counts(&PhotoQuery::default(), &ask(None)).unwrap();
         assert_eq!(c.cameras, [("Pixel 7".to_string(), 2), ("Samsung SM-G930A".to_string(), 1)], "most first; no camera is not listed");
         // choosing a camera narrows the other counts but not the Cameras list itself
@@ -3427,7 +3628,7 @@ mod tests {
         assert_eq!(db.count_photos_in(&q(Some(UNDATED), None, Some(MediaKind::Video))).unwrap(), 1);
         assert_eq!(db.count_photos_in(&q(Some(0), Some(i64::MAX), None)).unwrap(), 1);
         // The counts beside the tree's entries follow it too.
-        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None };
+        let ask = FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share: None };
         let facets = db.facet_counts(&none, &ask).unwrap();
         assert_eq!((facets.photos, facets.videos), (1, 1));
     }
@@ -3472,7 +3673,7 @@ mod tests {
         let person = person_of(&db, &[p2, p3], [1.0, 0.0]);
         let groups = vec![vec!["beach".to_string(), "dog".to_string()]];
         let windows = [(0, 500), (500, 3000)];
-        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, camera: None, utag: None, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250), missing: None };
+        let ask = |tag: Option<&'static str>, person: Option<i64>, trip_dates: bool| FacetAsk { tag, person, camera: None, utag: None, trip_dates, tag_groups: &groups, trip_windows: &windows, recent_since: Some(250), missing: None, share: None };
         let tags = |f: &FacetCounts| {
             let mut t = f.tags.clone();
             t.sort();
@@ -3532,5 +3733,207 @@ mod tests {
         // Hidden extra copies are never counted.
         db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![p4]).unwrap();
         assert_eq!(db.facet_counts(&PhotoQuery::default(), &ask(None, None, false)).unwrap().photos, 3);
+    }
+
+    // ---- the master folder ----
+
+    /// A library with a feeding folder ("inbox", empty), the master folder, and a folder that does not feed it (with one old item).
+    fn master_library() -> (Db, FolderId, FolderId, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let inbox = db.add_folder("/inbox").unwrap();
+        let other = db.add_folder("/other").unwrap();
+        db.upsert_photo(other, "/other/old.jpg", 1, 1, &meta(Some(10))).unwrap(); // there before any master, in a folder that does not feed it
+        db.set_master_folder(Some("/master")).unwrap();
+        let master = db.add_folder("/master").unwrap();
+        db.set_folder_feeds(inbox, true).unwrap();
+        (db, inbox, other, master)
+    }
+
+    fn share_ask(share: Option<&'static str>) -> FacetAsk<'static> {
+        FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share }
+    }
+
+    #[test]
+    fn without_a_master_folder_nothing_is_held_and_nothing_is_counted() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/inbox").unwrap();
+        db.set_folder_feeds(f, true).unwrap();
+        db.upsert_photo(f, "/inbox/a.jpg", 1, 1, &meta(Some(1))).unwrap();
+        assert_eq!(db.master_folder().unwrap(), None);
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
+        db.set_share_filter(Some("new")).unwrap();
+        assert_eq!(db.active_share().unwrap(), None, "there is nothing to choose without a master");
+    }
+
+    #[test]
+    fn with_a_master_only_new_items_in_feeding_folders_are_held() {
+        let (db, inbox, other, master) = master_library();
+        db.upsert_photo(inbox, "/inbox/new.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.upsert_photo(other, "/other/x.jpg", 1, 1, &meta(Some(30))).unwrap();
+        db.upsert_photo(master, "/master/m.jpg", 1, 1, &meta(Some(40))).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "only new.jpg: old.jpg is in a folder that does not feed, and the master never does");
+        // finding the same file again does not hold it again once it was approved
+        let id = db.find_photo_stat("/inbox/new.jpg").unwrap().unwrap().id;
+        db.approve_held(&[id]).unwrap();
+        db.upsert_photo(inbox, "/inbox/new.jpg", 1, 1, &meta(Some(20))).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn ticking_a_folder_holds_what_is_already_in_it_and_unticking_lets_it_go() {
+        let (db, inbox, other, _) = master_library();
+        db.upsert_photo(other, "/other/x.jpg", 1, 1, &meta(Some(30))).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0), "the other folder does not feed the master yet");
+        db.set_folder_feeds(other, true).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (2, 0), "both items already in it are held at once");
+        db.set_folder_feeds(other, false).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0), "and let go again");
+        // what the person already decided is left alone
+        db.set_folder_feeds(other, true).unwrap();
+        let old = db.find_photo_stat("/other/old.jpg").unwrap().unwrap().id;
+        db.make_private(&[old]).unwrap();
+        db.set_folder_feeds(other, false).unwrap();
+        db.set_folder_feeds(other, true).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (1, 1), "private stays private");
+        let _ = inbox;
+    }
+
+    #[test]
+    fn choosing_a_master_holds_what_is_in_the_folders_that_were_already_ticked() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/inbox").unwrap();
+        db.upsert_photo(f, "/inbox/a.jpg", 1, 1, &meta(Some(1))).unwrap();
+        db.set_master_folder(Some("/master")).unwrap();
+        db.set_folder_feeds(f, true).unwrap();
+        db.set_master_folder(None).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
+        db.set_master_folder(Some("/master")).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "the ticked folder still feeds the new master");
+    }
+
+    #[test]
+    fn the_master_folder_cannot_feed_itself() {
+        let (db, _, _, master) = master_library();
+        db.set_folder_feeds(master, true).unwrap();
+        db.upsert_photo(master, "/master/m.jpg", 1, 1, &meta(Some(1))).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
+        assert!(!db.folder_infos().unwrap().iter().find(|f| f.id == master).unwrap().feeds_master);
+    }
+
+    #[test]
+    fn the_new_choice_lists_held_items_and_follows_approving_and_making_private() {
+        let (db, inbox, _, _) = master_library();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let b = db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(30))).unwrap();
+        let c = db.upsert_photo(inbox, "/inbox/c.jpg", 1, 1, &meta(Some(40))).unwrap();
+        let hits = PhotoQuery { search: true, ..Default::default() };
+        db.set_share_filter(Some("new")).unwrap();
+        assert_eq!(db.active_share().unwrap().as_deref(), Some("new"));
+        assert_eq!(file_names(&db, &hits), ["c.jpg", "b.jpg", "a.jpg"]);
+        assert_eq!(db.make_private(&[b]).unwrap(), 1);
+        assert_eq!(file_names(&db, &hits), ["c.jpg", "a.jpg"], "the listing follows without choosing New again");
+        assert_eq!(db.approve_held(&[a, c]).unwrap(), 2);
+        assert_eq!(file_names(&db, &hits), Vec::<String>::new());
+        assert_eq!(db.share_counts().unwrap(), (0, 1));
+        db.set_share_filter(Some("private")).unwrap();
+        assert_eq!(file_names(&db, &hits), ["b.jpg"]);
+        assert_eq!(db.release_private(&[b]).unwrap(), 1);
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "b is held for review again");
+    }
+
+    #[test]
+    fn sharing_these_approves_the_held_items_the_view_lists_and_no_others() {
+        let (db, inbox, _, _) = master_library();
+        db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.upsert_photo(inbox, "/inbox/b.mp4", 1, 1, &video_meta(30, 1000)).unwrap();
+        db.set_share_filter(Some("new")).unwrap();
+        let videos = PhotoQuery { search: true, kind: Some(MediaKind::Video), ..Default::default() };
+        assert_eq!(db.approve_held_in(&videos).unwrap(), 1, "only the video is listed");
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "the photo is still held");
+        assert_eq!(db.approve_held_in(&PhotoQuery { search: true, ..Default::default() }).unwrap(), 1);
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
+        assert_eq!(db.approve_held_in(&PhotoQuery { search: true, ..Default::default() }).unwrap(), 0, "nothing is approved twice");
+    }
+
+    #[test]
+    fn approving_only_moves_held_items_and_private_ones_are_not_approved_by_accident() {
+        let (db, inbox, other, _) = master_library();
+        let held = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let plain = db.upsert_photo(other, "/other/p.jpg", 1, 1, &meta(Some(20))).unwrap();
+        assert_eq!(db.make_private(&[held]).unwrap(), 1);
+        assert_eq!(db.approve_held(&[held, plain]).unwrap(), 0, "a private item is not held, an ordinary one never was");
+        assert_eq!(db.make_private(&[plain]).unwrap(), 1, "an ordinary item can be made private too");
+        assert_eq!(db.share_counts().unwrap(), (0, 2));
+    }
+
+    #[test]
+    fn taking_private_off_returns_an_item_to_review_only_when_its_folder_feeds_the_master() {
+        let (db, inbox, other, _) = master_library();
+        let feeding = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let plain = db.upsert_photo(other, "/other/p.jpg", 1, 1, &meta(Some(20))).unwrap();
+        assert_eq!(db.photo_share(feeding).unwrap(), SHARE_HELD);
+        assert_eq!(db.photo_share(plain).unwrap(), SHARE_NONE);
+        db.make_private(&[feeding, plain]).unwrap();
+        assert_eq!(db.photo_share(plain).unwrap(), SHARE_PRIVATE);
+        db.release_private(&[feeding, plain]).unwrap();
+        assert_eq!(db.photo_share(feeding).unwrap(), SHARE_HELD, "waits for review again");
+        assert_eq!(db.photo_share(plain).unwrap(), SHARE_NONE, "an ordinary item is ordinary again");
+    }
+
+    #[test]
+    fn the_tree_counts_follow_the_new_choice() {
+        let (db, inbox, other, _) = master_library();
+        db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.upsert_photo(other, "/other/p.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let q = PhotoQuery::default();
+        assert_eq!(db.facet_counts(&q, &share_ask(None)).unwrap().photos, 3);
+        assert_eq!(db.facet_counts(&q, &share_ask(Some("new"))).unwrap().photos, 1);
+    }
+
+    #[test]
+    fn taking_the_master_away_turns_everything_off_and_keeps_private_marks() {
+        let (db, inbox, _, _) = master_library();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(30))).unwrap();
+        db.make_private(&[a]).unwrap();
+        db.set_share_filter(Some("new")).unwrap();
+        db.set_master_folder(None).unwrap();
+        assert_eq!(db.master_folder().unwrap(), None);
+        assert_eq!(db.active_share().unwrap(), None);
+        assert_eq!(db.share_counts().unwrap(), (0, 1), "b is an ordinary item again; a is still marked private");
+        db.upsert_photo(inbox, "/inbox/c.jpg", 1, 1, &meta(Some(40))).unwrap();
+        assert_eq!(db.share_counts().unwrap().0, 0, "nothing is held without a master");
+    }
+
+    #[test]
+    fn choosing_a_master_again_holds_what_was_approved_for_the_one_taken_away() {
+        let (db, inbox, _, _) = master_library();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let b = db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(30))).unwrap();
+        db.approve_held(&[a]).unwrap();
+        db.make_private(&[b]).unwrap();
+        db.set_master_folder(None).unwrap();
+        db.set_master_folder(Some("/master")).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (1, 1), "a waits for review again; b is still private");
+    }
+
+    #[test]
+    fn changing_the_master_holds_what_was_approved_for_the_old_one_but_choosing_the_same_one_keeps_approvals() {
+        let (db, inbox, _, _) = master_library();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.approve_held(&[a]).unwrap();
+        db.set_master_folder(Some("/master")).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (0, 0), "the same master again: a stays approved");
+        db.set_master_folder(Some("/elsewhere")).unwrap();
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "a different master: a waits for review again");
+    }
+
+    #[test]
+    fn removing_the_master_folder_from_the_library_takes_the_master_away() {
+        let (db, inbox, _, master) = master_library();
+        db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.remove_folder(master).unwrap();
+        assert_eq!(db.master_folder().unwrap(), None);
+        assert_eq!(db.share_counts().unwrap(), (0, 0));
     }
 }
