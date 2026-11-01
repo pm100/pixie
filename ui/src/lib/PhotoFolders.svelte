@@ -5,8 +5,9 @@
   import { plural } from './format';
   import { NETWORK_MINUTES, type NetworkRescan } from './networkRescan';
   import { scanText, type ScanState } from './scanProgress';
+  import { copyLine, lastCopyLine, type CopyProgress, type CopyStatus } from './master';
 
-  let { folders, folderStates = {}, analysing = null, scanning, scanFolder, scan, onstop, onadd, onremove, master = null, onmaster = () => {}, onfeeds = () => {}, networkRescan, onnetworkrescan }: {
+  let { folders, folderStates = {}, analysing = null, scanning, scanFolder, scan, onstop, onadd, onremove, master = null, onmaster = () => {}, copyStatus = null, copyProgress = null, oncopy = () => {}, onstopcopy = () => {}, onfeeds = () => {}, networkRescan, onnetworkrescan }: {
     folders: FolderInfo[]; scanning: boolean; onadd: () => void;
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
@@ -17,6 +18,8 @@
     onremove: (id: number) => Promise<void>;
     /** The master folder, or null while there is none: then nothing of the master feature is shown but the choice to set one. */
     master?: string | null; onmaster?: (path: string | null) => void;
+    /** What is waiting to be copied into the master, how the last copy went, and the controls to start and stop one. */
+    copyStatus?: CopyStatus | null; copyProgress?: CopyProgress | null; oncopy?: () => void; onstopcopy?: () => void;
     /** Whether new items found in a folder wait for review before they are copied into the master. */
     onfeeds?: (id: number, feeds: boolean) => void;
     /** Whether, and how often, folders on the network are scanned again. */
@@ -80,6 +83,18 @@
     {#each folders as f (f.id)}<option value={f.path}>{f.path}</option>{/each}
   </select>
 </label>
+{#if master !== null && copyStatus !== null}
+  <p class="copy" role="status">{copyLine(copyStatus, copyProgress)}</p>
+  {#if copyStatus.running}
+    <button onclick={onstopcopy} title="Stop copying after the file being copied; the rest stays approved and is copied next time">Stop</button>
+  {:else}
+    <button class="primary" disabled={copyStatus.approved === 0} onclick={oncopy} title={copyStatus.approved === 0 ? 'Nothing is approved yet: review the new items and share them first' : 'Copy the approved items into the master folder now. Originals are never changed or deleted'}>Copy now</button>
+  {/if}
+  {#if copyStatus.last !== null && !copyStatus.running}
+    <p class="hint">{lastCopyLine(copyStatus.last)}</p>
+    {#each copyStatus.last.problems as p (p)}<p class="err">{p}</p>{/each}
+  {/if}
+{/if}
 
 <h3>Keeping up to date</h3>
 <p class="hint">Pixie automatically detects new or changed local files. How often should Pixie check network files?</p>
@@ -112,5 +127,6 @@
   .none { color: #777; }
   .badge { font-size: 12px; color: #1a3f9a; background: #e3ecff; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
   .feeds { font-size: 12px; color: #555; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
-  .err { color: #b00020; }
+  .err { color: #b00020; margin: 0 0 4px; }
+  .copy { margin: 8px 0; }
 </style>

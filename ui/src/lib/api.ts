@@ -1,5 +1,6 @@
 import type { AnalysisOptions } from './analysisOptions';
 import type { FolderStateName } from './folderState';
+import type { CopyStatus } from './master';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { untilReady } from './startupRetry';
 import { listen } from '@tauri-apps/api/event';
@@ -233,6 +234,10 @@ export const setMasterFolder = (path: string | null) => invoke<void>('set_master
 /** Whether new items found in a folder are held for review before they are copied into the master. */
 export const setFolderFeeds = (id: number, feeds: boolean) => invoke<void>('set_folder_feeds', { id, feeds });
 /** Items held for review, and items kept private. */
+/** Copy the approved items into the master folder in the background; progress and the end come as events. */
+export const copyToMaster = () => invoke<void>('copy_to_master');
+export const stopMasterCopy = () => invoke<void>('stop_master_copy');
+export const masterCopyStatus = () => invoke<CopyStatus>('master_copy_status');
 /** Whether one photo is private (3), approved (2), held for review (1) or none of these (0). */
 export const photoShare = (id: number) => invoke<number>('photo_share', { id });
 export const shareCounts =() => invoke<{ held: number; private: number }>('share_counts');

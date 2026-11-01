@@ -25,4 +25,6 @@ pub struct AppState {
     pub pipeline: Arc<pixie_analysis::pipeline::PhotoPipeline>,
     /// Hashes files in the background so copies can be found; stops when the app state is dropped.
     pub dupes: Arc<pixie_index::DupeService>,
+    /// The copy of approved items into the master folder: one run at a time.
+    pub copy: Arc<pixie_index::copier::CopyJob>,
 }

@@ -118,6 +118,8 @@ pub const SHARE_HELD: i64 = 1;
 pub const SHARE_APPROVED: i64 = 2;
 /// Kept out of the master and out of anything shared.
 pub const SHARE_PRIVATE: i64 = 3;
+/// Approved, and copied into the master folder (the copy was checked against the original).
+pub const SHARE_COPIED: i64 = 4;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

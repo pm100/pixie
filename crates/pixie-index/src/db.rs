@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{SHARE_APPROVED, SHARE_HELD, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{SHARE_APPROVED, SHARE_COPIED, SHARE_HELD, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -208,7 +208,30 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE folders ADD COLUMN feeds_master INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE photos ADD COLUMN share INTEGER NOT NULL DEFAULT 0;
      CREATE INDEX idx_photos_share ON photos(share) WHERE share != 0;",
+    // V26: what the copier into the master folder did with each item it handled (copied, already there, failed), newest last.
+    "CREATE TABLE master_log (
+        id       INTEGER PRIMARY KEY,
+        at       INTEGER NOT NULL,
+        photo_id INTEGER,
+        source   TEXT NOT NULL,
+        dest     TEXT,
+        outcome  TEXT NOT NULL,
+        detail   TEXT
+     );",
 ];
+
+/// An approved item the copier has yet to copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovedItem {
+    pub id: PhotoId,
+    pub path: String,
+    /// Unix seconds, the date the copy is filed under; None files it under Undated.
+    pub taken_at: Option<i64>,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhotoStat {
@@ -1861,6 +1884,52 @@ impl Db {
         Db::rebuild_share_hits(&tx)?;
         tx.commit().map_err(db_err)?;
         Ok(n)
+    }
+
+    /// The approved items still to be copied into the master, oldest first (the copier's work list).
+    pub fn approved_items(&self) -> Result<Vec<ApprovedItem>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id, path, taken_at FROM photos WHERE share = ?1 AND missing = 0 ORDER BY id").map_err(db_err)?;
+        let rows = s
+            .query_map(params![SHARE_APPROVED], |r| Ok(ApprovedItem { id: r.get(0)?, path: r.get(1)?, taken_at: r.get(2)? }))
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// How many items are approved and not copied yet, and how many have been copied.
+    pub fn copy_counts(&self) -> Result<(i64, i64)> {
+        self.conn()
+            .query_row(
+                "SELECT COALESCE(SUM(share = ?1 AND missing = 0), 0), COALESCE(SUM(share = ?2), 0) FROM photos WHERE share IN (?1, ?2)",
+                params![SHARE_APPROVED, SHARE_COPIED],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)
+    }
+
+    /// The item is now in the master at `dest` (`outcome` says whether it was copied or was already there): it is done.
+    pub fn mark_copied(&self, id: PhotoId, source: &str, dest: &str, outcome: &str) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        tx.execute("UPDATE photos SET share = ?2 WHERE id = ?1 AND share = ?3", params![id, SHARE_COPIED, SHARE_APPROVED]).map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO master_log(at, photo_id, source, dest, outcome) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now_secs(), id, source, dest, outcome],
+        )
+        .map_err(db_err)?;
+        Db::rebuild_share_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The item could not be copied now (it stays approved, to be tried again): say why in the log.
+    pub fn log_copy_problem(&self, id: PhotoId, source: &str, outcome: &str, detail: &str) -> Result<()> {
+        self.conn()
+            .execute("INSERT INTO master_log(at, photo_id, source, outcome, detail) VALUES (?1, ?2, ?3, ?4, ?5)", params![now_secs(), id, source, outcome, detail])
+            .map_err(db_err)?;
+        Ok(())
     }
 
     /// The share state of one item (`SHARE_NONE` when it is not found).

@@ -1,3 +1,4 @@
+pub mod copier;
 pub mod db;
 pub mod dupes;
 pub mod people;

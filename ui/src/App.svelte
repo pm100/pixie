@@ -5,7 +5,7 @@
   import {
     analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, approveHeldShown, makePrivate, releasePrivate, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, approveHeldShown, makePrivate, releasePrivate, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -15,7 +15,7 @@
   import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
-  import { reviewLine, type ShareChoice } from './lib/master';
+  import { reviewLine, type CopyProgress, type CopyStatus, type ShareChoice } from './lib/master';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
   import { directCount, parseBar } from './lib/actionBar';
@@ -265,10 +265,13 @@
 
   // The master folder: none until one is chosen, and nothing of the feature shows without one. `activeShare` is the New / Private choice in the tree.
   let master = $state<string | null>(null), shareState = $state({ held: 0, private: 0 }), activeShare = $state<ShareChoice | null>(null);
+  // The copy of approved items into the master: what waits and how the last run went, and how far a running one has got.
+  let copyStatus = $state<CopyStatus | null>(null), copyProgress = $state<CopyProgress | null>(null);
   async function loadShare() {
     try {
       master = await getMasterFolder();
       shareState = master === null ? { held: 0, private: 0 } : await fetchShareCounts();
+      copyStatus = master === null ? null : await masterCopyStatus();
       if (master === null && activeShare !== null) await setShare(null);
     } catch { /* the entries stay as they were */ }
   }
@@ -310,6 +313,11 @@
   async function holdPicked() {
     try { await releasePrivate([...picked]); } catch (e) { message = String(e); return; }
     await shareChanged();
+  }
+  async function copyNow() {
+    copyProgress = null;
+    try { await copyToMaster(); } catch (e) { message = String(e); return; }
+    await loadShare();
   }
   /** The master is one of the watched folders (or none): nothing is scanned, the folder is already known. */
   async function chooseMaster(path: string | null) {
@@ -1295,6 +1303,8 @@
         popoutSnap = { index: m.index, total, view: { ...shown } };
         selected = m.index;
       }),
+      listen<CopyProgress>('master-copy-progress', (e) => { copyProgress = e.payload; }),
+      listen('master-copy-done', () => { copyProgress = null; void loadShare(); }),
       listen<{ message: string }>('scan-error', (e) => {
         message = e.payload.message; // scan-done always follows
         void refreshFolderStates();
@@ -1484,7 +1494,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master} onmaster={chooseMaster} onfeeds={feedsMaster}
+        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master} onmaster={chooseMaster} {copyStatus} {copyProgress} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
                   analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
