@@ -1,16 +1,18 @@
 <script lang="ts">
-  /** One of the tool tabs (Send, Create, Organize, Clean up), laid out like Settings: the tab's tools down the left, the options of the chosen tool in the middle, and the photos
-   *  the tools work on on the right. Clean up looks after the whole library, so it has no "Working on" and no photos. */
+  /** One of the tool tabs (Send, Create, Organize, Clean up, Import/Export), laid out like Settings: the tab's tools down the left, the options of the chosen tool in the middle, and the photos
+   *  the tools work on on the right. Clean up and Import/Export look after the whole library, so they have no "Working on" and no photos. */
   import { untrack } from 'svelte';
-  import { listPicked, listTagged, type Photo, type UserTagCount, type View } from './api';
+  import { listPicked, listTagged, type FolderInfo, type Photo, type UserTagCount, type View } from './api';
   import DuplicatesTab from './DuplicatesTab.svelte';
   import MissingDatesTool from './MissingDatesTool.svelte';
   import type { DateRules } from './dateRules';
   import EmailForm from './EmailForm.svelte';
   import GroupTags from './GroupTags.svelte';
+  import type { CopyStatus } from './master';
   import PlaceholderTool from './PlaceholderTool.svelte';
   import PrintTool from './PrintTool.svelte';
   import Resizer from './Resizer.svelte';
+  import SyncTool from './SyncTool.svelte';
   import Viewer from './Viewer.svelte';
   import WorkingOn from './WorkingOn.svelte';
   import { plural } from './format';
@@ -18,7 +20,7 @@
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { posterUrl, thumbUrl } from './url';
 
-  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, dupes, onduplicates, dateRules, ondaterules, onshowundated }: {
+  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
     group: ToolGroup;
     /** The tool to open at; otherwise the one used last in this tab, or the first. */
     tool?: string | null;
@@ -37,16 +39,18 @@
     userTags: UserTagCount[];
     /** Something was tagged (with the tag named): the tag lists need reading again. */
     onchange: (tag: string) => void;
-    /** The duplicate check is on, so Duplicates is listed in Clean up. */
-    dupes: boolean;
     /** Copies were moved to the Recycle Bin: the rest of the app should refresh its counts. */
     onduplicates: () => void;
     /** Which dates count as missing and when the file's date stands in (Missing dates), a change to that, and "show the items with no date" in Browse. */
     dateRules: DateRules; ondaterules: (r: DateRules) => void; onshowundated: () => void;
+    /** Sync: the watched folders, the sync folder (null while there is none) and choosing it, what is waiting to be copied, and the controls to copy. */
+    folders: FolderInfo[]; master: string | null; onmaster: (path: string | null) => void;
+    copyStatus: CopyStatus | null; oncopy: () => void; onstopcopy: () => void; onfeeds: (id: number, feeds: boolean) => void;
+    /** Whether Pixie reminds at start about new items to sync, and a change to that. */
+    remind: boolean; onremind: (on: boolean) => void;
   } = $props();
 
-  const features = $derived({ dupes });
-  const list = $derived(toolsIn(group, features));
+  const list = $derived(toolsIn(group));
   const whole = $derived(worksOnWholeLibrary(group));
   const groupLabel = $derived(GROUPS.find((g) => g.id === group)?.label ?? group);
 
@@ -55,8 +59,8 @@
   let sideW = $state(loadPref('tools.side', 300));
 
   // Each tab remembers the tool it was left at.
-  let chosenId = $state(untrack(() => (tool && toolsIn(group, { dupes }).some((t) => t.id === tool) ? tool : loadPref<string>(`tools.tool.${group}`, firstTool(group, { dupes }).id))));
-  const current = $derived(list.find((t) => t.id === chosenId) ?? firstTool(group, features));
+  let chosenId = $state(untrack(() => (tool && toolsIn(group).some((t) => t.id === tool) ? tool : loadPref<string>(`tools.tool.${group}`, firstTool(group).id))));
+  const current = $derived(list.find((t) => t.id === chosenId) ?? firstTool(group));
   function choose(id: string) {
     chosenId = id;
     savePref(`tools.tool.${group}`, id);
@@ -139,6 +143,8 @@
           <DuplicatesTab {active} onchange={onduplicates} />
         {:else if current.id === 'missing-dates'}
           <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
+        {:else if current.id === 'sync'}
+          <SyncTool {folders} {master} {onmaster} {copyStatus} {oncopy} {onstopcopy} {onfeeds} {remind} {onremind} />
         {:else}
           <PlaceholderTool tool={current} />
         {/if}

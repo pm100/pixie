@@ -7,7 +7,7 @@ export type ActiveFilters = {
   utag?: string | null;
   /** The kind of missing data chosen in the tree (`location`). */
   missing?: string | null;
-  /** New (held for review) or Private, chosen in the tree while a master folder is set. */
+  /** New (not yet synced) or Private, chosen in the tree while a sync folder is set. */
   share?: string | null;
   folder: string | null; trip: string | null;
   /** A chosen date ("September 2026") or Last 30 days; the two replace each other, so there is at most one. */
@@ -25,7 +25,7 @@ export function filterNames(f: ActiveFilters): string[] {
     f.person !== null ? `Person “${f.person}”` : null,
     f.camera != null ? `Camera “${f.camera}”` : null,
     f.missing === 'location' ? 'No location' : null,
-    f.share === 'new' ? 'New, not yet shared' : f.share === 'private' ? 'Private' : null,
+    f.share === 'new' ? 'New, not yet synced' : f.share === 'private' ? 'Private' : null,
     f.kind !== null ? (f.kind === 'photo' ? 'Photos only' : 'Videos only') : null,
     f.area ? 'In the map area' : null,
     f.folder !== null ? `Folder “${f.folder}”` : null,

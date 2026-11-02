@@ -14,7 +14,7 @@
 
   let { photo, ontagschange, onopen, chosen, master = null, onsharechange = () => {} }: {
     photo: Photo | null;
-    /** The master folder, or null while there is none: then nothing about sharing is shown. */
+    /** The sync folder, or null while there is none: then nothing about sharing is shown. */
     master?: string | null;
     /** The photo was made private or taken out of private: the tree's counts and the listing need reading again. */
     onsharechange?: () => void;
@@ -121,8 +121,8 @@
         <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
       </dd>
       {#if master !== null}
-        <dt>Sharing</dt><dd>
-          <label class="opt" title="Keep this photo out of the master folder and anything shared. Its tags and names stay on this computer">
+        <dt>Sync</dt><dd>
+          <label class="opt" title="Keep this photo out of the sync folder and the sync. Its tags and names stay on this computer">
             <input type="checkbox" checked={isPrivate} aria-label="Private" onchange={(e) => setPrivate(e.currentTarget.checked)} /> Private
           </label>
         </dd>

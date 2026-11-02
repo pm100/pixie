@@ -26,10 +26,3 @@ export function analysisLine(s: AnalysisStatus): string {
   if (s.done >= s.total) return s.total === 1 ? '1 photo analysed' : `All ${n(s.total)} photos analysed`;
   return `Analysing photos… ${n(s.done)} of ${n(s.total)}`;
 }
-
-/** How far along the current step is, 0 to 1; null when there is no bar to show. */
-export function analysisFraction(s: AnalysisStatus): number | null {
-  if (s.models === 'downloading') return s.model_total > 0 ? Math.min(1, s.model_done / s.model_total) : 0;
-  if (s.models === 'ready' && s.total > 0) return Math.min(1, s.done / s.total);
-  return null;
-}

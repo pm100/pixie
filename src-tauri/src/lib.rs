@@ -1,3 +1,4 @@
+mod activity_feed;
 mod autoscan;
 mod drives;
 mod emailsize;
@@ -7,6 +8,7 @@ mod sniff;
 mod state;
 mod subject;
 
+use pixie_core::activity::TaskKind;
 use pixie_core::{
     Bounds, Contact, DayGroup, Folder, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, Photo, PhotoQuery,
     PixieError, SortOrder,
@@ -327,6 +329,7 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
     let people = state.people.clone();
     let pipeline = state.pipeline.clone();
     let queue = state.queue.clone();
+    let activity = state.activity.clone();
     cancel.store(false, Ordering::Relaxed);
     queue.start_job();
     std::thread::spawn(move || {
@@ -346,6 +349,7 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
                 // (the files are handed to the pipeline as the walk finds them, so analysis begins at once)
                 let mut hand = |batch: Vec<pixie_index::Candidate>| pipeline.enqueue(batch);
                 match walk_folder_streaming(&db, id, mode, &cancel, |p| {
+                    activity_feed::apply(&activity, activity_feed::from_scan(&p, pixie_index::cloud::meter().snapshot().bytes_read));
                     let _ = progress_app.emit("scan-progress", p);
                 }, Some(&mut hand)) {
                     Ok(mut walk) => {
@@ -375,6 +379,8 @@ fn spawn_scan_job(app: tauri::AppHandle, state: &AppState, guard: ScanGuard, ids
         if cancel.load(Ordering::Relaxed) {
             pipeline.clear_intake(); // stopped: the files already handed over but not yet read are let go too
         }
+        activity.finish(TaskKind::Scan);
+        activity.finish(TaskKind::Read);
         let _ = app.emit("scan-done", ScanDone { folders: scanned, found });
         analysis.kick(); // new photos to analyse; the worker waits while this scan job runs
         people.kick();
@@ -749,7 +755,7 @@ struct ActiveFilters {
     utag: Option<String>,
     /// The kind of missing data chosen in the tree ("location").
     missing: Option<String>,
-    /// "new" or "private" when the tree is showing items held for review or kept private.
+    /// "new" or "private" when the tree is showing items not yet synced or kept private.
     share: Option<String>,
 }
 
@@ -824,7 +830,7 @@ fn set_master_folder(state: tauri::State<AppState>, path: Option<String>) -> Res
     state.db.set_master_folder(path.as_deref())
 }
 
-/// Whether new items found in a folder are held for review before they are copied into the master.
+/// Whether what is in a folder is synced into the sync folder.
 #[tauri::command]
 fn set_folder_feeds(state: tauri::State<AppState>, id: i64, feeds: bool) -> Result<(), PixieError> {
     state.db.set_folder_feeds(id, feeds)
@@ -832,64 +838,46 @@ fn set_folder_feeds(state: tauri::State<AppState>, id: i64, feeds: bool) -> Resu
 
 #[derive(Serialize)]
 struct ShareCounts {
-    held: i64,
+    unsynced: i64,
     private: i64,
 }
 
-/// How many items are held for review and how many are private.
+/// How many items are not yet synced and how many are private.
 #[tauri::command]
 fn share_counts(state: tauri::State<AppState>) -> Result<ShareCounts, PixieError> {
-    let (held, private) = state.db.share_counts()?;
-    Ok(ShareCounts { held, private })
+    let (unsynced, private) = state.db.share_counts()?;
+    Ok(ShareCounts { unsynced, private })
 }
 
-/// Show only the items held for review ("new") or kept private ("private"); null turns it off. List with the `search` flag.
+/// Show only the items not yet synced ("new") or kept private ("private"); null turns it off. List with the `search` flag.
 #[tauri::command]
 fn set_share_filter(state: tauri::State<AppState>, kind: Option<String>) -> Result<(), PixieError> {
     state.db.set_share_filter(kind.as_deref())
 }
 
-/// Approve the held items among `ids` to be copied into the master ("Share these"). Returns how many.
-#[tauri::command]
-fn approve_held(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
-    state.db.approve_held(&ids)
-}
-
-/// "Share these": approve every held item the listing shows (same arguments as `count_photos`). Returns how many.
-#[tauri::command]
-fn approve_held_shown(
-    state: tauri::State<AppState>,
-    folder_id: Option<i64>,
-    kind: Option<MediaKind>,
-    bounds: Option<Bounds>,
-    max_id: Option<i64>,
-    since: Option<i64>,
-    until: Option<i64>,
-    search: Option<bool>,
-) -> Result<usize, PixieError> {
-    state.db.approve_held_in(&query_of(None, folder_id, kind, bounds, max_id, since, until, search))
-}
-
-/// Keep the held items among `ids` out of the master and anything shared ("Make private"). Returns how many.
+/// Keep these items out of the sync folder (the Private checkbox). Returns how many.
 #[tauri::command]
 fn make_private(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
     state.db.make_private(&ids)
 }
 
-/// Copy the approved items into the master folder, in the background ("Copy now"). Refused while a copy is already running.
+/// Copy the items not yet synced into the sync folder, in the background ("Copy now"). Refused while a copy is already running.
 /// Reports `master-copy-progress` as it goes and `master-copy-done` at the end.
 #[tauri::command]
 fn copy_to_master(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), PixieError> {
     let job = state.copy.clone();
     if !job.try_start() {
-        return Err(PixieError::Busy("a copy into the master folder is already running".into()));
+        return Err(PixieError::Busy("a copy into the sync folder is already running".into()));
     }
     let db = state.db.clone();
+    let activity = state.activity.clone();
     std::thread::spawn(move || {
         let progress_app = app.clone();
         let report = pixie_index::copier::run(&db, job.stop_flag(), |p| {
+            activity_feed::apply(&activity, vec![activity_feed::from_copy(true, &p)]);
             let _ = progress_app.emit("master-copy-progress", p);
         });
+        activity.finish(TaskKind::CopyToMaster);
         job.finish();
         let _ = app.emit("master-copy-done", report.ok());
     });
@@ -908,13 +896,13 @@ fn master_copy_status(state: tauri::State<AppState>) -> Result<pixie_index::copi
     pixie_index::copier::status(&state.db, &state.copy)
 }
 
-/// Whether one item is private (3), approved (2), held for review (1) or none of these (0), for the details panel.
+/// Whether one item is private (3), copied (4) or neither (0), for the details panel.
 #[tauri::command]
 fn photo_share(state: tauri::State<AppState>, id: i64) -> Result<i64, PixieError> {
     state.db.photo_share(id)
 }
 
-/// Take private items among `ids` out of private: held for review again, or ordinary where their folder does not feed the master. Returns how many.
+/// Take private items among `ids` out of private. Returns how many.
 #[tauri::command]
 fn release_private(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
     state.db.release_private(&ids)
@@ -1124,6 +1112,9 @@ fn reset_library(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result
     }
     std::thread::sleep(Duration::from_millis(500)); // a batch already being stored finishes (its folder is about to go)
     state.db.reset_all()?;
+    // What the progress screen remembered was about the library that is gone.
+    state.activity.clear();
+    pixie_index::cloud::meter().reset();
     // What was made from the photos.
     let dir = data_dir(app.path()).map_err(|e| PixieError::Io(e.to_string()))?;
     for cache in [dir.join("thumbs"), state.posters_dir.clone(), state.faces_dir.clone()] {
@@ -1280,7 +1271,7 @@ struct MailProgressEvent {
 /// Sends the selected items. Runs on the blocking pool and emits `mail-progress` while preparing.
 #[tauri::command]
 async fn send_email(app: tauri::AppHandle, state: tauri::State<'_, AppState>, request: SendEmailRequest) -> Result<Vec<String>, String> {
-    let (db, secrets, mailer) = (state.db.clone(), state.secrets.clone(), state.mailer.clone());
+    let (db, secrets, mailer, activity) = (state.db.clone(), state.secrets.clone(), state.mailer.clone(), state.activity.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let account = db
             .get_mail_account()
@@ -1298,10 +1289,12 @@ async fn send_email(app: tauri::AppHandle, state: tauri::State<'_, AppState>, re
         let contacts = db.list_contacts().map_err(|e| e.user_message())?;
         let to = resolve_recipients(&request.to, &contacts).map_err(|e| e.user_message())?;
         let req = SendRequest { photos, to, subject: request.subject, message: request.message, size: request.size };
-        send_photos(&*mailer, &*secrets, &account, req, &|p| {
+        let sent = send_photos(&*mailer, &*secrets, &account, req, &|p| {
+            activity_feed::apply(&activity, vec![activity_feed::from_mail(p.done, p.total)]);
             let _ = app.emit("mail-progress", MailProgressEvent { done: p.done, total: p.total });
-        })
-        .map_err(|e| e.0)
+        });
+        activity.finish(TaskKind::Email); // (a send that failed part way is over too)
+        sent.map_err(|e| e.0)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1495,19 +1488,25 @@ fn load_status(state: tauri::State<AppState>) -> LoadStatus {
     LoadStatus { pending: state.pipeline.pending_files(), paused: state.pipeline.is_paused() }
 }
 
+/// Everything running in the background now, with speeds and times left (also sent as the `activity` event about once a second).
+#[tauri::command]
+fn activity_snapshot(state: tauri::State<AppState>) -> pixie_core::activity::Snapshot {
+    state.activity.snapshot()
+}
+
 /// Which of the background analyses are on. Everything is on until the person says otherwise; the choice is kept in the library.
+/// (Finding duplicates is not a choice: it always runs, because Sync recognises copies by their hashes.)
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct AnalysisOptions {
     tags: bool,
     faces: bool,
-    dupes: bool,
 }
 
-const OPTION_KEYS: [&str; 3] = ["analysis.tags", "analysis.faces", "analysis.dupes"];
+const OPTION_KEYS: [&str; 2] = ["analysis.tags", "analysis.faces"];
 
 fn read_analysis_options(db: &Db) -> AnalysisOptions {
     let on = |key: &str| db.get_setting(key).ok().flatten().map_or(true, |v| v != "0");
-    AnalysisOptions { tags: on(OPTION_KEYS[0]), faces: on(OPTION_KEYS[1]), dupes: on(OPTION_KEYS[2]) }
+    AnalysisOptions { tags: on(OPTION_KEYS[0]), faces: on(OPTION_KEYS[1]) }
 }
 
 #[tauri::command]
@@ -1516,16 +1515,14 @@ fn get_analysis_options(state: tauri::State<AppState>) -> AnalysisOptions {
 }
 
 /// Turn the analyses on or off (and remember it). Off: no more work of that kind and no model fetched (what was found is
-/// kept); duplicates off also shows every copy again. On: it carries on from where it was.
+/// kept). On: it carries on from where it was.
 #[tauri::command]
-fn set_analysis_options(state: tauri::State<AppState>, tags: bool, faces: bool, dupes: bool) -> Result<(), PixieError> {
-    for (key, on) in OPTION_KEYS.iter().zip([tags, faces, dupes]) {
+fn set_analysis_options(state: tauri::State<AppState>, tags: bool, faces: bool) -> Result<(), PixieError> {
+    for (key, on) in OPTION_KEYS.iter().zip([tags, faces]) {
         state.db.set_setting(key, if on { "1" } else { "0" })?;
     }
     state.analysis.set_enabled(tags);
     state.people.set_enabled(faces);
-    state.pipeline.set_hashing(dupes);
-    state.dupes.set_enabled(dupes);
     Ok(())
 }
 
@@ -1885,6 +1882,7 @@ pub fn run() {
             ));
             let tiles = TileService::new(dir.join("tiles"), fetcher, 2);
             let gate = pixie_index::ScanGate::default();
+            let activity = Arc::new(pixie_core::activity::Activity::with_appear_delay(Arc::new(pixie_core::activity::SystemClock), pixie_core::activity::APPEAR_AFTER_SECS));
             // One pipeline reads, hashes and decodes each photo once for every step; the two services below give it their
             // models and show its progress.
             let pipeline_gate = gate.clone();
@@ -1895,10 +1893,18 @@ pub fn run() {
             )));
             let latest_app = app.handle().clone();
             // The photo the pipeline just finished, for the loading screen's strip of pictures going by.
+            let place_activity = activity.clone();
             pipeline.set_latest_listener(Arc::new(move |item| {
+                activity_feed::feed_place(&place_activity, &item.folder);
                 let _ = latest_app.emit("analysis-latest", item);
             }));
             let analysis_app = app.handle().clone();
+            let analysis_activity = activity.clone();
+            // The latest analysis and faces statuses: the ticker below turns the two into one row on the Processing screen.
+            let tags_last = Arc::new(std::sync::Mutex::new(None::<pixie_analysis::service::AnalysisStatus>));
+            let tags_last_status = tags_last.clone();
+            let faces_last = Arc::new(std::sync::Mutex::new(None::<pixie_analysis::people_service::PeopleStatus>));
+            let faces_last_status = faces_last.clone();
             // The window is told whenever the loading moves (a batch is stored, files arrive, the Pause changes).
             let load_app = app.handle().clone();
             let load_pipeline = Arc::downgrade(&pipeline);
@@ -1908,7 +1914,6 @@ pub fn run() {
                 }
             }));
             let options = read_analysis_options(&db);
-            pipeline.set_hashing(options.dupes);
             let analysis = Arc::new(pixie_analysis::service::AnalysisService::start_with(pixie_analysis::service::Config {
                 db: db.clone(),
                 version: pixie_analysis::clip::MODEL_VERSION.to_string(),
@@ -1920,10 +1925,13 @@ pub fn run() {
                 }),
                 pipeline: pipeline.clone(),
                 on_status: Arc::new(move |s| {
+                    *tags_last_status.lock().unwrap() = Some(s.clone());
+                    activity_feed::apply(&analysis_activity, activity_feed::from_analysis(&s));
                     let _ = analysis_app.emit("analysis-status", s);
                 }),
             }, options.tags));
             let people_app = app.handle().clone();
+            let people_activity = activity.clone();
             let people = Arc::new(pixie_analysis::people_service::PeopleService::start_with(pixie_analysis::people_service::PeopleConfig {
                 db: db.clone(),
                 version: pixie_analysis::faces::FACES_VERSION.to_string(),
@@ -1935,6 +1943,8 @@ pub fn run() {
                 }),
                 pipeline: pipeline.clone(),
                 on_status: Arc::new(move |s| {
+                    *faces_last_status.lock().unwrap() = Some(s.clone());
+                    activity_feed::apply(&people_activity, activity_feed::from_people(&s));
                     let _ = people_app.emit("people-status", s);
                 }),
             }, options.faces));
@@ -1947,8 +1957,26 @@ pub fn run() {
                     let _ = dupes_app.emit("duplicate-status", s);
                 }),
             ));
-            dupes.set_enabled(options.dupes);
             let watch_db = db.clone();
+            // The window gets everything that is running as one snapshot about once a second.
+            let (tick_app, tick_activity) = (app.handle().clone(), activity.clone());
+            std::thread::spawn(move || {
+                let mut emitter = activity_feed::Emitter::new();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    // (the cloud wait is not reported by an event: the meter is read here)
+                    let (tags, faces) = (tags_last.lock().unwrap().clone(), faces_last.lock().unwrap().clone());
+                    activity_feed::apply_analysis(&tick_activity, tags.as_ref(), faces.as_ref());
+                    let cloud = pixie_index::cloud::meter().snapshot();
+                    activity_feed::apply(&tick_activity, activity_feed::from_cloud(&cloud).into_iter().collect());
+                    activity_feed::feed_waiting(&tick_activity, &cloud);
+                    activity_feed::feed_current(&tick_activity, pixie_index::working::meter(), activity_feed::SLOW_FILE_MS);
+                    let snapshot = tick_activity.snapshot();
+                    if emitter.should_emit(&snapshot) {
+                        let _ = tick_app.emit("activity", snapshot);
+                    }
+                }
+            });
             app.manage(AppState {
                 db,
                 thumbs,
@@ -1966,6 +1994,7 @@ pub fn run() {
                 dupes,
                 pipeline,
                 copy: Arc::default(),
+                activity,
             });
             // Keeps the library up to date: folders on this computer are watched, network ones are scanned on a timer (the
             // window turns that on and says how often).
@@ -1982,7 +2011,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, set_folder_feeds, share_counts, set_share_filter, approve_held, approve_held_shown, make_private, release_private, photo_share, copy_to_master, stop_master_copy, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster,
             open_in_default_player, email_photos, email_info, get_analysis_options, set_analysis_options, load_status, reset_library, pick_photo, pick_many, pick_ids, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])

@@ -17,7 +17,7 @@
   import { countOf, emptyLast, tripsHeld, type Facets } from './facets';
   import { sharingRows, type ShareChoice, type ShareCounts } from './master';
 
-  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, missing = null, onmissing = () => {}, noLocation = 0, master = null, shareCounts = { held: 0, private: 0 }, share = null, onshare = () => {}, libMissing = { location: false, date: false }, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, missing = null, onmissing = () => {}, noLocation = 0, master = null, shareCounts = { unsynced: 0, private: 0 }, share = null, onshare = () => {}, onopensync = () => {}, libMissing = { location: false, date: false }, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -40,8 +40,10 @@
     cameras?: [string, number][]; camera?: string | null; oncamera?: (name: string | null) => void;
     /** Missing data: the kind chosen as a filter (`location`: items with no position) and how many items have none, under the other filters. Items with no date are counted from `groups`. */
     missing?: string | null; onmissing?: (kind: string | null) => void; noLocation?: number;
-    /** The master folder (null while there is none: then no Sharing section is shown), how many items are held for review or private, and the choice made (`new` or `private`). */
+    /** The sync folder (null while there is none: then no Sync section is shown), how many items are not yet synced or private, and the choice made (`new` or `private`). */
     master?: string | null; shareCounts?: ShareCounts; share?: ShareChoice | null; onshare?: (c: ShareChoice | null) => void;
+    /** Open Import/Export, Sync (the link beside the not-yet-synced count). */
+    onopensync?: () => void;
     /** Whether the whole library has any item missing a position, or a date: the rows are listed for as long as it has, and dimmed when the filters leave them nothing. */
     libMissing?: { location: boolean; date: boolean };
     /** Your own tags with their photo counts, and the one chosen (`tag:<name>`; Picked is chosen in Browse's top line). */
@@ -121,7 +123,7 @@
     cameras: camera ?? '',
     when: period !== null && period !== 'undated' ? periodLabel(period) : recent ? recentText : '',
     missing: missing === 'location' ? 'No location' : period === 'undated' ? 'No date' : '',
-    sharing: share === 'new' ? 'New, not yet shared' : share === 'private' ? 'Private' : '',
+    sharing: share === 'new' ? 'New, not yet synced' : share === 'private' ? 'Private' : '',
   });
   const shareRows = $derived(sharingRows(master, shareCounts, share));
   const noDate = $derived(groups.find((g) => g.day === null)?.count ?? 0);
@@ -148,14 +150,21 @@
 {/snippet}
 
 <nav>
-  <!-- The master folder: only once one is chosen. New items wait here until they have been looked at. -->
+  <!-- The sync folder: only once one is chosen. New items wait here until they have been looked at. -->
   {#if shareRows.length > 0}
-    {@render head('sharing', 'Sharing')}
+    {@render head('sharing', 'Sync')}
     {#if !folded('sharing')}
       {#each shareRows as r (r.id)}
-        <button class="item" class:active={r.active} class:zero={r.count === 0 && !r.active} aria-pressed={r.active} title={r.title} onclick={() => onshare(r.active ? null : r.id)}>
-          <span class="mark">{#if r.active}<Check />{/if}</span><span class="grow">{r.label}</span><span class="n">{r.count.toLocaleString()}</span>
-        </button>
+        <div class="syncrow">
+          <button class="item" class:active={r.active} class:zero={r.count === 0 && !r.active} aria-pressed={r.active} title={r.title} onclick={() => onshare(r.active ? null : r.id)}>
+            <span class="mark">{#if r.active}<Check />{/if}</span><span class="grow">{r.label}</span><span class="n">{r.count.toLocaleString()}</span>
+          </button>
+          {#if r.id === 'new'}
+            {#if r.count > 0}
+              <button class="syncnow" title="Open Import/Export, Sync, where the items not yet synced are copied into the sync folder" onclick={() => onopensync()}>Go to Sync</button>
+            {/if}
+          {/if}
+        </div>
       {/each}
     {/if}
   {/if}
@@ -316,6 +325,10 @@
 </nav>
 
 <style>
+  .syncrow { display: flex; align-items: center; gap: 4px; }
+  .syncrow .item { flex: 1 1 auto; width: auto; min-width: 0; }
+  .syncnow { flex: none; border: 0; background: none; padding: 2px 8px; color: #1a56c4; text-decoration: underline; cursor: pointer; font-size: 12px; }
+  .syncnow:hover { color: #0d3a8c; }
   nav { padding: 4px 4px 16px; font-size: 14px; }
   /* One indent grid: every row has a 16px slot (a chevron, a tick or nothing) and each level moves right by one 12px step,
      so a child's slot sits under its parent's label. Section headings are small, quiet capitals with a rule above. */

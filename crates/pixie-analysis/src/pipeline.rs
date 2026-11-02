@@ -141,6 +141,31 @@ struct Shared {
     wake: Condvar,
 }
 
+/// Read a whole file. A cloud file that is not on this computer yet makes the cloud app download it first: that wait is counted in
+/// the cloud meter, and so are the bytes (the progress screen shows both).
+fn read_watched(path: &str) -> std::io::Result<Vec<u8>> {
+    let _wait = pixie_index::cloud::watch(Path::new(path));
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let _doing = pixie_index::working::busy(pixie_index::working::Work::Reading, Path::new(path), size);
+    let bytes = std::fs::read(path)?;
+    pixie_index::cloud::meter().add_bytes_read(bytes.len() as u64);
+    Ok(bytes)
+}
+
+/// A video's details, read from its own header. This opens the file itself (an MP4's header can be at the very end), so for a cloud file
+/// that is not on this computer yet it waits for the cloud app to download it, perhaps for minutes: that wait is counted in the cloud
+/// meter and the file is named as being worked on, as a read is.
+fn video_meta_watched(path: &Path) -> PhotoMeta {
+    video_meta_with(pixie_index::cloud::meter(), &pixie_index::cloud::is_online_only, path)
+}
+
+fn video_meta_with(meter: &pixie_index::cloud::CloudMeter, online_only: &dyn Fn(&Path) -> bool, path: &Path) -> PhotoMeta {
+    let _wait = pixie_index::cloud::watch_with(meter, path, online_only);
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let _doing = pixie_index::working::busy(pixie_index::working::Work::Reading, path, size);
+    read_media_meta(path, MediaKind::Video)
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -242,7 +267,11 @@ impl Shared {
             *at = Instant::now();
         }
         let name = Path::new(&p.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        listener(LatestItem { id: p.id, mtime: p.mtime, size: p.size, name, kind: p.meta.kind });
+        let folder = match self.db.get_folder(p.folder_id) {
+            Ok(Some(f)) => f.path,
+            _ => String::new(),
+        };
+        listener(LatestItem { id: p.id, mtime: p.mtime, size: p.size, name, folder, kind: p.meta.kind });
     }
 
     /// A file of the intake has been stored (or could not be): it is no longer outstanding.
@@ -306,7 +335,7 @@ impl Shared {
         let path = Path::new(&c.path);
         let video = c.meta.kind == MediaKind::Video;
         let mut meta = if video {
-            read_media_meta(path, MediaKind::Video)
+            video_meta_watched(path)
         } else {
             match &bytes {
                 Ok(b) => catch_unwind(AssertUnwindSafe(|| read_meta_bytes(path, b))).unwrap_or_default(),
@@ -358,6 +387,13 @@ impl Shared {
         if w.hash {
             let (quick, full) = (quick_key_bytes(&bytes), full_hash_bytes(&bytes));
             let _ = self.db.set_file_keys(p.id, &quick, Some(&full));
+            // A twin analysed before hashing was on has no hash yet, so this file would not be seen as the duplicate it is (a copy
+            // synced into the sync folder, say) and would be analysed all over again: hash the twin now, which is far cheaper.
+            for (twin, path) in self.db.unhashed_twins(p.id, p.size, p.mtime).unwrap_or_default() {
+                if let Ok(b) = std::fs::read(&path) {
+                    let _ = self.db.set_file_keys(twin, &quick_key_bytes(&b), Some(&full_hash_bytes(&b)));
+                }
+            }
             let _ = self.db.refresh_dup_group(&full);
             if self.db.is_dup(p.id).unwrap_or(false) {
                 return Outcome::Duplicate;
@@ -501,7 +537,7 @@ impl Shared {
                     let i = next_read.fetch_add(1, Ordering::SeqCst);
                     let Some(w) = batch.get(i) else { break };
                     let wanted = w.hash || w.embed || w.faces || w.art || (w.new && w.photo.meta.kind == MediaKind::Photo); // (a row to refresh needs the file's bytes too)
-                    let mut msg = (i, if wanted { std::fs::read(&w.photo.path) } else { Ok(Vec::new()) });
+                    let mut msg = (i, if wanted { read_watched(&w.photo.path) } else { Ok(Vec::new()) });
                     loop {
                         match btx.try_send(msg) {
                             Ok(()) => break,
@@ -847,6 +883,33 @@ mod tests {
     use pixie_image::thumbs::thumb_path;
     use std::sync::atomic::AtomicU8;
     use std::time::Instant;
+
+    #[test]
+    fn a_videos_header_read_that_waits_for_a_cloud_download_is_counted_as_a_cloud_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.mp4");
+        std::fs::write(&p, []).unwrap();
+        let meter = pixie_index::cloud::CloudMeter::default();
+        let meta = video_meta_with(&meter, &|_: &Path| true, &p);
+        assert_eq!(meta.kind, MediaKind::Video);
+        let c = meter.snapshot();
+        assert_eq!((c.files_total, c.files_done, c.waiting_files), (1, 1, 0), "it was found, waited for and has arrived");
+        let local = pixie_index::cloud::CloudMeter::default();
+        video_meta_with(&local, &|_: &Path| false, &p);
+        assert_eq!(local.snapshot().files_total, 0, "a file already on this computer is not a cloud wait");
+    }
+
+    #[test]
+    fn reading_a_file_for_the_pipeline_counts_its_bytes_in_the_cloud_meter() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.bin");
+        std::fs::write(&p, vec![7u8; 5000]).unwrap();
+        let before = pixie_index::cloud::meter().snapshot().bytes_read;
+        let bytes = read_watched(&p.to_string_lossy()).unwrap();
+        assert_eq!(bytes.len(), 5000);
+        assert!(pixie_index::cloud::meter().snapshot().bytes_read >= before + 5000, "(other tests may read too, so at least this many)");
+        assert!(read_watched(&dir.path().join("none").to_string_lossy()).is_err(), "a missing file is still an error");
+    }
 
     const EV: &str = "fake-1";
     const FV: &str = "fake-faces-1";
@@ -1282,6 +1345,42 @@ mod tests {
         let embedded: Vec<i64> = r.db.load_embeddings(EV).unwrap().into_iter().map(|e| e.0).collect();
         assert!(embedded.contains(&shown) && embedded.contains(&other) && !embedded.contains(&hidden), "the hidden copy was not analysed");
         assert_eq!(r.db.list_photos(0, 10).unwrap().len(), 2);
+        p.stop();
+    }
+
+    #[test]
+    fn a_copy_of_a_photo_analysed_before_hashing_was_on_is_not_analysed_again() {
+        let r = Rig::new();
+        let sync_dir = r.dir.path().join("sync");
+        std::fs::create_dir_all(&sync_dir).unwrap();
+        r.db.set_master_folder(Some(sync_dir.to_str().unwrap())).unwrap();
+        let sync_folder = r.db.sync_folder_id().unwrap().unwrap();
+        r.file("a.png", 250, 1);
+        r.file("b.png", 5, 2);
+        let walking = Arc::new(AtomicBool::new(false));
+        let p = r.pipeline_with(1, walking.clone());
+        with_models(&p);
+        p.set_hashing(false); // as when the duplicate check was off while these were first looked at
+        p.enqueue(r.walk());
+        assert!(wait_until(5000, || p.pending_in(&[r.folder]) == (0, 0) && r.counts() == ((2, 2), (2, 2))));
+        // a.png is copied into the sync folder: the copy has the original's size and time
+        let (from, to) = (r.dir.path().join("a.png"), sync_dir.join("a.png"));
+        std::fs::copy(&from, &to).unwrap();
+        std::fs::File::options().write(true).open(&to).unwrap().set_modified(std::fs::metadata(&from).unwrap().modified().unwrap()).unwrap();
+        // A scan is running: what it hands over is worked on at once, but the originals (listed by the database) wait, still without a hash.
+        walking.store(true, Ordering::SeqCst);
+        p.set_hashing(true);
+        let found = pixie_index::walk_folder(&r.db, sync_folder, pixie_index::ScanMode::Quick, &AtomicBool::new(false), |_| {}).unwrap().candidates;
+        assert_eq!(found.len(), 1);
+        p.enqueue(found);
+        let copy_id = || r.db.find_photo_stat(to.to_str().unwrap()).unwrap().map(|s| s.id);
+        assert!(wait_until(5000, || copy_id().is_some_and(|id| r.db.is_dup(id).unwrap())), "the copy is hidden as a duplicate");
+        std::thread::sleep(Duration::from_millis(200));
+        let embedded: Vec<i64> = r.db.load_embeddings(EV).unwrap().into_iter().map(|e| e.0).collect();
+        assert_eq!(embedded.len(), 2, "the two originals only");
+        assert!(!embedded.contains(&copy_id().unwrap()), "the copy was not analysed again");
+        let original = r.db.find_photo_stat(from.to_str().unwrap()).unwrap().unwrap().id;
+        assert!(!r.db.is_dup(original).unwrap(), "the original stays the one shown");
         p.stop();
     }
 

@@ -7,11 +7,12 @@ describe('tools', () => {
     expect(toolsIn('create').map((t) => t.id)).toEqual(['collage', 'gif', 'frames', 'edit']);
     expect(toolsIn('organize').map((t) => t.id)).toEqual(['tags', 'dates', 'hide', 'move']);
     expect(toolsIn('cleanup').map((t) => t.id)).toEqual(['duplicates', 'missing-dates', 'bursts', 'thumbnails']);
+    expect(toolsIn('transfer').map((t) => t.id)).toEqual(['sync']);
   });
 
-  it('leaves Duplicates out while the duplicate check is off', () => {
-    expect(toolsIn('cleanup', { dupes: false }).map((t) => t.id)).toEqual(['missing-dates', 'bursts', 'thumbnails']);
-    expect(firstTool('cleanup', { dupes: false }).id).toBe('missing-dates');
+  it('always has Duplicates in Clean up, which opens on it (the duplicate check always runs)', () => {
+    expect(toolsIn('cleanup').map((t) => t.id)[0]).toBe('duplicates');
+    expect(firstTool('cleanup').id).toBe('duplicates');
   });
 
   it('opens each tab at its first built tool, or at its first tool when none is built', () => {
@@ -35,6 +36,7 @@ describe('tools', () => {
 
   it('knows which tab works on the whole library', () => {
     expect(worksOnWholeLibrary('cleanup')).toBe(true);
+    expect(worksOnWholeLibrary('transfer')).toBe(true);
     expect(['send', 'create', 'organize'].some((g) => worksOnWholeLibrary(g as never))).toBe(false);
   });
 

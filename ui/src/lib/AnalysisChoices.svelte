@@ -16,10 +16,6 @@
     <input type="checkbox" checked={options.tags} onchange={(e) => set('tags', e.currentTarget.checked)} />
     <span><b>Auto tags</b> <span class="d">Labels each photo by what it shows, such as Beach or Museum, so you can browse by them.</span></span>
   </label>
-  <label class="choice">
-    <input type="checkbox" checked={options.dupes} onchange={(e) => set('dupes', e.currentTarget.checked)} />
-    <span><b>Duplicates</b> <span class="d">Finds files that are copies of each other, and shows just one of them.</span></span>
-  </label>
 </div>
 
 <style>

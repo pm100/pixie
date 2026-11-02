@@ -4,7 +4,6 @@
     assignGroup, facesOfPerson, faceOverview, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
     hidePerson, ignoredFaces, ignoreFaces, unignoreFaces, suggestForFaces, suggestForGroup, unhidePerson, unsortedFaces,
   } from './api';
-  import { analysisFraction } from './analysis';
   import { createLatest } from './latest';
   import {
     capitalizeName, clickSelection, sectionCount, toCandidates, faceCardLine, firstSection, lookingForPeople, peopleLine, personLabel, pickable, refreshOffered, sectionTitle,
@@ -60,7 +59,6 @@
   const current = $derived(selected === null ? null : (cards.find((c) => c.id === selected) ?? named.find((c) => c.id === selected) ?? null));
   const pickers = $derived(pickable(named, selected));
   const scanning = $derived(status !== null && (status.models !== 'ready' || status.done < status.total));
-  const fraction = $derived(status ? analysisFraction(status) : null);
   const stale = $derived(refreshOffered(status?.rev, loadedRev));
   const total = $derived(section === 'groups' && selected === null ? (overview?.unsorted ?? 0) : (current?.faces ?? 0));
   const shownCards = $derived(
@@ -271,7 +269,6 @@
     {#if scanning}
       <div class="status" role="status">
         <span>{status ? peopleLine(status) : ''}</span>
-        {#if fraction !== null && scanning}<progress value={fraction} max="1"></progress>{/if}
         {#if status && lookingForPeople(status)}<span class="advice">It's best to let Pixie finish before naming anyone.</span>{/if}
       </div>
     {/if}
@@ -404,7 +401,6 @@
   .muted { color: #777; font-size: 13px; }
   .err { color: #b3261e; }
   .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 8px; padding: 6px 12px; border-radius: 8px; background: #eef2fb; color: #2a3f7a; font-size: 13px; }
-  .status progress { width: 160px; }
   .status .advice { color: #555; }
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 8px; padding: 6px 12px; border-radius: 8px; background: #fff4d6; color: #5b4300; font-size: 13px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }

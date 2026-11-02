@@ -39,6 +39,25 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** "11.3 MB/s". */
+export const formatByteRate = (perSec: number): string => `${formatBytes(perSec)}/s`;
+
+/** A speed in `unit` (a fixed word such as "photos"): "12 photos/s", "2.3 photos/s", and per minute when it is under one a second. */
+export function formatRate(perSec: number, unit: string): string {
+  if (perSec >= 10) return `${Math.round(perSec)} ${unit}/s`;
+  if (perSec >= 1) return `${perSec.toFixed(1)} ${unit}/s`;
+  return `${Math.round(perSec * 60)} ${unit}/min`;
+}
+
+/** How long is left, as a guess and worded as one: "under a minute", "about 5 min", "about 1 h 20 min". */
+export function formatTimeLeft(secs: number): string {
+  if (secs < 60) return 'under a minute';
+  const minutes = Math.round(secs / 60);
+  if (minutes < 60) return `about ${minutes} min`;
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return m === 0 || h >= 10 ? `about ${h} h` : `about ${h} h ${m} min`;
+}
+
 const isDrive = (s: string) => /^[A-Za-z]:$/.test(s);
 const cut = (p: string) => Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
 export const basename = (p: string): string => p.slice(cut(p) + 1);
@@ -73,3 +92,11 @@ export function formatDuration(ms: number | null): string {
 
 /** "1 photo", "2 photos": a thing is pluralised only when there is more than one (`many` for the odd ones, such as "people"). */
 export const plural = (count: number, one: string, many = `${one}s`): string => `${count.toLocaleString()} ${count === 1 ? one : many}`;
+
+/** `text` cut in the middle with "…" to at most `max` characters (a long folder path keeps its start and its end). */
+export function middle(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const keep = max - 1;
+  const head = Math.ceil(keep / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - (keep - head))}`;
+}

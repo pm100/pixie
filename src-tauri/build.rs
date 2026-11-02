@@ -63,8 +63,15 @@ fn gather_dylibs() {
 }
 
 /// The commit this was built from and whether the tree had uncommitted changes, for Settings, About (`PIXIE_COMMIT` is
-/// empty when there is no git checkout, such as a source archive).
+/// empty when there is no git checkout, such as a source archive, and in dev builds).
 fn git_info() {
+    // Only production builds name their commit. A dev build skips it, so it does not run this again (and the app is not rebuilt and
+    // relinked) when git or a file outside the app's own source changes: it rebuilds only when the source it compiles changes.
+    if std::env::var("PROFILE").is_ok_and(|p| p == "debug") {
+        println!("cargo:rustc-env=PIXIE_COMMIT=");
+        println!("cargo:rustc-env=PIXIE_MODIFIED=false");
+        return;
+    }
     for p in ["../.git/HEAD", "../.git/refs/heads", "../.git/index", "src", "../crates", "../ui/src"] {
         println!("cargo:rerun-if-changed={p}");
     }

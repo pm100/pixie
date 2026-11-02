@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analysisView, type AnalysisInput, type LoadProgress } from './analysisView';
+import { analysisView, type AnalysisInput, type LoadProgress, locationsLine } from './analysisView';
 import type { AnalysisStatus } from './analysis';
 import type { DupStatus } from './dupes';
 
@@ -189,5 +189,14 @@ describe('the Locations line', () => {
     const v = analysisView(input({ tags: status({ done: 5, total: 5 }), faces: status({ done: 5, total: 5 }), locations: { without: 2, total: 5 } }));
     expect(v.finished).toBe(true);
     expect(v.headline).toBe('Done');
+  });
+});
+
+describe('the locations line', () => {
+  it('says how many items have no location, singular and plural, and nothing when all have one', () => {
+    expect(locationsLine({ without: 1, total: 5 })).toBe('1 of 5 items has no location');
+    expect(locationsLine({ without: 3, total: 1234 })).toBe('3 of 1,234 items have no location');
+    expect(locationsLine({ without: 0, total: 9 })).toBeNull();
+    expect(locationsLine(null)).toBeNull();
   });
 });

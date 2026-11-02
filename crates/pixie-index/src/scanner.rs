@@ -59,6 +59,22 @@ pub struct ScanProgress {
     /// A photo or video stored a moment ago, for a "now reading" view; set on the calls made while reading, at most one
     /// every `LATEST_EVERY` (and always for the first one).
     pub latest: Option<LatestItem>,
+    /// While the folder is being walked: the sub-folder of the last photo or video found (see `place_of`). Empty otherwise.
+    pub place: String,
+}
+
+/// How often at most the walk says which folder it is in.
+const PLACE_EVERY: Duration = Duration::from_secs(1);
+
+/// The folder a walk is in, for people: the path below the watched folder, or the watched folder's own name when the files are
+/// directly in it. Empty when no file has been found yet.
+pub fn place_of(root: &Path, dir: Option<&Path>) -> String {
+    let Some(dir) = dir else { return String::new() };
+    let below = dir.strip_prefix(root).unwrap_or(dir).components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+    if !below.is_empty() {
+        return below;
+    }
+    root.file_name().map_or_else(|| root.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
 }
 
 /// How often at most a progress call names a stored photo.
@@ -71,6 +87,8 @@ pub struct LatestItem {
     pub mtime: i64,
     pub size: i64,
     pub name: String,
+    /// The watched folder it is in, as listed in Settings, Photo folders (its full path).
+    pub folder: String,
     /// A video has no thumbnail yet while it is being scanned, so a client shows a placeholder for it.
     pub kind: MediaKind,
 }
@@ -202,7 +220,7 @@ pub fn walk_folder_streaming(
     mut hand_over: Option<&mut dyn FnMut(Vec<Candidate>)>,
 ) -> Result<Walk> {
     // Say right away that this folder has begun: opening a slow or sleeping drive can take a while before anything else.
-    on_progress(&ScanProgress { folder_id, seen: 0, indexed: 0, to_index: 0, latest: None });
+    on_progress(&ScanProgress { folder_id, seen: 0, indexed: 0, to_index: 0, latest: None, place: String::new() });
     let folder = db
         .get_folder(folder_id)?
         .ok_or_else(|| PixieError::NotFound(format!("folder {folder_id}")))?;
@@ -216,6 +234,8 @@ pub fn walk_folder_streaming(
     let mut todo: Vec<Candidate> = Vec::new();
     let mut chunk: Vec<Listed> = Vec::new();
     let mut announced = 0usize;
+    let mut dir: Option<std::path::PathBuf> = None; // the folder of the last media file found
+    let mut told = Instant::now();
 
     // The listed files are settled a chunk at a time; then progress is told and the new files are handed on.
     macro_rules! settle {
@@ -228,7 +248,7 @@ pub fn walk_folder_streaming(
             }
             if seen.len() / 100 > announced {
                 announced = seen.len() / 100;
-                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None });
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None, place: place_of(root, dir.as_deref()) });
             }
         }};
     }
@@ -259,8 +279,14 @@ pub fn walk_folder_streaming(
         #[cfg(not(windows))]
         let known = None;
         chunk.push((path, kind, known));
+        if dir.as_deref() != entry.path().parent() {
+            dir = entry.path().parent().map(Path::to_path_buf);
+        }
         if chunk.len() >= STAT_CHUNK {
             settle!();
+        } else if told.elapsed() >= PLACE_EVERY {
+            told = Instant::now();
+            on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: 0, latest: None, place: place_of(root, dir.as_deref()) });
         }
     }
     settle!();
@@ -306,7 +332,7 @@ pub fn scan_folder_with(
     let seen = &walk.seen;
     // Phase 2: read metadata in parallel, store results as they arrive.
     // Say how much there is to read, so the UI can show real progress instead of the finished walk's count.
-    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len(), latest: None });
+    on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed: 0, to_index: todo.len(), latest: None, place: String::new() });
     let next = AtomicUsize::new(0);
     let (todo_ref, next_ref) = (&todo, &next);
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PhotoMeta)>();
@@ -329,6 +355,7 @@ pub fn scan_folder_with(
         }
         drop(tx);
         let rules = db.date_rules();
+        let watched = walk.root.to_string_lossy().into_owned();
         for (i, mut meta) in rx {
             if cancel.load(Ordering::Relaxed) {
                 break; // what was already read but not saved is found again by the next scan; dropping `rx` stops the workers
@@ -356,9 +383,9 @@ pub fn scan_folder_with(
                 let latest = due.then(|| {
                     last_latest = Some(Instant::now());
                     let name = Path::new(&c.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    LatestItem { id, mtime: c.mtime, size: c.size, name, kind: c.kind }
+                    LatestItem { id, mtime: c.mtime, size: c.size, name, folder: watched.clone(), kind: c.kind }
                 });
-                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len(), latest });
+                on_progress(&ScanProgress { folder_id, seen: seen.len(), indexed, to_index: todo_ref.len(), latest, place: String::new() });
             }
         }
     });
@@ -372,7 +399,7 @@ pub fn scan_folder_with(
 
     walk.stats = stats;
     finish_walk(db, &mut walk)?;
-    on_progress(&ScanProgress { folder_id, seen: walk.seen.len(), indexed, to_index: todo.len(), latest: None });
+    on_progress(&ScanProgress { folder_id, seen: walk.seen.len(), indexed, to_index: todo.len(), latest: None, place: String::new() });
     Ok(walk.stats)
 }
 
@@ -694,6 +721,15 @@ mod tests {
         let mut last = (0, 0);
         scan_folder(&db, f, &AtomicBool::new(false), |p| last = (p.seen, p.indexed)).unwrap();
         assert_eq!(last, (250, 250), "found and indexed counts must both reach the total");
+    }
+
+    #[test]
+    fn the_place_is_the_path_below_the_watched_folder_or_its_own_name() {
+        let root = Path::new("/pics/Phone");
+        assert_eq!(place_of(root, None), "");
+        assert_eq!(place_of(root, Some(Path::new("/pics/Phone"))), "Phone");
+        assert_eq!(place_of(root, Some(Path::new("/pics/Phone/2019/Summer trip"))), "2019/Summer trip");
+        assert_eq!(place_of(Path::new("/"), Some(Path::new("/"))), "/", "a drive root has no name of its own");
     }
 
     #[test]

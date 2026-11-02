@@ -114,7 +114,7 @@ export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', l
 /** Which background analyses are on (kept in the library). */
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */
-export const setAnalysisOptions = (o: AnalysisOptions) => invoke<void>('set_analysis_options', { tags: o.tags, faces: o.faces, dupes: o.dupes });
+export const setAnalysisOptions = (o: AnalysisOptions) => invoke<void>('set_analysis_options', { tags: o.tags, faces: o.faces });
 /** The loading Pixie has to do: files found and not yet stored (they get their thumbnails as they are), and the one Pause. */
 export type LoadStatus = { pending: number; paused: boolean };
 export const loadStatus = () => invoke<LoadStatus>('load_status');
@@ -155,6 +155,13 @@ export const photosAt = (indexes: number[], v: View) =>
 export const photoPosition = (id: number, v: View) =>
   invoke<number | null>('photo_position', { id, order: v.order, folderId: v.folderId, kind: v.kind, bounds: v.bounds, maxId: v.maxId, since: v.since, until: v.until, search: v.search });
 export const sendEmail = (request: SendEmailRequest) => invoke<string[]>('send_email', { request });
+
+// ---- everything running in the background (the Processing screen) ----
+import type { ActivitySnapshot } from './activity';
+/** What is running now, with speeds and times left. */
+export const activitySnapshot = () => invoke<ActivitySnapshot>('activity_snapshot');
+/** The same snapshot, pushed about once a second while something runs and once after it changes. */
+export const onActivity = (f: (s: ActivitySnapshot) => void) => listen<ActivitySnapshot>('activity', (e) => f(e.payload));
 
 // ---- picture analysis (Auto tags) ----
 import type { AnalysisStatus } from './analysis';
@@ -228,29 +235,24 @@ export const setPersonFilter = (person: number | null) => invoke<void>('set_pers
 export const setCameraFilter = (camera: string | null) => invoke<void>('set_camera_filter', { camera });
 /** Show only the items missing a kind of data (`location`: no position); null turns it off. */
 export const setMissingFilter = (kind: string | null) => invoke<void>('set_missing_filter', { kind });
-/** The master folder, or null while there is none (then none of the master feature is shown). */
+/** The sync folder, or null while there is none (then none of the master feature is shown). */
 export const getMasterFolder = () => invoke<string | null>('get_master_folder');
 export const setMasterFolder = (path: string | null) => invoke<void>('set_master_folder', { path });
-/** Whether new items found in a folder are held for review before they are copied into the master. */
+/** Whether what is in a folder is synced into the sync folder. */
 export const setFolderFeeds = (id: number, feeds: boolean) => invoke<void>('set_folder_feeds', { id, feeds });
-/** Items held for review, and items kept private. */
-/** Copy the approved items into the master folder in the background; progress and the end come as events. */
+/** Items not yet synced, and items kept private. */
+/** Copy the items not yet synced into the sync folder in the background; progress and the end come as events. */
 export const copyToMaster = () => invoke<void>('copy_to_master');
 export const stopMasterCopy = () => invoke<void>('stop_master_copy');
 export const masterCopyStatus = () => invoke<CopyStatus>('master_copy_status');
-/** Whether one photo is private (3), approved (2), held for review (1) or none of these (0). */
+/** Whether one photo is private (3), copied (4) or neither (0). */
 export const photoShare = (id: number) => invoke<number>('photo_share', { id });
-export const shareCounts =() => invoke<{ held: number; private: number }>('share_counts');
-/** Show only the items held for review (`new`) or kept private (`private`); null turns it off. */
+export const shareCounts = () => invoke<{ unsynced: number; private: number }>('share_counts');
+/** Show only the items not yet synced (`new`) or kept private (`private`); null turns it off. */
 export const setShareFilter = (kind: string | null) => invoke<void>('set_share_filter', { kind });
-/** "Share these": approve every held item the listing shows. Returns how many. */
-export const approveHeldShown = (
-  folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
-  since: number | null = null, until: number | null = null, search = false,
-) => invoke<number>('approve_held_shown', { folderId, kind, bounds, maxId, since, until, search });
-/** Keep these items out of the master and anything shared; returns how many were held or approved. */
+/** Keep these items out of the sync folder; returns how many changed. */
 export const makePrivate = (ids: number[]) => invoke<number>('make_private', { ids });
-/** Put these private items back to being held for review. */
+/** Take these items out of private. */
 export const releasePrivate = (ids: number[]) => invoke<number>('release_private', { ids });
 /** The person's date rules, and saving them (this applies them to the whole library at once; the number is how many items changed date). */
 import type { DateRules } from './dateRules';

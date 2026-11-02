@@ -7,8 +7,9 @@ import { plural } from './format';
 
 /** Where the flow goes when the scan ends. Stopping keeps what was found and shows Browse; finding nothing, or only
  *  videos (which are not analysed), has nothing to analyse and goes straight to the end screen. */
-export function phaseAfterScan(o: { stopped: boolean; found: number; photos: number }): Phase {
-  if (o.stopped) return 'off';
+export function phaseAfterScan(o: { stopped: boolean; found: number; photos: number; adding?: boolean }): Phase {
+  // Adding folders later, an empty one needs no end screen: the dialog just closes.
+  if (o.stopped || (o.adding && o.found === 0)) return 'off';
   return o.found === 0 || o.photos === 0 ? 'allset' : 'analysing';
 }
 

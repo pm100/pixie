@@ -20,6 +20,16 @@ export function addFound(rows: Row[], s: Suggestion): Row[] {
   return clash ? rows : [...rows, { ...s, count: null }];
 }
 
+/** A folder the person chose by hand always ends up listed and ticked, even when it is empty. Rows that overlap it (the same
+ *  folder, one holding it, one inside it) give way to it. If the library already has it (or a folder holding it), nothing
+ *  changes and `note` says so. */
+export function chooseByHand(rows: Row[], library: string[], s: Suggestion): { rows: Row[]; note: string | null } {
+  const held = library.find((f) => norm(f) === norm(s.path) || inside(s.path, f));
+  if (held !== undefined) return { rows, note: norm(held) === norm(s.path) ? `${s.path} is already in your library.` : `${s.path} is already in your library, inside ${held}.` };
+  const overlaps = (p: string) => norm(p) === norm(s.path) || inside(s.path, p) || inside(p, s.path);
+  return { rows: [...rows.filter((r) => !overlaps(r.path)), { ...s, count: null }], note: null };
+}
+
 export const toggle = (rows: Row[], path: string): Row[] => rows.map((r) => (r.path === path ? { ...r, ticked: !r.ticked } : r));
 
 /** The rows worth showing: not inside another suggestion, and not known to be empty (a count of 0; a folder still being

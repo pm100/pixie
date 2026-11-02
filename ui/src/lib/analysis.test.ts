@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analysisFraction, analysisLine, type AnalysisStatus } from './analysis';
+import { analysisLine, type AnalysisStatus } from './analysis';
 
 const base: AnalysisStatus = { models: 'ready', model_done: 0, model_total: 0, done: 0, total: 0, paused: false, error: null };
 const s = (o: Partial<AnalysisStatus>): AnalysisStatus => ({ ...base, ...o });
@@ -31,18 +31,5 @@ describe('analysisLine', () => {
   });
   it('shows the error', () => {
     expect(analysisLine(s({ models: 'error', error: 'offline' }))).toBe('Could not get the picture-analysis model: offline');
-  });
-});
-
-describe('analysisFraction', () => {
-  it('is null when there is nothing to show a bar for', () => {
-    expect(analysisFraction(s({}))).toBeNull();
-    expect(analysisFraction(s({ models: 'missing' }))).toBeNull();
-    expect(analysisFraction(s({ models: 'error', error: 'x' }))).toBeNull();
-  });
-  it('tracks the download, then the analysis', () => {
-    expect(analysisFraction(s({ models: 'downloading', model_done: 25, model_total: 100 }))).toBe(0.25);
-    expect(analysisFraction(s({ done: 10, total: 40 }))).toBe(0.25);
-    expect(analysisFraction(s({ done: 40, total: 40 }))).toBe(1);
   });
 });

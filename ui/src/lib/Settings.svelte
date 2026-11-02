@@ -4,40 +4,31 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { isDebugBuild, openDataFolder, resetLibrary, type FolderInfo, type LoadStatus } from './api';
+  import { isDebugBuild, openDataFolder, resetLibrary, type FolderInfo } from './api';
   import ConfirmDialog from './ConfirmDialog.svelte';
-  import type { CopyProgress, CopyStatus } from './master';
   import AboutPage from './AboutPage.svelte';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import EmailSettings from './EmailSettings.svelte';
   import type { AnalysisOptions } from './analysisOptions';
-  import type { AnalysisView } from './analysisView';
   import PhotoFolders from './PhotoFolders.svelte';
   import TripSettings from './TripSettings.svelte';
   import type { TripPrefs } from './trips';
-  import type { ScanState } from './scanProgress';
   import { MAX_RECENT_DAYS, parseRecentDays } from './recent';
   import type { ViewerMode } from './viewerPref';
   import ActionBarSettings from './ActionBarSettings.svelte';
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, analysing = null, analysisNote = null, scanning, scanFolder, scan, onstop, onadd, onremove, master = null, onmaster = () => {}, copyStatus = null, copyProgress = null, oncopy = () => {}, onstopcopy = () => {}, onfeeds = () => {}, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, analysis, onanalysispause, onanalysisretry, analysisOptions, onanalysisoptions, loading, emailLimitMb, onemaillimit }: {
-    /** The loading of the files found, and whether the Pause is on. */
-    loading: LoadStatus;
+  let { folders, folderStates = {}, scanning, scanFolder, onstop, onadd, onremove, master = null, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, locations = null, analysisOptions, onanalysisoptions, emailLimitMb, onemaillimit }: {
     /** Which analyses are on, and a change to that. */
     analysisOptions: AnalysisOptions; onanalysisoptions: (next: AnalysisOptions) => void;
     /** The email size limit in megabytes, and how it is changed. */
     emailLimitMb: number; onemaillimit: (mb: number) => void;
     folders: FolderInfo[]; folderStates?: FolderStates; scanning: boolean;
-    /** The folders just added, and how far their analysis has got (null: nothing newly added is still being analysed). */
-    analysing?: { ids: number[]; fraction: number | null } | null;
-    /** Says what the Picture analysis numbers are about when they are for the folders just added. */
-    analysisNote?: string | null; scanFolder: number | null; scan: ScanState; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
-    /** The master folder (null while there is none), choosing and clearing it, and whether a folder's new items wait for review. */
-    master?: string | null; onmaster?: (path: string | null) => void;
-    /** What is waiting to be copied into the master, how the last copy went, and the controls to start and stop one. */
-    copyStatus?: CopyStatus | null; copyProgress?: CopyProgress | null; oncopy?: () => void; onstopcopy?: () => void; onfeeds?: (id: number, feeds: boolean) => void;
+    /** The folder the running scan is on. */
+    scanFolder: number | null; onstop: () => void; onadd: () => void; onremove: (id: number) => Promise<void>;
+    /** The sync folder (null while there is none): its row says so. It is chosen in Import/Export, Sync. */
+    master?: string | null;
     networkRescan: NetworkRescan; onnetworkrescan: (r: NetworkRescan) => void; page: SettingsPage; onpage: (p: SettingsPage) => void;
     viewerMode: ViewerMode; onviewer: (m: ViewerMode) => void;
     /** The actions on the action bars, and a change to them. */
@@ -46,7 +37,8 @@
     tripPrefs: TripPrefs; ontripprefs: (p: TripPrefs) => void;
     /** Open a tool (the Missing dates tool in Clean up). */
     onopentool: (id: string) => void;
-    analysis: AnalysisView; onanalysispause: (paused: boolean) => void; onanalysisretry: () => void;
+    /** How many of the library's items have no location, of how many (a line of Picture analysis). */
+    locations?: { without: number; total: number } | null;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
@@ -59,9 +51,6 @@
   onMount(() => {
     isDebugBuild().then((d) => (debug = d)).catch(() => {});
   });
-  // The one Pause covers Auto tags, faces and the duplicate check; the menu says so when it is on.
-  const analysisPaused = $derived(analysis.paused);
-  const labelled = (p: { id: SettingsPage; label: string }) => (p.id === 'analysis' && analysisPaused ? `${p.label} (paused)` : p.label);
   const shownPages = $derived(debug ? [...pages, { id: 'developer' as SettingsPage, label: 'Developer' }] : pages);
   let confirmReset = $state(false);
   let resetting = $state(false);
@@ -88,12 +77,12 @@
 <div class="settings">
   <nav aria-label="Settings">
     {#each shownPages as p (p.id)}
-      <button class:on={page === p.id} onclick={() => onpage(p.id)}>{labelled(p)}</button>
+      <button class:on={page === p.id} onclick={() => onpage(p.id)}>{p.label}</button>
     {/each}
   </nav>
   <div class="page">
     {#if page === 'folders'}
-      <PhotoFolders {folders} {folderStates} {analysing} {scanning} {scanFolder} {scan} {onstop} {onadd} {onremove} {master} {onmaster} {copyStatus} {copyProgress} {oncopy} {onstopcopy} {onfeeds} {networkRescan} {onnetworkrescan} />
+      <PhotoFolders {folders} {folderStates} {scanning} {scanFolder} {onstop} {onadd} {onremove} {master} {networkRescan} {onnetworkrescan} />
     {:else if page === 'viewing'}
       <h2>Viewing</h2>
       <p>Double-click or Enter on an item opens it in:</p>
@@ -113,7 +102,7 @@
     {:else if page === 'trips'}
       <TripSettings prefs={tripPrefs} onprefs={ontripprefs} />
     {:else if page === 'analysis'}
-      <AnalysisSettings view={analysis} note={analysisNote} onpause={onanalysispause} onretry={onanalysisretry} options={analysisOptions} onoptions={onanalysisoptions} {loading} />
+      <AnalysisSettings options={analysisOptions} onoptions={onanalysisoptions} {locations} />
     {:else if page === 'email'}
       <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
     {:else if page === 'developer' && debug}

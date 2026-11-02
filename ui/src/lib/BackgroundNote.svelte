@@ -19,7 +19,7 @@
   </ul>
 
   <h2>How to tell when it has finished</h2>
-  <p>Look at the progress indicator at the <b>top right</b> of the window. It shows what Pixie is doing and how far along it is, and it disappears when everything is done. Click it for details.</p>
+  <p>Look at the <b>Processing</b> button at the <b>top right</b> of the window. It disappears when everything is done. Click it to see what Pixie is doing, how far along each part is and how long it will take.</p>
 
   <h2>What to do next</h2>
   <ul>

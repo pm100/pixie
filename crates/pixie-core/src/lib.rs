@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod activity;
 pub mod camera;
 pub mod dates;
 pub mod mail;
@@ -106,19 +107,15 @@ pub struct FolderInfo {
     pub id: FolderId,
     pub path: String,
     pub count: i64,
-    /// New items found here are held for review before they are copied into the master folder (see `Db::set_master_folder`).
+    /// What is in this folder is synced into the sync folder (see `Db::set_master_folder`).
     pub feeds_master: bool,
 }
 
-/// Where an item stands with the master folder. Without a master folder every item is `NONE`.
+/// Where an item stands with the sync folder. Not yet synced is not a value: it is `NONE` in a folder that is synced from.
 pub const SHARE_NONE: i64 = 0;
-/// New, not yet shared: found in a folder that feeds the master and waiting for the person to look at it.
-pub const SHARE_HELD: i64 = 1;
-/// Looked at and approved: to be copied into the master.
-pub const SHARE_APPROVED: i64 = 2;
-/// Kept out of the master and out of anything shared.
+/// Kept out of the sync folder: the person's one decision here.
 pub const SHARE_PRIVATE: i64 = 3;
-/// Approved, and copied into the master folder (the copy was checked against the original).
+/// In the sync folder (copied by Pixie, checked against the original, or found there by its hash).
 pub const SHARE_COPIED: i64 = 4;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +489,9 @@ pub struct DupStatus {
     pub hidden: i64,
     /// The user paused the background work (the same Pause as for Auto tags and faces).
     pub paused: bool,
+    /// Held back while a folder scan or the loading of photos is running: the check starts again when that is over.
+    #[serde(default)]
+    pub held: bool,
 }
 
 /// How far the analysis has got for some folders, counted directly from their photos (so it does not depend on what

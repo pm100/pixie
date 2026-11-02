@@ -37,6 +37,7 @@ fn hex(d: &[u8]) -> String {
 
 /// "size:hash of the first and last 64 KB". Equal files always have equal keys.
 pub fn quick_key(path: &Path) -> io::Result<String> {
+    let _wait = crate::cloud::watch(path); // (an online-only file is downloaded by the cloud app when it is opened)
     let mut f = File::open(path)?;
     let size = f.metadata()?.len();
     let mut h = Sha256::new();
@@ -73,6 +74,7 @@ pub fn full_hash_bytes(bytes: &[u8]) -> String {
 
 /// The hash of the whole file.
 pub fn full_hash(path: &Path) -> io::Result<String> {
+    let _wait = crate::cloud::watch(path);
     let mut f = File::open(path)?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
@@ -86,6 +88,10 @@ pub fn full_hash(path: &Path) -> io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
+fn file_size(path: &str) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
 /// One round of work: give quick keys to a batch of files, or hash a batch of probable copies. Returns how many
 /// files it handled (0 means there is nothing to do).
 pub fn work_once(db: &Db, stop: &AtomicBool, kind: i64) -> usize {
@@ -96,6 +102,7 @@ pub fn work_once(db: &Db, stop: &AtomicBool, kind: i64) -> usize {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
+            let _doing = crate::working::busy(crate::working::Work::Hashing, Path::new(&path), file_size(&path));
             let key = quick_key(Path::new(&path)).unwrap_or_else(|_| UNREADABLE.to_string());
             if db.set_quick_key(id, &key).is_ok() {
                 n += 1;
@@ -108,7 +115,10 @@ pub fn work_once(db: &Db, stop: &AtomicBool, kind: i64) -> usize {
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match full_hash(Path::new(&path)) {
+        let doing = crate::working::busy(crate::working::Work::Hashing, Path::new(&path), file_size(&path));
+        let hashed = full_hash(Path::new(&path));
+        drop(doing);
+        match hashed {
             Ok(h) => {
                 if db.set_hash(id, &h).is_ok() {
                     n += 1;
@@ -136,6 +146,9 @@ pub struct DupeService {
     paused: Arc<AtomicBool>,
     /// Duplicate finding is switched on; off, the thread only waits.
     enabled: Arc<AtomicBool>,
+    /// Switched on again: the next status goes out even if it equals the last one sent, because the window was told
+    /// "no copies hidden" while it was off and must hear the count again.
+    resend: Arc<AtomicBool>,
     /// Stops the round of work in progress: set when stopped or paused (the work checks it between files).
     halt: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -149,9 +162,10 @@ impl DupeService {
     pub fn start_with(db: Db, scanning: Arc<dyn Fn() -> bool + Send + Sync>, on_status: StatusFn, paused: bool) -> DupeService {
         let stopped = Arc::new(AtomicBool::new(false));
         let enabled = Arc::new(AtomicBool::new(true));
+        let resend = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(paused));
         let halt = Arc::new(AtomicBool::new(paused.load(Ordering::SeqCst)));
-        let (t_db, t_status, t_stopped, t_paused, t_halt, t_enabled) = (db.clone(), on_status.clone(), stopped.clone(), paused.clone(), halt.clone(), enabled.clone());
+        let (t_db, t_status, t_stopped, t_paused, t_halt, t_enabled, t_resend) = (db.clone(), on_status.clone(), stopped.clone(), paused.clone(), halt.clone(), enabled.clone(), resend.clone());
         let handle = std::thread::spawn(move || {
             let (db, on_status) = (t_db, t_status);
             let mut last: Option<DupStatus> = None;
@@ -163,8 +177,22 @@ impl DupeService {
                     continue;
                 }
                 if scanning() {
+                    // Say once that it is waiting (with the counts as they were), so the window can show why nothing moves.
+                    if last.as_ref().map_or(true, |s| !s.held) {
+                        if let Ok(mut s) = last.clone().map_or_else(|| db.dup_status(), Ok) {
+                            s.paused = t_paused.load(Ordering::SeqCst);
+                            s.held = true;
+                            on_status(s.clone());
+                            last = Some(s);
+                        }
+                    }
                     std::thread::sleep(BUSY);
                     continue;
+                }
+                if t_resend.swap(false, Ordering::SeqCst) {
+                    last = None;
+                    last_refresh = None;
+                    last_status = None;
                 }
                 let did = work_once(&db, &t_halt, VIDEO);
                 // Hide the extra copies of videos from Browse: every couple of seconds while hashing goes on, and now
@@ -191,13 +219,16 @@ impl DupeService {
                 std::thread::sleep(if did > 0 { Duration::from_millis(20) } else { STATUS_EVERY });
             }
         });
-        DupeService { db, on_status, stopped, paused, enabled, halt, handle: Some(handle) }
+        DupeService { db, on_status, stopped, paused, enabled, resend, halt, handle: Some(handle) }
     }
 
     /// Duplicate finding on or off. Off: nothing is hashed or flagged, and every copy is shown again. On: it carries on from
     /// where it was (the flags are worked out again).
     pub fn set_enabled(&self, on: bool) {
         self.enabled.store(on, Ordering::SeqCst);
+        if on {
+            self.resend.store(true, Ordering::SeqCst);
+        }
         self.halt.store(!on || self.paused.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst), Ordering::SeqCst);
         if !on {
             let _ = self.db.clear_dup_flags();
@@ -370,7 +401,7 @@ mod tests {
         assert_eq!(browse_ids(&db), want, "the oldest copy stands for its set");
         assert_eq!(db.count_photos().unwrap(), 2);
         assert_eq!(db.day_groups(&PhotoQuery::default()).unwrap().iter().map(|g| g.count).sum::<i64>(), 2);
-        assert_eq!(db.folder_infos().unwrap().iter().find(|f| f.id == folder).unwrap().count, 2);
+        assert_eq!(db.folder_infos().unwrap().iter().find(|f| f.id == folder).unwrap().count, 4, "Settings counts every item in the folder, hidden copies too");
         let s = db.dup_status().unwrap();
         assert_eq!((s.groups, s.extra_files, s.hidden), (1, 2, 2));
         // The Duplicates tab still lists every copy.
@@ -464,6 +495,67 @@ mod tests {
         assert_eq!(db.dup_status().unwrap().groups, 1, "the three videos are one set; the photo is left to the pipeline");
         svc.set_paused(true);
         assert!(seen.lock().unwrap().last().unwrap().paused, "pausing is reported at once");
+        drop(svc);
+    }
+
+    #[test]
+    fn while_a_scan_holds_the_check_back_it_says_so_and_afterwards_it_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let folder = db.add_folder(&d.path().to_string_lossy()).unwrap();
+        // two photos not hashed yet: there is something left to do either way
+        for name in ["a", "b"] {
+            let path = file(d.path(), name, b"bytes");
+            db.upsert_photo(folder, &path, 5, 1, &PhotoMeta::default()).unwrap();
+        }
+        let scanning = Arc::new(AtomicBool::new(true));
+        let flag = scanning.clone();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<DupStatus>::new()));
+        let s2 = seen.clone();
+        let svc = DupeService::start_with(db.clone(), Arc::new(move || flag.load(Ordering::SeqCst)), Arc::new(move |s| s2.lock().unwrap().push(s)), false);
+        let wait = |ok: &dyn Fn() -> bool| {
+            let t = Instant::now();
+            while !ok() && t.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        wait(&|| seen.lock().unwrap().iter().any(|s| s.held));
+        assert!(seen.lock().unwrap().iter().any(|s| s.held && s.done < s.total), "held back by the scan, with work left: {:?}", seen.lock().unwrap());
+        scanning.store(false, Ordering::SeqCst);
+        wait(&|| seen.lock().unwrap().last().is_some_and(|s| !s.held));
+        assert!(!seen.lock().unwrap().last().unwrap().held, "the scan is over, so it is not held any more");
+        drop(svc);
+    }
+
+    #[test]
+    fn switching_the_check_back_on_reports_the_hidden_copies_again() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let folder = db.add_folder(&d.path().to_string_lossy()).unwrap();
+        let video = PhotoMeta { kind: MediaKind::Video, ..PhotoMeta::default() };
+        for name in ["a", "b", "c"] {
+            let path = file(d.path(), name, b"same bytes");
+            db.upsert_photo(folder, &path, 10, 1, &video).unwrap();
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<DupStatus>::new()));
+        let s2 = seen.clone();
+        let svc = DupeService::start_with(db.clone(), Arc::new(|| false), Arc::new(move |s| s2.lock().unwrap().push(s)), false);
+        let reports = |n: usize| seen.lock().unwrap().iter().filter(|s| s.hidden == 2).count() >= n;
+        let wait = |ok: &dyn Fn() -> bool| {
+            let t = Instant::now();
+            while !ok() && t.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        wait(&|| db.dup_status().unwrap().groups == 1);
+        db.refresh_dup_flags().unwrap(); // (the service does this now and then; the test does not wait for it)
+        wait(&|| reports(1));
+        assert!(reports(1), "two of the three are hidden and the window is told: {:?}", seen.lock().unwrap());
+        svc.set_enabled(false);
+        assert_eq!(db.dup_status().unwrap().hidden, 0, "every copy shows again");
+        svc.set_enabled(true);
+        wait(&|| reports(2));
+        assert!(reports(2), "the window hears the hidden count again, though it is the same as before");
         drop(svc);
     }
 

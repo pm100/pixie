@@ -4,12 +4,14 @@
   import { addLabel, nextLabel } from './loadFlow';
   import { countText, listedRows, lookingText, tickedPaths, type Row } from './suggestions';
 
-  let { rows, searching, looking, ontoggle, onadd, onskip, onstart, adding = false, oncancel }: {
+  let { rows, searching, looking, ontoggle, onadd, onskip, onstart, adding = false, oncancel, notice = null }: {
     rows: Row[];
     /** Used to add folders later (from Settings): no welcome, and nothing ticked to start with (the list
      *  of folders to choose from is the same). */
     adding?: boolean;
     oncancel?: () => void;
+    /** Why the folder just chosen was not added (the library has it already), if so. */
+    notice?: string | null;
     /** Pixie is still sniffing for photo folders (drives included): a spinner covers the list while it fills in. */
     searching: boolean;
     /** What it is sniffing right now, if known. */
@@ -59,6 +61,7 @@
   <p>
     <button onclick={onadd}>{adding ? 'Choose a folder…' : 'Add another folder…'}</button>
   </p>
+  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
   {#if !adding}
     <p class="note">You can add, remove or change these any time in <b>Settings → Photo folders</b>.</p>
   {/if}
@@ -75,6 +78,7 @@
 </FlowStage>
 
 <style>
+  .notice { color: #8a5a00; margin: 0 0 8px; }
   h1.adding { margin: 0 0 4px; font-size: 22px; }
   .sub.left { text-align: left; margin: 0 0 12px; }
   .searching { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; color: #555; font-size: 13px; }

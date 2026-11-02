@@ -3,9 +3,9 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
-    analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
+    activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, approveHeldShown, makePrivate, releasePrivate, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions, loadStatus, type LoadStatus,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -15,12 +15,12 @@
   import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
-  import { reviewLine, type CopyProgress, type CopyStatus, type ShareChoice } from './lib/master';
+  import { shouldRemind, type CopyStatus, type ShareChoice } from './lib/master';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
   import { directCount, parseBar } from './lib/actionBar';
   import PhotoActions from './lib/PhotoActions.svelte';
-  import { dupPass, type DupStatus } from './lib/dupes';
+  import type { DupStatus } from './lib/dupes';
   import Details from './lib/Details.svelte';
   import Grid from './lib/Grid.svelte';
   import PhotoMap from './lib/PhotoMap.svelte';
@@ -39,8 +39,10 @@
   import { missingFromMap } from './lib/mapNote';
   import AllSet from './lib/AllSet.svelte';
   import BackgroundNote from './lib/BackgroundNote.svelte';
-  import BackgroundProgress from './lib/BackgroundProgress.svelte';
-  import { backgroundProgress } from './lib/backgroundProgress';
+  import { view as activityView, type ActivitySnapshot } from './lib/activity';
+  import ProcessingDialog from './lib/ProcessingDialog.svelte';
+  import ProcessingPill from './lib/ProcessingPill.svelte';
+  import { pauseActions } from './lib/scanPause';
   import LoadModal from './lib/LoadModal.svelte';
   import Welcome from './lib/Welcome.svelte';
   import { allSetSummary, phaseAfterScan, type Phase } from './lib/loadFlow';
@@ -48,7 +50,7 @@
   import { indexFacets, type Facets } from './lib/facets';
   import { createStripFeed, type StripItem } from './lib/stripFeed';
   import { thumbUrl } from './lib/url';
-  import { addFound, applyCount, notInLibrary, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
+  import { addFound, applyCount, chooseByHand, notInLibrary, tickedPaths, toRows, toggle, type Row } from './lib/suggestions';
   import { run } from './lib/selection';
   import Settings, { type SettingsPage } from './lib/Settings.svelte';
   import Shell from './lib/Shell.svelte';
@@ -64,6 +66,7 @@
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
   import Nav from './lib/Nav.svelte';
   import Viewer from './lib/Viewer.svelte';
+  import SyncReminder from './lib/SyncReminder.svelte';
 
   const initial: View = {
     order: 'newest', // newest first, except while a trip is chosen: a trip reads best from its first day to its last
@@ -98,9 +101,8 @@
   let selectedPhoto = $state<Photo | null>(null);
   let scrollTo = $state<{ group: number; n: number } | null>(null);
   let jumps = 0;
-  let scanning = $state(false), seen = $state(0), message = $state('');
+  let scanning = $state(false), message = $state('');
   let scanFolder = $state<number | null>(null); // the folder the running scan is on (null: none yet)
-  let indexed = $state(0), toIndex = $state(0); // files read so far, and how many will be read (0 while walking)
   let openIndex = $state<number | null>(null);
 
   // The separate viewer window: it keeps the snapshot it was sent, and follows the selection when asked to.
@@ -263,17 +265,20 @@
     if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
 
-  // The master folder: none until one is chosen, and nothing of the feature shows without one. `activeShare` is the New / Private choice in the tree.
-  let master = $state<string | null>(null), shareState = $state({ held: 0, private: 0 }), activeShare = $state<ShareChoice | null>(null);
-  // The copy of approved items into the master: what waits and how the last run went, and how far a running one has got.
-  let copyStatus = $state<CopyStatus | null>(null), copyProgress = $state<CopyProgress | null>(null);
+  // The sync folder: none until one is chosen, and nothing of the feature shows without one. `activeShare` is the New / Private choice in the tree.
+  let master = $state<string | null>(null), shareState = $state({ unsynced: 0, private: 0 }), activeShare = $state<ShareChoice | null>(null);
+  // The copy of the items not yet synced into the sync folder: what waits and how the last run went, and how far a running one has got.
+  let copyStatus = $state<CopyStatus | null>(null);
+  /** The sync folder and the counts have been read at least once. */
+  let shareLoaded = $state(false);
   async function loadShare() {
     try {
       master = await getMasterFolder();
-      shareState = master === null ? { held: 0, private: 0 } : await fetchShareCounts();
+      shareState = master === null ? { unsynced: 0, private: 0 } : await fetchShareCounts();
       copyStatus = master === null ? null : await masterCopyStatus();
       if (master === null && activeShare !== null) await setShare(null);
     } catch { /* the entries stay as they were */ }
+    shareLoaded = true;
   }
   async function setShare(next: ShareChoice | null) {
     try { await setShareFilter(next); } catch (e) { message = String(e); return; }
@@ -283,7 +288,7 @@
     refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('filter'); loadPoints(); }
   }
-  /** Items changed hands (approved, made private, a scan held some): the counts and the listing are read again. */
+  /** Items changed hands (copied, made private, a folder ticked): the counts and the listing are read again. */
   async function shareChanged() {
     await syncFilters();
     await loadShare();
@@ -299,23 +304,46 @@
     await loadShare();
     refresh().catch((e) => (message = String(e)));
   }
-  /** "Share these": approve every new item the grid shows. */
-  async function shareThese() {
-    try { await approveHeldShown(shown.folderId, shown.kind, shown.bounds, shown.maxId, shown.since, shown.until, shown.search); } catch (e) { message = String(e); return; }
-    await shareChanged();
+  // The start-up reminder about new items to sync: looked at once per start, a few seconds after the window is up, and never again
+  // that session (a count that grows later, from ticking a folder or from a scan, does not bring it up). It can be turned off (kept
+  // on this computer).
+  let remindSync = $state(loadPref<unknown>('syncRemind', true) !== false);
+  let reminderChecked = false;
+  let reminder = $state(false);
+  function setRemindSync(on: boolean) {
+    remindSync = on;
+    savePref('syncRemind', on);
   }
-  /** "Make private": keep the picked items out of the master and anything shared. */
-  async function keepPicked() {
-    try { await makePrivate([...picked]); } catch (e) { message = String(e); return; }
-    await shareChanged();
+  // Once the window is up, the counts are read and nothing is being scanned, so that the count has settled (hidden copies are left out of it).
+  $effect(() => {
+    if (reminderChecked || phase !== 'off' || scanning || !shareLoaded) return;
+    const t = setTimeout(() => {
+      reminderChecked = true;
+      reminder = shouldRemind(master, shareState.unsynced, remindSync);
+    }, 4000);
+    return () => clearTimeout(t);
+  });
+  function closeReminder(dontShow: boolean) {
+    reminder = false;
+    if (dontShow) setRemindSync(false);
   }
-  /** Private items that are picked go back to being new. */
-  async function holdPicked() {
-    try { await releasePrivate([...picked]); } catch (e) { message = String(e); return; }
-    await shareChanged();
+  async function reviewNew(dontShow: boolean) {
+    closeReminder(dontShow);
+    pickTab('browse');
+    await setShare('new');
+  }
+  async function syncFromReminder(dontShow: boolean) {
+    closeReminder(dontShow);
+    await copyNow();
+  }
+  // The checker finds items already in the sync folder (by their hashes) as it works: the New count follows, in batches.
+  let syncCountTimer: ReturnType<typeof setTimeout> | undefined;
+  function syncCountSoon() {
+    if (master === null) return;
+    clearTimeout(syncCountTimer);
+    syncCountTimer = setTimeout(() => void loadShare(), 2000);
   }
   async function copyNow() {
-    copyProgress = null;
     try { await copyToMaster(); } catch (e) { message = String(e); return; }
     await loadShare();
   }
@@ -351,7 +379,7 @@
     const want = dupState?.hidden ?? null;
     if (want === null || dupHiddenShown === null || want === dupHiddenShown) return;
     dupTimer = setTimeout(async () => {
-      if (await refreshLive()) dupHiddenShown = want;
+      if (await refreshLive()) { dupHiddenShown = want; void loadShare(); } // the New count leaves out hidden copies too
       else dupHiddenChanged();
     }, 3000);
   }
@@ -458,14 +486,6 @@
     try { await clearPicks(); } catch (e) { message = String(e); await loadPicks(); }
     if (activeUtag === 'picked') void utagChanged(); else void loadUserTags();
   }
-  // The loading (files found and not yet stored, which get their thumbnails as they are): it goes on whatever analyses are on.
-  // `loadPeak` is the most files waiting at once since it was last idle, which is what the pill's percentage is measured from.
-  let loadState = $state<LoadStatus>({ pending: 0, paused: false });
-  let loadPeak = $state(0);
-  function setLoad(s: LoadStatus) {
-    loadState = s;
-    loadPeak = s.pending === 0 ? 0 : Math.max(loadPeak, s.pending);
-  }
   // Which analyses are on (Settings, Picture analysis; asked on the welcome screen): they all are until the person says otherwise.
   let analysisOptions = $state<AnalysisOptions>({ ...ALL_ON });
   /** The choice on the welcome screen, applied when Start is pressed. */
@@ -477,7 +497,6 @@
     const drop = clearsFilters(next);
     if (drop.tag && activeTag !== null) await setTag(null);
     if (drop.person && activePerson !== null) await setPerson(null);
-    if (!next.dupes && before.dupes) { refresh(true).catch((e) => (message = String(e))); void loadFolderInfos(); } // every copy shows again
   }
   // A tab whose analysis was switched off is gone: leave it.
   $effect(() => { if (tab === 'faces' && !analysisOptions.faces) tab = 'browse'; });
@@ -684,7 +703,7 @@
   let trips = $state<Trip[]>([]);
 
   /** What the grid says when nothing matches. */
-  const emptyMessage = $derived(view.search ? (activeShare === 'new' ? 'Nothing here is waiting to be shared.' : activeShare === 'private' ? 'Nothing here is private.' : activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+  const emptyMessage = $derived(view.search ? (activeShare === 'new' ? 'Nothing here is waiting to be synced.' : activeShare === 'private' ? 'Nothing here is private.' : activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
 
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
@@ -931,7 +950,7 @@
   let allSet = $state<ReturnType<typeof allSetSummary> | null>(null);
   let flowProblems: string[] = []; // folders that could not be read during this flow, for the end screen
   let flowIds: number[] = [];
-  let flowStopped = false, flowStartedAt = 0;
+  let flowStartedAt = 0;
   let flowPhotos = 0; // photos (not videos) the scan found in this flow's folders
   let finishing = false; // the end screen is being prepared
   let flowStarted: Promise<void> = Promise.resolve(); // scan-done can arrive before scanFolders has answered
@@ -955,39 +974,9 @@
   /** One bar and what each analysis has found, for the analysing screen (which counts only this load's photos) and for
    *  Settings, Picture analysis (which counts the whole library). */
   const flowView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: flowLoad, on: analysisOptions }));
-  // The folders just added: until their photos are all analysed, the bars (Settings, Picture analysis, and the indicator at
-  // the top right) show how far those have got, out of all that was found in them. With nothing newly added they show
-  // the whole library.
-  let trackIds = $state<number[]>([]);
-  let trackLoad = $state<LoadProgress | null>(null);
-  $effect(() => {
-    const ids = trackIds;
-    if (ids.length === 0) { trackLoad = null; return; }
-    let live = true;
-    const tick = async () => {
-      try { const lp = await loadProgress(ids); if (live) trackLoad = lp; } catch { /* the next time */ }
-    };
-    void tick();
-    const t = setInterval(tick, 1500);
-    return () => { live = false; clearInterval(t); };
-  });
-  // The load screen with every analysis off: it is still loading the files, which is what it says (not "analysis is off").
-  const flowViewShown = $derived(
-    !analysisOptions.tags && !analysisOptions.faces && !analysisOptions.dupes
-      ? { ...flowView, headline: 'Loading your photos…', fraction: flowLoad && flowLoad.photos + flowLoad.pending > 0 ? flowLoad.photos / (flowLoad.photos + flowLoad.pending) : null }
-      : flowView,
-  );
-  const trackView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackLoad, on: analysisOptions }));
-  const trackActive = $derived(trackIds.length > 0 && trackLoad !== null && !trackView.finished);
-  // Done: back to the whole library (not while folders are still being read, when nothing may have been stored yet).
-  $effect(() => {
-    if (trackIds.length > 0 && trackLoad !== null && !scanning && trackView.finished) trackIds = [];
-  });
-  const trackNames = $derived(folderInfos.filter((f) => trackIds.includes(f.id)).map((f) => folderName(f.path)).join(', '));
   /** How many of the library's items have no location (the Locations line of Settings, Picture analysis). */
   let libLocations = $state<{ without: number; undated: number; total: number } | null>(null);
   const refreshLocations = () => { locationCounts().then((c) => (libLocations = c)).catch(() => { /* the line just stays as it was */ }); };
-  const settingsView = $derived(analysisView({ tags: analysis, faces: peopleState, dupes: dupState, people: facePeople, load: trackActive ? trackLoad : undefined, on: analysisOptions, locations: libLocations }));
 
   const stopWelcomeSubs = () => { welcomeSubs.forEach((s) => s.then((un) => un())); welcomeSubs = []; sniffing = false; };
 
@@ -1024,29 +1013,35 @@
     phase = 'off';
   }
 
+  /** Why the folder just chosen in the picker was not added. */
+  let pickNotice = $state<string | null>(null);
   async function welcomeAdd() {
+    pickNotice = null;
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== 'string') return;
-    rows = addFound(rows, { path: dir, name: folderName(dir), kind: 'known', ticked: true, note: 'chosen by you', included_in: null });
+    const r = chooseByHand(rows, folders.map((f) => f.path), { path: dir, name: folderName(dir), kind: 'known', ticked: true, note: 'chosen by you', included_in: null });
+    rows = r.rows;
+    pickNotice = r.note;
   }
 
+  /** This flow adds folders later (from Settings), not the first run. */
+  let flowAdding = false;
   /** Add these folders and scan them with the modal screens. A folder added while another scan runs joins that scan. */
   async function beginLoad(paths: string[]) {
     stopWelcomeSubs();
+    flowAdding = addMode;
     addMode = false;
     message = '';
     flowLoad = null;
-    trackIds = []; trackLoad = null;
-    flowStopped = false; flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
+    flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
     strip = []; flowFolder = null; allSet = null; flowProblems = [];
     feed?.stop();
     feed = createStripFeed({ load: preload, onShow: (item) => (strip = [...strip.slice(-4), item]), minGapMs: 100 });
-    scanning = true; seen = 0; indexed = 0; toIndex = 0; scanFolder = null;
+    scanning = true; scanFolder = null;
     phase = 'scanning';
     flowStarted = (async () => {
       try {
         flowIds = (await scanFolders(paths)).folder_ids;
-        trackIds = flowIds;
         folders = await listFolders();
       } catch (e) {
         message = String(e);
@@ -1081,7 +1076,7 @@
     const lp = flowIds.length > 0 ? await loadProgress(flowIds) : null;
     flowPhotos = lp ? lp.photos + lp.pending : 0;
     if (lp) flowLoad = lp; // fresh at the moment the walk ended
-    const next = phaseAfterScan({ stopped: flowStopped, found, photos: flowPhotos });
+    const next = phaseAfterScan({ stopped: false, found, photos: flowPhotos, adding: flowAdding });
     if (next === 'off') {
       phase = 'off';
       refresh(true).catch((e) => (message = String(e)));
@@ -1118,24 +1113,8 @@
     });
   }
 
-  /** Stop on the load screen. While the folders are being read: stop reading (what was found is kept, and the scan's end
-   *  takes us to Browse). Once photos are being analysed: pause the analysis, which can be resumed from the indicator at
-   *  the top right or in Settings. */
-  const stopLoad = async () => {
-    if (phase === 'scanning') {
-      flowStopped = true;
-      cancelScan();
-      return;
-    }
-    try { await analysisSetPaused(true); } catch (e) { message = String(e); }
-    feed?.stop();
-    feed = null;
-    phase = 'off';
-    refresh(true).catch((e) => (message = String(e)));
-  };
-
   /** Leave the modal: whatever is still running (the scan, then the analysis) carries on in the background. A note says
-   *  so, and says how to tell when it has finished (the indicator at the top right, below). */
+   *  so, and says how to tell when it has finished (the Processing button at the top right, below). */
   const carryOnInBackground = () => {
     feed?.stop();
     feed = null;
@@ -1143,9 +1122,31 @@
     refresh(true).catch((e) => (message = String(e)));
   };
 
-  /** What the indicator at the top right shows: the scan, a model download or the analysis, whichever is running. */
-  // (an analysis that is switched off is not part of the work, whatever its last numbers were)
-  const bg = $derived(backgroundProgress({ scanning, scan: { seen, indexed, toIndex }, analysis: analysisOptions.tags ? analysis : null, people: analysisOptions.faces ? peopleState : null, dupes: analysisOptions.dupes ? dupPass(dupState) : null, load: { fraction: settingsView.fraction }, loading: { ...loadState, peak: loadPeak } }));
+  // Everything running in the background, as one snapshot from the app about once a second; the pill and its screen show it.
+  let activity = $state<ActivitySnapshot | null>(null);
+  let activityOpen = $state(false);
+  const pill = $derived(activityView(activity).pill);
+  // The Processing screen shows the pictures going by too: a strip of its own, fed while the screen is open.
+  let dialogStrip = $state<Sample[]>([]);
+  let dialogFeed: ReturnType<typeof createStripFeed> | null = null;
+  $effect(() => {
+    if (!activityOpen) return;
+    dialogStrip = [];
+    const f = createStripFeed({ load: preload, onShow: (item) => (dialogStrip = [...dialogStrip.slice(-4), item]), minGapMs: 100 });
+    dialogFeed = f;
+    return () => { f.stop(); if (dialogFeed === f) dialogFeed = null; };
+  });
+  // Pause covers everything. A folder scan it stops is started again by Resume (it only reads what is new or changed).
+  let scanPaused = $state(false);
+  let cancelling = false; // a pause has stopped the scan and the scan has not ended yet
+  function pauseScan() { scanPaused = true; cancelling = true; void cancelScan(); }
+  function resumeScan() { scanPaused = false; scanning = true; startScan(null).catch(() => (scanning = false)); }
+  function pauseResume(paused: boolean) {
+    const a = pauseActions(paused, scanning, scanPaused);
+    analysisSetPaused(a.analysisPaused).catch((e) => (message = String(e)));
+    if (a.cancelScan) pauseScan();
+    if (a.startScan) resumeScan();
+  }
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
@@ -1242,7 +1243,6 @@
     if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
     void loadPicks();
-    loadStatus().then(setLoad).catch(() => {});
     getAnalysisOptions().then((o) => { analysisOptions = parseOptions(o); welcomeOptions = { ...analysisOptions }; }).catch(() => {});
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
@@ -1260,15 +1260,18 @@
       scanning = true;
       startScan(null).catch(() => (scanning = false));
     });
+    activitySnapshot().then((snapshot) => { activity = snapshot; }).catch(() => {});
     const subs = [
-      listen<LoadStatus>('load-status', (e) => setLoad(e.payload)),
+      onActivity((snapshot) => { activity = snapshot; }),
       listen<AnalysisStatus>('analysis-status', (e) => { analysis = e.payload; loadTagsSoon(); }),
-      listen<DupStatus>('duplicate-status', (e) => { dupState = e.payload; dupHiddenChanged(); }),
+      listen<DupStatus>('duplicate-status', (e) => { dupState = e.payload; dupHiddenChanged(); syncCountSoon(); }),
       listen<PeopleStatus>('people-status', (e) => { peopleState = e.payload; loadPeopleSoon(); }),
       // During a scan only the count is refreshed; the grid resets on scan-done.
       listen<{ seen: number; indexed: number; to_index: number; folder_id: number; latest: Sample | null }>('scan-progress', (e) => {
-        seen = e.payload.seen; indexed = e.payload.indexed; toIndex = e.payload.to_index; scanFolder = e.payload.folder_id;
+        scanFolder = e.payload.folder_id;
         scanning = true; // a scan the app started by itself (a watched folder changed, the timer) shows too, and can be stopped
+        if (!cancelling) scanPaused = false; // a scan is going, so nothing is waiting to be resumed
+        if (e.payload.latest) dialogFeed?.offer(e.payload.latest);
         if (phase !== 'scanning') { if (phase === 'off' || phase === 'background') refreshLive(); return; }
         const f = folders.find((x) => x.id === e.payload.folder_id);
         flowFolder = f ? folderName(f.path) : flowFolder;
@@ -1277,10 +1280,12 @@
       // A photo the analysis has just finished goes by on the loading screen's strip; with the library showing, the grid
       // follows as photos are stored.
       listen<Sample>('analysis-latest', (e) => {
+        dialogFeed?.offer(e.payload);
         if (phase === 'scanning' || phase === 'analysing') feed?.offer(e.payload);
         else if (phase === 'off' || phase === 'background') refreshLive();
       }),
       listen<{ folders: number; found: number }>('scan-done', (e) => {
+        cancelling = false;
         loadTags();
         refreshLocations();
         loadPeople();
@@ -1303,8 +1308,7 @@
         popoutSnap = { index: m.index, total, view: { ...shown } };
         selected = m.index;
       }),
-      listen<CopyProgress>('master-copy-progress', (e) => { copyProgress = e.payload; }),
-      listen('master-copy-done', () => { copyProgress = null; void loadShare(); }),
+      listen('master-copy-done', () => { void loadShare(); }),
       listen<{ message: string }>('scan-error', (e) => {
         message = e.payload.message; // scan-done always follows
         void refreshFolderStates();
@@ -1318,10 +1322,10 @@
 <!-- The webview's own right-click menu (Share, Magnify image, ...) does nothing useful here, so it is off
      everywhere except in text fields, where copy and paste are wanted. -->
 <svelte:window oncontextmenu={noBrowserMenu} />
-<main inert={phase !== 'off'}>
+<main inert={phase !== 'off' || activityOpen}>
   <Tabs {tabs} active={tab} onpick={pickTab}>
     {#snippet status()}
-      <BackgroundProgress progress={bg} onclick={openAnalysisDetails} />
+      <ProcessingPill {pill} onclick={() => (activityOpen = true)} />
       {#if message}<span class="err">{message}</span>{/if}
     {/snippet}
     <div class="browse" inert={tab !== 'browse'}>
@@ -1354,7 +1358,7 @@
             <button onclick={() => setMissing(null)} aria-label="Show items with or without a location" title="Show items with or without a location">✕</button></span>
         {/if}
         {#if activeShare !== null}
-          <span class="filter">{activeShare === 'new' ? 'New, not yet shared' : 'Private'}
+          <span class="filter">{activeShare === 'new' ? 'New, not yet synced' : 'Private'}
             <button onclick={() => setShare(null)} aria-label="Stop showing only {activeShare === 'new' ? 'the new items' : 'the private items'}" title="Stop showing only {activeShare === 'new' ? 'the new items' : 'the private items'}">✕</button></span>
         {/if}
         {#if view.kind !== null}
@@ -1383,18 +1387,6 @@
         {/if}
         {#if offerClearAll(activeNames)}<button class="linkbtn" onclick={showAll} title={clearAllTitle(activeNames)}>Clear all</button>{/if}
       </div>
-      {#if master !== null && activeShare !== null}
-        <div class="review" role="group" aria-label={activeShare === 'new' ? 'Review the new items' : 'Private items'}>
-          {#if activeShare === 'new'}
-            <span class="rline">{reviewLine(shareState.held)} Pick any to keep out, then choose Make private; Share these approves everything shown here.</span>
-            <button class="primary" disabled={total === 0} onclick={shareThese} title="Approve every item shown here to be copied into the master folder">Share these</button>
-            <button disabled={picked.size === 0} onclick={keepPicked} title={picked.size === 0 ? 'Pick the photos to keep private first: the circle in a photo’s top-left corner picks it' : 'Keep the picked photos out of the master folder and anything shared'}>Make private</button>
-          {:else}
-            <span class="rline">These items are kept out of the master folder and out of anything shared. Their tags and names stay on this computer.</span>
-            <button disabled={picked.size === 0} onclick={holdPicked} title={picked.size === 0 ? 'Pick the photos to hold for review again first: the circle in a photo’s top-left corner picks it' : 'Hold the picked photos for review again, as new items'}>Hold for review</button>
-          {/if}
-        </div>
-      {/if}
       <div class="tools second" bind:clientWidth={secondLineW}>
         <!-- Two boxed sections, each with its title: Picked (what is picked, and the buttons that act on it) and Map. -->
         <!-- Only while something is picked: with nothing picked it would offer nothing. -->
@@ -1433,7 +1425,7 @@
                period={periodKey} recentText={recentLabel(recentDays)}
                {facets} {tags} tag={activeTag} ontag={setTag} userTags={userTagList} utag={activeUtag} onutag={setUtag}
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
-               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} {master} shareCounts={shareState} share={activeShare} onshare={setShare} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
+               cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} {master} onopensync={() => openTool('sync', 'picked')} shareCounts={shareState} share={activeShare} onshare={setShare} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
@@ -1488,16 +1480,15 @@
       {#key tab}
         <div class="page-over">
           <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
-                    dupes={analysisOptions.dupes} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
+                    folders={folderInfos} {master} onmaster={chooseMaster} {copyStatus} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster} remind={remindSync} onremind={setRemindSync} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
         </div>
       {/key}
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings loading={loadState} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} analysing={trackActive ? { ids: trackIds, fraction: trackView.fraction } : null} {scanning} {scanFolder} scan={{ seen, indexed, toIndex }} onstop={() => cancelScan()} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master} onmaster={chooseMaster} {copyStatus} {copyProgress} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster}
+        <Settings locations={libLocations} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} {scanning} {scanFolder} onstop={pauseScan} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
-                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays}
-                  analysis={settingsView} analysisNote={trackActive ? `Showing the folders you just added: ${trackNames}` : null} onanalysispause={(p) => analysisSetPaused(p)} onanalysisretry={() => analysisRetry()} />
+                  page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays} />
       </div>
     {/if}
   </Tabs>
@@ -1507,16 +1498,23 @@
   {/if}
 </main>
 
+{#if activityOpen}
+  <ProcessingDialog snapshot={activity} strip={dialogStrip} {scanPaused} onpause={pauseResume} onretry={() => analysisRetry()} onclose={() => (activityOpen = false)} />
+{/if}
+
+{#if reminder && master !== null}
+  <SyncReminder held={shareState.unsynced} folder={master} copying={copyStatus?.running ?? false} onreview={reviewNew} onsync={syncFromReminder} onclose={closeReminder} />
+{/if}
+
 {#if phase === 'welcome'}
   <Welcome rows={pickerRows} searching={sniffing} {looking} ontoggle={(p) => (rows = toggle(rows, p))} onadd={welcomeAdd}
            onskip={() => { stopWelcomeSubs(); phase = 'off'; }} onstart={welcomeNext}
-           adding={addMode} oncancel={cancelAdd} />
+           adding={addMode} oncancel={cancelAdd} notice={pickNotice} />
 {:else if phase === 'options'}
   <AnalysisStep options={welcomeOptions} onoptions={(o) => (welcomeOptions = o)} onback={() => (phase = 'welcome')} onstart={optionsStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
-  <LoadModal {phase} scan={{ seen, indexed, toIndex }} folder={flowFolder} {strip} view={flowViewShown} notice={message}
-             onstop={stopLoad} onbackground={carryOnInBackground}
-             onretry={() => analysisRetry()} onresume={() => analysisSetPaused(false)} />
+  <LoadModal folder={flowFolder} {strip} snapshot={activity} {scanPaused} notice={message}
+             onbackground={carryOnInBackground} onpause={pauseResume} onretry={() => analysisRetry()} />
 {:else if phase === 'background'}
   <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}
                   onbrowse={startBrowsing} />
@@ -1549,8 +1547,6 @@
   .stitle { font-size: 13px; font-weight: 700; color: #333; font-variant-numeric: tabular-nums; }
   .content { flex: 1; min-height: 0; }
   .count { font-size: 13px; font-weight: 600; color: #333; font-variant-numeric: tabular-nums; }
-  .review { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid #e4e4e8; background: #f4f7ff; font-size: 13px; }
-  .rline { flex: 1 1 24em; color: #3a4258; }
   .filter { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 12px; background: #e3ecff; color: #1a3f9a; font-size: 13px; }
   .filter button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; border-radius: 10px; }
   /* A quiet link, not a button: it sits in the row of pills without looking like one of them. */

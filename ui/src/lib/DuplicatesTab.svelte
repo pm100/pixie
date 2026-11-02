@@ -94,7 +94,6 @@
     {#if status}
       <div class="status" role="status">
         <span>{dupLine(status)}</span>
-        {#if checking}<progress value={status.total > 0 ? status.done / status.total : 0} max="1"></progress>{/if}
         {#if more}<button onclick={load} title="Add the duplicates found since this list was made">Show newly found duplicates</button>{/if}
       </div>
     {/if}
@@ -164,7 +163,6 @@
   .hint { color: #777; margin: 6px 0; font-size: 13px; }
   .err { color: #b3261e; }
   .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0; padding: 6px 12px; border-radius: 8px; background: #eef2fb; color: #2a3f7a; font-size: 13px; }
-  .status progress { width: 160px; }
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
   button { font: inherit; font-size: 13px; }
   .set { display: flex; gap: 14px; padding: 10px; border: 1px solid #d3d8e4; border-radius: 10px; background: #fafbfe; }

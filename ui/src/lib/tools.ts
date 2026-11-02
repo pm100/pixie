@@ -1,11 +1,12 @@
-/** The tools behind the Send, Create, Organize and Clean up tabs. A tool that is not built yet is listed greyed out and opens a placeholder showing what it will look like. */
-export type ToolGroup = 'send' | 'create' | 'organize' | 'cleanup';
+/** The tools behind the Send, Create, Organize, Clean up and Import/Export tabs. A tool that is not built yet is listed greyed out and opens a placeholder showing what it will look like. */
+export type ToolGroup = 'send' | 'create' | 'organize' | 'cleanup' | 'transfer';
 
 export const GROUPS: { id: ToolGroup; label: string }[] = [
   { id: 'send', label: 'Send' },
   { id: 'create', label: 'Create' },
   { id: 'organize', label: 'Organize' },
   { id: 'cleanup', label: 'Clean up' },
+  { id: 'transfer', label: 'Import/Export' },
 ];
 
 export interface ToolDef {
@@ -57,11 +58,13 @@ export const TOOLS: ToolDef[] = [
     mock: [{ label: 'Found', value: '71 bursts, 1,096 photos' }, { label: 'Keep', value: 'The sharpest frame' }], action: 'Hide the others…' },
   { id: 'thumbnails', group: 'cleanup', label: 'Thumbnails and cache', built: false, blurb: 'Remove thumbnails left behind by folders you took out, or clear them all to rebuild later.',
     mock: [{ label: 'Space used', value: '1.2 GB' }, { label: 'Left behind', value: '310 MB' }], action: 'Clean up' },
+
+  { id: 'sync', group: 'transfer', label: 'Sync', built: true, blurb: '' },
 ];
 
-/** The tools of one tab, in order. Duplicates is left out while the duplicate check is switched off. */
-export function toolsIn(group: ToolGroup, features: { dupes: boolean } = { dupes: true }): ToolDef[] {
-  return TOOLS.filter((t) => t.group === group && (t.id !== 'duplicates' || features.dupes));
+/** The tools of one tab, in order. */
+export function toolsIn(group: ToolGroup): ToolDef[] {
+  return TOOLS.filter((t) => t.group === group);
 }
 
 export function toolById(id: string): ToolDef | null {
@@ -69,12 +72,12 @@ export function toolById(id: string): ToolDef | null {
 }
 
 /** The tool a tab opens at: the first one that is built. */
-export function firstTool(group: ToolGroup, features: { dupes: boolean } = { dupes: true }): ToolDef {
-  const list = toolsIn(group, features);
+export function firstTool(group: ToolGroup): ToolDef {
+  const list = toolsIn(group);
   return list.find((t) => t.built) ?? list[0];
 }
 
-/** Tools in Clean up look after the whole library; the others work on the photos chosen in "Working on". */
-export const worksOnWholeLibrary = (group: ToolGroup): boolean => group === 'cleanup';
+/** Tools in Clean up and Import/Export look after the whole library; the others work on the photos chosen in "Working on". */
+export const worksOnWholeLibrary = (group: ToolGroup): boolean => group === 'cleanup' || group === 'transfer';
 
 export const isToolGroup = (id: string): id is ToolGroup => GROUPS.some((g) => g.id === id);

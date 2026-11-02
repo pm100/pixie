@@ -1,5 +1,5 @@
 use crate::trips::{compute_route, compute_trips, day_of, distance_km, infer_home, DayItem, Route, Trip, TripSettings, EARLIEST_REAL};
-use pixie_core::{SHARE_APPROVED, SHARE_COPIED, SHARE_HELD, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
+use pixie_core::{SHARE_COPIED, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary, UserTagFilter, UNDATED, DupGroup, DupStatus, FacetCounts, LoadProgress, validate_email, validate_header_text, validate_host, validate_nickname, Bounds, Contact, DayGroup, FaceInfo, FaceTile, Folder, FolderId, FolderInfo, GeoPoint, MailAccount, MailSecurity, MediaKind, NewContact, NewFace, PersonInfo, Photo, PhotoId, PhotoMeta, PhotoQuery, PixieError, Result, SortOrder};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -218,15 +218,22 @@ const MIGRATIONS: &[&str] = &[
         outcome  TEXT NOT NULL,
         detail   TEXT
      );",
+    // V27: new and approved are no longer states: an item is not yet synced when its folder is synced from and it is neither private nor
+    // copied (see `UNSYNCED`), so what was waiting for review or approved is simply ordinary again.
+    "UPDATE photos SET share = 0 WHERE share IN (1, 2);",
+    // V28: finding the twin of a file just read (same size, about the same time) without looking at every photo.
+    "CREATE INDEX idx_photos_size ON photos(size);",
 ];
 
-/// An approved item the copier has yet to copy.
+/// An item the copier has yet to copy.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ApprovedItem {
+pub struct PendingItem {
     pub id: PhotoId,
     pub path: String,
     /// Unix seconds, the date the copy is filed under; None files it under Undated.
     pub taken_at: Option<i64>,
+    /// The file's size in bytes, as the library has it.
+    pub size: i64,
 }
 
 fn now_secs() -> i64 {
@@ -276,11 +283,14 @@ struct FacetBase {
     utag: Option<UserTagFilter>,
 }
 
-/// The `share` value of the items a tree choice ("new", "private") stands for.
-fn share_of(kind: &str) -> Option<i64> {
+/// Items not yet synced: in a folder that is synced from, not private and not copied, while there is a sync folder.
+const UNSYNCED: &str = "share = 0 AND folder_id IN (SELECT id FROM folders WHERE feeds_master = 1) AND EXISTS (SELECT 1 FROM settings WHERE key = 'master_folder')";
+
+/// The condition that picks out the items a tree choice ("new", "private") stands for.
+fn share_cond(kind: &str) -> Option<String> {
     match kind {
-        "new" => Some(SHARE_HELD),
-        "private" => Some(SHARE_PRIVATE),
+        "new" => Some(UNSYNCED.to_string()),
+        "private" => Some(format!("share = {SHARE_PRIVATE}")),
         _ => None,
     }
 }
@@ -315,8 +325,8 @@ impl FacetBase {
         if missing == Some("location") {
             sql.push_str(" AND (gps_lat IS NULL OR gps_lon IS NULL)");
         }
-        if let Some(s) = share.and_then(share_of) {
-            sql.push_str(&format!(" AND share = {s}"));
+        if let Some(cond) = share.and_then(share_cond) {
+            sql.push_str(&format!(" AND {cond}"));
         }
         match utag {
             Some(UserTagFilter::Picked) => sql.push_str(" AND id IN (SELECT photo_id FROM picks)"),
@@ -677,7 +687,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT f.id, f.path, COUNT(p.id), f.feeds_master FROM folders f
-                 LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0 AND p.dup = 0
+                 LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0
                  GROUP BY f.id ORDER BY f.path",
             )
             .map_err(db_err)?;
@@ -698,7 +708,7 @@ impl Db {
         let path = tx.query_row("SELECT path FROM folders WHERE id = ?1", params![id], |r| r.get::<_, String>(0)).optional().map_err(db_err)?;
         if master.is_some() && master == path {
             tx.execute("DELETE FROM settings WHERE key = 'master_folder'", []).map_err(db_err)?;
-            tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_HELD]).map_err(db_err)?;
+            tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_COPIED]).map_err(db_err)?;
             drop_share_filter(&tx)?;
         }
         let affected = people_in(&tx, "p.folder_id = ?1", params![id])?; // its photos' faces go with the cascade
@@ -739,11 +749,8 @@ impl Db {
         refresh_people(&c, &affected)?;
         c
             .query_row(
-                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at, share)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13,
-                         -- a new item in a folder that feeds the master is held for review (only while there is a master)
-                         (SELECT CASE WHEN f.feeds_master = 1 AND EXISTS (SELECT 1 FROM settings WHERE key = 'master_folder') THEN 1 ELSE 0 END
-                            FROM folders f WHERE f.id = ?1))
+                "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)
                  ON CONFLICT(path) DO UPDATE SET
                     folder_id = excluded.folder_id, size = excluded.size, mtime = excluded.mtime,
                     width = excluded.width, height = excluded.height, taken_at = excluded.taken_at,
@@ -824,6 +831,18 @@ impl Db {
         Ok(())
     }
 
+    /// Photos (not videos) with no hash yet that look like the same file as one just read: the same size and about the same time
+    /// (a copy keeps both; a drive may round the time to two seconds). A twin analysed before hashing was on has no hash, so
+    /// nothing says yet that the new file is a duplicate of it.
+    pub fn unhashed_twins(&self, id: PhotoId, size: i64, mtime: i64) -> Result<Vec<(PhotoId, String)>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare("SELECT id, path FROM photos WHERE size = ?2 AND id != ?1 AND ABS(mtime - ?3) <= 2000 AND missing = 0 AND kind = 0 AND hash IS NULL")
+            .map_err(db_err)?;
+        let rows = s.query_map(params![id, size, mtime], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+    }
+
     /// Record the keys of a photo whose bytes were just read. `hash` is None for a file that could not be read.
     pub fn set_file_keys(&self, id: PhotoId, quick_key: &str, hash: Option<&str>) -> Result<()> {
         self.conn().execute("UPDATE photos SET quick_key = ?2, hash = ?3 WHERE id = ?1", params![id, quick_key, hash]).map_err(db_err)?;
@@ -833,13 +852,14 @@ impl Db {
     /// Bring the `dup` flags of one set of identical files up to date (the copy the user chose, else the oldest, is
     /// shown; the rest are hidden). Cheap enough to run for every photo as it is hashed.
     pub fn refresh_dup_group(&self, hash: &str) -> Result<()> {
+        let sync = self.sync_folder_id()?.unwrap_or(0);
         let c = self.conn();
         let members: Vec<(PhotoId, bool, bool)> = {
             let mut s = c
-                .prepare(
+                .prepare(&format!(
                     "SELECT id, keep_pick, dup FROM photos WHERE hash = ?1 AND hash IS NOT NULL AND missing = 0
-                      ORDER BY (taken_at IS NULL), taken_at, length(path), path",
-                )
+                      ORDER BY (folder_id = {sync}), (taken_at IS NULL), taken_at, length(path), path"
+                ))
                 .map_err(db_err)?;
             let rows = s
                 .query_map(params![hash], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0)))
@@ -1071,13 +1091,31 @@ impl Db {
     /// copy to keep first (the one the user chose, else the earliest date taken, then the shorter path). One query
     /// for every group: asking once per group makes SQLite scan all photos each time, which takes seconds for a
     /// library with many duplicates.
+    ///
+    /// A copy that Pixie put in the sync folder is not a duplicate to clean up: it is left out here, and a set that is only an
+    /// original and its synced copy is not listed at all (see `duplicate_groups_all` for the sets as they are).
     pub fn duplicate_groups(&self) -> Result<Vec<DupGroup>> {
+        let Some(sync) = self.sync_folder_id()? else { return self.duplicate_groups_all() };
+        let mut groups = self.duplicate_groups_all()?;
+        for g in &mut groups {
+            let keeper = g.keeper;
+            g.photos.retain(|p| p.folder_id != sync || p.id == keeper);
+        }
+        groups.retain(|g| g.photos.len() > 1);
+        Ok(groups)
+    }
+
+    /// Every set of identical files, the synced copies included: what the `dup` flags are worked out from. In each set the copy to
+    /// keep is the one the user chose, else one outside the sync folder (the original stays visible), then the earliest date
+    /// taken, then the shorter path.
+    fn duplicate_groups_all(&self) -> Result<Vec<DupGroup>> {
+        let sync = self.sync_folder_id()?.unwrap_or(0);
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
                 "SELECT {PHOTO_COLS}, hash, keep_pick FROM photos
                  WHERE missing = 0 AND hash IN (SELECT hash FROM photos WHERE missing = 0 AND hash IS NOT NULL GROUP BY hash HAVING count(*) > 1)
-                 ORDER BY hash, (taken_at IS NULL), taken_at, length(path), path"
+                 ORDER BY hash, (folder_id = {sync}), (taken_at IS NULL), taken_at, length(path), path"
             ))
             .map_err(db_err)?;
         let rows = s
@@ -1113,8 +1151,9 @@ impl Db {
     /// Make the `dup` flags match the sets of identical files: in each set every copy but the keeper is hidden from
     /// Browse, and everything else is shown. Returns how many items changed.
     pub fn refresh_dup_flags(&self) -> Result<usize> {
+        self.reconcile_sync()?; // the hashes this works from are the ones that say what is in the sync folder
         let want: HashSet<PhotoId> = self
-            .duplicate_groups()?
+            .duplicate_groups_all()?
             .into_iter()
             .flat_map(|g| {
                 let keeper = g.keeper;
@@ -1159,6 +1198,7 @@ impl Db {
     }
 
     pub fn dup_status(&self) -> Result<DupStatus> {
+        let sync = self.sync_folder_id()?.unwrap_or(0);
         let c = self.conn();
         let total: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0", [], |r| r.get(0)).map_err(db_err)?;
         // Still to do: no quick key yet, or a shared quick key without a full hash.
@@ -1177,19 +1217,21 @@ impl Db {
             .map_err(db_err)?;
         let (groups, extra_files, extra_bytes): (i64, i64, i64) = c
             .query_row(
-                "SELECT count(*), coalesce(sum(n - 1), 0), coalesce(sum((n - 1) * sz), 0) FROM (
-                    SELECT count(*) AS n, max(size) AS sz FROM photos WHERE missing = 0 AND hash IS NOT NULL GROUP BY hash HAVING count(*) > 1)",
+                // (what is in the sync folder is not counted: an original and its synced copy are not wasted space)
+                &format!("SELECT count(*), coalesce(sum(n - 1), 0), coalesce(sum((n - 1) * sz), 0) FROM (
+                    SELECT count(*) AS n, max(size) AS sz FROM photos WHERE missing = 0 AND hash IS NOT NULL AND folder_id != {sync} GROUP BY hash HAVING count(*) > 1)"),
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(db_err)?;
         let hidden: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0 AND dup = 1", [], |r| r.get(0)).map_err(db_err)?;
-        Ok(DupStatus { done: total - todo, total, groups, extra_files, extra_bytes, hidden, paused: false })
+        Ok(DupStatus { done: total - todo, total, groups, extra_files, extra_bytes, hidden, paused: false, held: false })
     }
 
     /// Of `ids`, those that may be removed: live, hashed, and with another live copy that is not itself in `ids`.
     /// A whole group can never be removed this way, however the request is built.
     pub fn removable_copies(&self, ids: &[PhotoId]) -> Result<Vec<Photo>> {
+        let sync = self.sync_folder_id()?;
         let c = self.conn();
         let mut out = Vec::new();
         for id in ids {
@@ -1198,6 +1240,9 @@ impl Db {
                 .optional()
                 .map_err(db_err)?;
             let Some(p) = p else { continue };
+            if Some(p.folder_id) == sync {
+                continue; // what Pixie copied into the sync folder is not a duplicate to remove
+            }
             let mut s = c.prepare("SELECT id FROM photos WHERE hash = (SELECT hash FROM photos WHERE id = ?1) AND hash IS NOT NULL AND missing = 0 AND id != ?1").map_err(db_err)?;
             let others: Vec<PhotoId> = s.query_map(params![id], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
             if others.iter().any(|o| !ids.contains(o)) {
@@ -1735,8 +1780,9 @@ impl Db {
         self.get_setting("master_folder")
     }
 
-    /// Choose the master folder (it is watched like any other, added when it is new to the library), or None to go without one: items
-    /// held for review or approved go back to being ordinary items. Items marked private stay marked, for when a master is chosen again.
+    /// Choose the sync folder (it is watched like any other, added when it is new to the library), or None to go without one. What was
+    /// copied was copied to the old folder, so with a different folder it is all worked out afresh (what the new folder already holds
+    /// is found again by its hashes). Items marked private stay marked, for when a sync folder is chosen again.
     pub fn set_master_folder(&self, path: Option<&str>) -> Result<()> {
         match path {
             Some(p) => {
@@ -1745,22 +1791,21 @@ impl Db {
                 let mut c = self.conn();
                 let tx = c.transaction().map_err(db_err)?;
                 if changed {
-                    // Approvals were for the old master.
-                    tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_APPROVED]).map_err(db_err)?;
+                    tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_COPIED]).map_err(db_err)?;
                 }
-                // The master is where things are copied to, so it never feeds itself.
+                // The sync folder is where things are copied to, so it never feeds itself.
                 tx.execute("UPDATE folders SET feeds_master = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
                 tx.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('master_folder', ?1)", params![p]).map_err(db_err)?;
-                // Folders that were set to feed a master hold what is in them again.
-                tx.execute("UPDATE photos SET share = ?1 WHERE share = 0 AND folder_id IN (SELECT id FROM folders WHERE feeds_master = 1)", params![SHARE_HELD]).map_err(db_err)?;
+                Db::rebuild_share_hits(&tx)?;
                 tx.commit().map_err(db_err)?;
+                drop(c);
+                self.reconcile_sync()?;
             }
             None => {
                 let mut c = self.conn();
                 let tx = c.transaction().map_err(db_err)?;
                 tx.execute("DELETE FROM settings WHERE key = 'master_folder'", []).map_err(db_err)?;
-                // An approval was for that master, so it goes too; private marks stay.
-                tx.execute("UPDATE photos SET share = 0 WHERE share IN (?1, ?2)", params![SHARE_HELD, SHARE_APPROVED]).map_err(db_err)?;
+                tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_COPIED]).map_err(db_err)?;
                 drop_share_filter(&tx)?;
                 tx.commit().map_err(db_err)?;
             }
@@ -1768,43 +1813,77 @@ impl Db {
         Ok(())
     }
 
-    /// Whether new items found in this folder are held for review. The master folder itself never feeds the master.
+    /// The watched folder that is the sync folder, if one is chosen.
+    pub fn sync_folder_id(&self) -> Result<Option<FolderId>> {
+        self.conn()
+            .query_row("SELECT f.id FROM folders f JOIN settings s ON s.key = 'master_folder' AND s.value = f.path", [], |r| r.get(0))
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// What is in the sync folder is decided by the files in it, not by a note made when Pixie copied: an item not yet synced whose
+    /// content, by hash, is already in the sync folder is synced, whoever put it there (Pixie, another computer, you by hand).
+    /// Returns how many items changed. Needs the hashes the duplicate check makes.
+    pub fn reconcile_sync(&self) -> Result<usize> {
+        let Some(sync) = self.sync_folder_id()? else { return Ok(0) };
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let n = tx
+            .execute(
+                "UPDATE photos SET share = ?1
+                 WHERE share = 0 AND folder_id IN (SELECT id FROM folders WHERE feeds_master = 1)
+                   AND missing = 0 AND hash IS NOT NULL AND folder_id != ?2
+                   AND EXISTS (SELECT 1 FROM photos q WHERE q.hash = photos.hash AND q.missing = 0 AND q.folder_id = ?2)",
+                params![SHARE_COPIED, sync],
+            )
+            .map_err(db_err)?;
+        if n > 0 {
+            Db::rebuild_share_hits(&tx)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// Whether what is in this folder is synced into the sync folder (the folder is "synced from"). The sync folder itself never is.
     pub fn set_folder_feeds(&self, id: FolderId, feeds: bool) -> Result<()> {
         let master = self.master_folder()?;
-        let c = self.conn();
-        let path: Option<String> = c.query_row("SELECT path FROM folders WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(db_err)?;
-        let feeds = feeds && path.is_some() && path != master;
-        c.execute("UPDATE folders SET feeds_master = ?2 WHERE id = ?1", params![id, feeds]).map_err(db_err)?;
-        // What is in the folder already is held at once (or let go again); what the person already decided stays as it is.
-        if feeds {
-            c.execute("UPDATE photos SET share = ?2 WHERE folder_id = ?1 AND share = 0", params![id, SHARE_HELD]).map_err(db_err)?;
-        } else {
-            c.execute("UPDATE photos SET share = 0 WHERE folder_id = ?1 AND share = ?2", params![id, SHARE_HELD]).map_err(db_err)?;
+        {
+            let mut c = self.conn();
+            let path: Option<String> = c.query_row("SELECT path FROM folders WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(db_err)?;
+            let feeds = feeds && path.is_some() && path != master;
+            let tx = c.transaction().map_err(db_err)?;
+            tx.execute("UPDATE folders SET feeds_master = ?2 WHERE id = ?1", params![id, feeds]).map_err(db_err)?;
+            Db::rebuild_share_hits(&tx)?;
+            tx.commit().map_err(db_err)?;
         }
+        self.reconcile_sync()?;
         Ok(())
     }
 
-    /// How many items Browse can list are held for review, and how many are private.
+    /// How many items Browse can list are not yet synced, and how many are private.
     pub fn share_counts(&self) -> Result<(i64, i64)> {
         self.conn()
             .query_row(
-                "SELECT COALESCE(SUM(share = ?1), 0), COALESCE(SUM(share = ?2), 0) FROM photos WHERE missing = 0 AND dup = 0 AND share != 0",
-                params![SHARE_HELD, SHARE_PRIVATE],
+                &format!(
+                    "SELECT (SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND {UNSYNCED}),
+                            (SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND share = {SHARE_PRIVATE})"
+                ),
+                [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(db_err)
     }
 
-    /// Show only the items held for review ("new") or kept private ("private"); `None` turns it off. Without a master folder there is
+    /// Show only the items not yet synced ("new") or kept private ("private"); `None` turns it off. Without a sync folder there is
     /// nothing to show, so it is off.
     pub fn set_share_filter(&self, kind: Option<&str>) -> Result<()> {
         let master = self.master_folder()?.is_some();
         let mut c = self.conn();
         let tx = c.transaction().map_err(db_err)?;
-        match kind.and_then(share_of).filter(|_| master) {
-            Some(s) => {
+        match kind.and_then(share_cond).filter(|_| master) {
+            Some(cond) => {
                 tx.execute("DELETE FROM share_hits", []).map_err(db_err)?;
-                tx.execute("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE share = ?1", params![s]).map_err(db_err)?;
+                tx.execute(&format!("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE {cond}"), []).map_err(db_err)?;
                 tx.execute("INSERT OR REPLACE INTO filter_state(name, value) VALUES ('share', ?1)", params![kind]).map_err(db_err)?;
                 refresh_hits(&tx)?;
             }
@@ -1822,63 +1901,22 @@ impl Db {
     /// The items a share choice is on are held in `share_hits` when it is made: bring that up to date after items change hands.
     fn rebuild_share_hits(tx: &rusqlite::Transaction) -> Result<()> {
         let kind = tx.query_row("SELECT value FROM filter_state WHERE name = 'share'", [], |r| r.get::<_, Option<String>>(0)).optional().map_err(db_err)?.flatten();
-        if let Some(s) = kind.as_deref().and_then(share_of) {
+        if let Some(cond) = kind.as_deref().and_then(share_cond) {
             tx.execute("DELETE FROM share_hits", []).map_err(db_err)?;
-            tx.execute("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE share = ?1", params![s]).map_err(db_err)?;
+            tx.execute(&format!("INSERT INTO share_hits(photo_id) SELECT id FROM photos WHERE {cond}"), []).map_err(db_err)?;
             refresh_hits(tx)?;
         }
         Ok(())
     }
 
-    fn move_share(&self, ids: &[PhotoId], from: &[i64], to: i64) -> Result<usize> {
-        let mut c = self.conn();
-        let tx = c.transaction().map_err(db_err)?;
-        let mut n = 0;
-        for id in ids {
-            let marks = vec!["?"; from.len()].join(",");
-            let mut args: Vec<rusqlite::types::Value> = vec![to.into(), (*id).into()];
-            args.extend(from.iter().map(|f| rusqlite::types::Value::from(*f)));
-            n += tx.execute(&format!("UPDATE photos SET share = ?1 WHERE id = ?2 AND share IN ({marks})"), rusqlite::params_from_iter(args)).map_err(db_err)?;
-        }
-        Db::rebuild_share_hits(&tx)?;
-        tx.commit().map_err(db_err)?;
-        Ok(n)
-    }
-
-    /// "Share these": the held items among `ids` are approved to be copied into the master. Returns how many.
-    pub fn approve_held(&self, ids: &[PhotoId]) -> Result<usize> {
-        self.move_share(ids, &[SHARE_HELD], SHARE_APPROVED)
-    }
-
-    /// "Share these": every held item the query lists (the view's filters, with the New choice) is approved. Returns how many.
-    pub fn approve_held_in(&self, q: &PhotoQuery) -> Result<usize> {
-        let filter = Filter::of(q);
-        let mut c = self.conn();
-        let tx = c.transaction().map_err(db_err)?;
-        let sql = format!("UPDATE photos SET share = {SHARE_APPROVED} WHERE share = {SHARE_HELD} AND id IN (SELECT id FROM photos WHERE missing = 0{})", filter.sql());
-        let n = tx.execute(&sql, filter.params().as_slice()).map_err(db_err)?;
-        Db::rebuild_share_hits(&tx)?;
-        tx.commit().map_err(db_err)?;
-        Ok(n)
-    }
-
-    /// "Make private": the items among `ids` are kept out of the master and out of anything shared, whatever their state.
+    /// "Private": the items among `ids` are kept out of the sync folder, whatever else they are.
     pub fn make_private(&self, ids: &[PhotoId]) -> Result<usize> {
-        self.move_share(ids, &[SHARE_NONE, SHARE_HELD, SHARE_APPROVED], SHARE_PRIVATE)
-    }
-
-    /// Take private items among `ids` out of private: held for review again when their folder feeds the master, ordinary otherwise.
-    pub fn release_private(&self, ids: &[PhotoId]) -> Result<usize> {
         let mut c = self.conn();
         let tx = c.transaction().map_err(db_err)?;
         let mut n = 0;
         for id in ids {
             n += tx
-                .execute(
-                    "UPDATE photos SET share = CASE WHEN folder_id IN (SELECT id FROM folders WHERE feeds_master = 1) THEN ?1 ELSE ?2 END
-                     WHERE id = ?3 AND share = ?4",
-                    params![SHARE_HELD, SHARE_NONE, id, SHARE_PRIVATE],
-                )
+                .execute("UPDATE photos SET share = ?1 WHERE id = ?2 AND share IN (?3, ?4)", params![SHARE_PRIVATE, id, SHARE_NONE, SHARE_COPIED])
                 .map_err(db_err)?;
         }
         Db::rebuild_share_hits(&tx)?;
@@ -1886,34 +1924,50 @@ impl Db {
         Ok(n)
     }
 
-    /// The approved items still to be copied into the master, oldest first (the copier's work list).
-    pub fn approved_items(&self) -> Result<Vec<ApprovedItem>> {
+    /// Take private items among `ids` out of private: they are ordinary again, and not yet synced if their folder is synced from.
+    pub fn release_private(&self, ids: &[PhotoId]) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute("UPDATE photos SET share = ?1 WHERE id = ?2 AND share = ?3", params![SHARE_NONE, id, SHARE_PRIVATE]).map_err(db_err)?;
+        }
+        Db::rebuild_share_hits(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// The items still to be copied into the sync folder, oldest first (the copier's work list).
+    pub fn pending_items(&self) -> Result<Vec<PendingItem>> {
         let c = self.conn();
-        let mut s = c.prepare("SELECT id, path, taken_at FROM photos WHERE share = ?1 AND missing = 0 ORDER BY id").map_err(db_err)?;
+        let mut s = c.prepare(&format!("SELECT id, path, taken_at, size FROM photos WHERE missing = 0 AND dup = 0 AND {UNSYNCED} ORDER BY id")).map_err(db_err)?;
         let rows = s
-            .query_map(params![SHARE_APPROVED], |r| Ok(ApprovedItem { id: r.get(0)?, path: r.get(1)?, taken_at: r.get(2)? }))
+            .query_map([], |r| Ok(PendingItem { id: r.get(0)?, path: r.get(1)?, taken_at: r.get(2)?, size: r.get(3)? }))
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
         Ok(rows)
     }
 
-    /// How many items are approved and not copied yet, and how many have been copied.
+    /// How many items are waiting to be copied, and how many have been copied.
     pub fn copy_counts(&self) -> Result<(i64, i64)> {
         self.conn()
             .query_row(
-                "SELECT COALESCE(SUM(share = ?1 AND missing = 0), 0), COALESCE(SUM(share = ?2), 0) FROM photos WHERE share IN (?1, ?2)",
-                params![SHARE_APPROVED, SHARE_COPIED],
+                &format!(
+                    "SELECT (SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND {UNSYNCED}),
+                            (SELECT COUNT(*) FROM photos WHERE share = {SHARE_COPIED})"
+                ),
+                [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(db_err)
     }
 
-    /// The item is now in the master at `dest` (`outcome` says whether it was copied or was already there): it is done.
+    /// The item is now in the sync folder at `dest` (`outcome` says whether it was copied or was already there): it is done.
     pub fn mark_copied(&self, id: PhotoId, source: &str, dest: &str, outcome: &str) -> Result<()> {
         let mut c = self.conn();
         let tx = c.transaction().map_err(db_err)?;
-        tx.execute("UPDATE photos SET share = ?2 WHERE id = ?1 AND share = ?3", params![id, SHARE_COPIED, SHARE_APPROVED]).map_err(db_err)?;
+        tx.execute("UPDATE photos SET share = ?2 WHERE id = ?1 AND share = ?3", params![id, SHARE_COPIED, SHARE_NONE]).map_err(db_err)?;
         tx.execute(
             "INSERT INTO master_log(at, photo_id, source, dest, outcome) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![now_secs(), id, source, dest, outcome],
@@ -1924,7 +1978,7 @@ impl Db {
         Ok(())
     }
 
-    /// The item could not be copied now (it stays approved, to be tried again): say why in the log.
+    /// The item could not be copied now (it stays waiting, to be tried again): say why in the log.
     pub fn log_copy_problem(&self, id: PhotoId, source: &str, outcome: &str, detail: &str) -> Result<()> {
         self.conn()
             .execute("INSERT INTO master_log(at, photo_id, source, outcome, detail) VALUES (?1, ?2, ?3, ?4, ?5)", params![now_secs(), id, source, outcome, detail])
@@ -2842,6 +2896,16 @@ mod tests {
         assert_eq!(infos.iter().map(|i| (i.path.as_str(), i.count)).collect::<Vec<_>>(), [("/p", 1), ("/q", 1)]);
         let empty = db.add_folder("/empty").unwrap();
         assert!(db.folder_infos().unwrap().iter().any(|i| i.id == empty && i.count == 0));
+    }
+
+    #[test]
+    fn folder_infos_count_copies_hidden_as_duplicates_too() {
+        let (db, f) = mixed_library();
+        let before = db.folder_infos().unwrap().iter().find(|i| i.id == f).unwrap().count;
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE folder_id = ?1", params![f]).unwrap();
+        let after = db.folder_infos().unwrap().iter().find(|i| i.id == f).unwrap().count;
+        assert_eq!(after, before, "Settings shows what is really in the folder, not what Browse shows");
+        assert!(before > 0);
     }
 
     #[test]
@@ -3835,26 +3899,26 @@ mod tests {
     }
 
     #[test]
-    fn with_a_master_only_new_items_in_feeding_folders_are_held() {
+    fn with_a_sync_folder_only_new_items_in_synced_from_folders_are_not_yet_synced() {
         let (db, inbox, other, master) = master_library();
         db.upsert_photo(inbox, "/inbox/new.jpg", 1, 1, &meta(Some(20))).unwrap();
         db.upsert_photo(other, "/other/x.jpg", 1, 1, &meta(Some(30))).unwrap();
         db.upsert_photo(master, "/master/m.jpg", 1, 1, &meta(Some(40))).unwrap();
         assert_eq!(db.share_counts().unwrap(), (1, 0), "only new.jpg: old.jpg is in a folder that does not feed, and the master never does");
-        // finding the same file again does not hold it again once it was approved
+        // finding the same file again does not make it new again once it was copied
         let id = db.find_photo_stat("/inbox/new.jpg").unwrap().unwrap().id;
-        db.approve_held(&[id]).unwrap();
+        db.mark_copied(id, "/inbox/new.jpg", "/master/x.jpg", "copied").unwrap();
         db.upsert_photo(inbox, "/inbox/new.jpg", 1, 1, &meta(Some(20))).unwrap();
         assert_eq!(db.share_counts().unwrap(), (0, 0));
     }
 
     #[test]
-    fn ticking_a_folder_holds_what_is_already_in_it_and_unticking_lets_it_go() {
+    fn ticking_a_folder_counts_what_is_already_in_it_and_unticking_lets_it_go() {
         let (db, inbox, other, _) = master_library();
         db.upsert_photo(other, "/other/x.jpg", 1, 1, &meta(Some(30))).unwrap();
         assert_eq!(db.share_counts().unwrap(), (0, 0), "the other folder does not feed the master yet");
         db.set_folder_feeds(other, true).unwrap();
-        assert_eq!(db.share_counts().unwrap(), (2, 0), "both items already in it are held at once");
+        assert_eq!(db.share_counts().unwrap(), (2, 0), "both items already in it are not yet synced at once");
         db.set_folder_feeds(other, false).unwrap();
         assert_eq!(db.share_counts().unwrap(), (0, 0), "and let go again");
         // what the person already decided is left alone
@@ -3868,7 +3932,7 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_master_holds_what_is_in_the_folders_that_were_already_ticked() {
+    fn choosing_a_sync_folder_counts_what_is_in_the_folders_that_were_already_ticked() {
         let db = Db::open_in_memory().unwrap();
         let f = db.add_folder("/inbox").unwrap();
         db.upsert_photo(f, "/inbox/a.jpg", 1, 1, &meta(Some(1))).unwrap();
@@ -3890,7 +3954,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_choice_lists_held_items_and_follows_approving_and_making_private() {
+    fn the_new_choice_lists_unsynced_items_and_follows_copying_and_making_private() {
         let (db, inbox, _, _) = master_library();
         let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
         let b = db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(30))).unwrap();
@@ -3901,52 +3965,134 @@ mod tests {
         assert_eq!(file_names(&db, &hits), ["c.jpg", "b.jpg", "a.jpg"]);
         assert_eq!(db.make_private(&[b]).unwrap(), 1);
         assert_eq!(file_names(&db, &hits), ["c.jpg", "a.jpg"], "the listing follows without choosing New again");
-        assert_eq!(db.approve_held(&[a, c]).unwrap(), 2);
+        db.mark_copied(a, "/inbox/a.jpg", "/master/a.jpg", "copied").unwrap();
+        db.mark_copied(c, "/inbox/c.jpg", "/master/c.jpg", "copied").unwrap();
         assert_eq!(file_names(&db, &hits), Vec::<String>::new());
         assert_eq!(db.share_counts().unwrap(), (0, 1));
         db.set_share_filter(Some("private")).unwrap();
         assert_eq!(file_names(&db, &hits), ["b.jpg"]);
         assert_eq!(db.release_private(&[b]).unwrap(), 1);
-        assert_eq!(db.share_counts().unwrap(), (1, 0), "b is held for review again");
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "b is not yet synced again");
+    }
+
+    /// A library with a sync folder `/sync` and a folder `/src` that feeds it; items are added with the given content hash.
+    fn synced_library() -> (Db, FolderId, FolderId) {
+        let db = Db::open_in_memory().unwrap();
+        let src = db.add_folder("/src").unwrap();
+        db.set_master_folder(Some("/sync")).unwrap();
+        db.set_folder_feeds(src, true).unwrap();
+        let sync = db.sync_folder_id().unwrap().unwrap();
+        (db, src, sync)
+    }
+
+    fn add_hashed(db: &Db, folder: FolderId, path: &str, taken: i64, hash: &str) -> PhotoId {
+        let id = db.upsert_photo(folder, path, 10, 1, &meta(Some(taken))).unwrap();
+        db.set_hash(id, hash).unwrap();
+        id
     }
 
     #[test]
-    fn sharing_these_approves_the_held_items_the_view_lists_and_no_others() {
-        let (db, inbox, _, _) = master_library();
-        db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
-        db.upsert_photo(inbox, "/inbox/b.mp4", 1, 1, &video_meta(30, 1000)).unwrap();
-        db.set_share_filter(Some("new")).unwrap();
-        let videos = PhotoQuery { search: true, kind: Some(MediaKind::Video), ..Default::default() };
-        assert_eq!(db.approve_held_in(&videos).unwrap(), 1, "only the video is listed");
-        assert_eq!(db.share_counts().unwrap(), (1, 0), "the photo is still held");
-        assert_eq!(db.approve_held_in(&PhotoQuery { search: true, ..Default::default() }).unwrap(), 1);
-        assert_eq!(db.share_counts().unwrap(), (0, 0));
-        assert_eq!(db.approve_held_in(&PhotoQuery { search: true, ..Default::default() }).unwrap(), 0, "nothing is approved twice");
+    fn what_the_sync_folder_already_holds_is_found_by_its_hash_whoever_put_it_there() {
+        let (db, src, sync) = synced_library();
+        let a = add_hashed(&db, src, "/src/a.jpg", 100, "h1");
+        let b = add_hashed(&db, src, "/src/b.jpg", 100, "h2");
+        let p = add_hashed(&db, src, "/src/p.jpg", 100, "h1");
+        db.make_private(&[p]).unwrap();
+        assert_eq!(db.share_counts().unwrap().0, 2, "a and b are not yet synced");
+        add_hashed(&db, sync, "/sync/by-hand.jpg", 100, "h1");
+        assert_eq!(db.reconcile_sync().unwrap(), 1);
+        assert_eq!(db.photo_share(a).unwrap(), SHARE_COPIED, "its content is in the sync folder");
+        assert_eq!(db.photo_share(b).unwrap(), SHARE_NONE, "nothing like b is there");
+        assert_eq!(db.photo_share(p).unwrap(), SHARE_PRIVATE, "private stays private");
+        assert_eq!(db.share_counts().unwrap().0, 1);
+        assert_eq!(db.reconcile_sync().unwrap(), 0);
     }
 
     #[test]
-    fn approving_only_moves_held_items_and_private_ones_are_not_approved_by_accident() {
+    fn changing_the_sync_folder_works_out_what_is_synced_again_for_the_new_one() {
+        let (db, src, sync) = synced_library();
+        let a = add_hashed(&db, src, "/src/a.jpg", 100, "h1");
+        let b = add_hashed(&db, src, "/src/b.jpg", 100, "h2");
+        add_hashed(&db, sync, "/sync/a.jpg", 100, "h1");
+        add_hashed(&db, sync, "/sync/b.jpg", 100, "h2");
+        db.reconcile_sync().unwrap();
+        assert_eq!((db.photo_share(a).unwrap(), db.photo_share(b).unwrap()), (SHARE_COPIED, SHARE_COPIED));
+        // The new sync folder is one the library already knows, and holds only a's content.
+        let other = db.add_folder("/other").unwrap();
+        add_hashed(&db, other, "/other/a.jpg", 100, "h1");
+        db.set_master_folder(Some("/other")).unwrap();
+        assert_eq!(db.photo_share(a).unwrap(), SHARE_COPIED, "the new folder holds it");
+        assert_eq!(db.share_counts().unwrap().0, 1, "the new folder does not hold b: it is not yet synced again");
+        db.set_master_folder(None).unwrap();
+        assert_eq!((db.photo_share(a).unwrap(), db.photo_share(b).unwrap()), (SHARE_NONE, SHARE_NONE), "no sync folder, nothing is synced or waiting");
+    }
+
+    #[test]
+    fn the_original_stays_visible_and_a_synced_copy_is_not_a_duplicate_to_clean_up() {
+        let (db, src, sync) = synced_library();
+        // The copy has the earliest date and the shortest path, which would have made it the one shown.
+        let copy = add_hashed(&db, sync, "/sync/a.jpg", 50, "h1");
+        let original = add_hashed(&db, src, "/src/deep/folder/a.jpg", 100, "h1");
+        db.refresh_dup_flags().unwrap();
+        let hidden = |id| db.conn().query_row("SELECT dup FROM photos WHERE id = ?1", params![id], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!((hidden(original), hidden(copy)), (0, 1), "Browse shows the original");
+        assert!(db.duplicate_groups().unwrap().is_empty(), "an original and its synced copy are not wasted space");
+        assert_eq!(db.dup_status().unwrap().groups, 0);
+        assert_eq!(db.removable_copies(&[copy]).unwrap().len(), 0, "the synced copy cannot be removed as a duplicate");
+        // A real duplicate next to the original is still listed, without the synced copy.
+        let again = add_hashed(&db, src, "/src/deep/folder/a2.jpg", 100, "h1");
+        db.refresh_dup_flags().unwrap();
+        let groups = db.duplicate_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        let ids: Vec<PhotoId> = groups[0].photos.iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![original, again]);
+        let s = db.dup_status().unwrap();
+        assert_eq!((s.groups, s.extra_files), (1, 1));
+        assert_eq!(hidden(copy), 1);
+        // The person's own choice still wins.
+        db.set_keep_pick(copy).unwrap();
+        assert_eq!((hidden(copy), hidden(original)), (0, 1));
+    }
+
+    #[test]
+    fn what_is_waiting_leaves_out_private_items_hidden_copies_and_the_copied() {
         let (db, inbox, other, _) = master_library();
-        let held = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        let b = db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(21))).unwrap();
+        let c = db.upsert_photo(inbox, "/inbox/c.jpg", 1, 1, &meta(Some(22))).unwrap();
+        let d = db.upsert_photo(inbox, "/inbox/d.jpg", 1, 1, &meta(Some(23))).unwrap();
         let plain = db.upsert_photo(other, "/other/p.jpg", 1, 1, &meta(Some(20))).unwrap();
-        assert_eq!(db.make_private(&[held]).unwrap(), 1);
-        assert_eq!(db.approve_held(&[held, plain]).unwrap(), 0, "a private item is not held, an ordinary one never was");
-        assert_eq!(db.make_private(&[plain]).unwrap(), 1, "an ordinary item can be made private too");
-        assert_eq!(db.share_counts().unwrap(), (0, 2));
+        assert_eq!(db.copy_counts().unwrap(), (4, 0));
+        db.make_private(&[a]).unwrap();
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![b]).unwrap();
+        db.mark_copied(c, "/inbox/c.jpg", "/master/c.jpg", "copied").unwrap();
+        assert_eq!(db.pending_items().unwrap().iter().map(|i| i.id).collect::<Vec<_>>(), vec![d]);
+        assert_eq!(db.copy_counts().unwrap(), (1, 1));
+        assert_eq!(db.make_private(&[plain]).unwrap(), 1, "an ordinary item in a folder not synced from can be private too");
+        assert_eq!(db.make_private(&[a]).unwrap(), 0, "already private");
+        assert_eq!(db.share_counts().unwrap(), (1, 2));
     }
 
     #[test]
-    fn taking_private_off_returns_an_item_to_review_only_when_its_folder_feeds_the_master() {
+    fn an_item_already_copied_can_still_be_marked_private() {
+        let (db, inbox, _, _) = master_library();
+        let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
+        db.mark_copied(a, "/inbox/a.jpg", "/master/a.jpg", "copied").unwrap();
+        assert_eq!(db.make_private(&[a]).unwrap(), 1);
+        assert_eq!(db.photo_share(a).unwrap(), SHARE_PRIVATE);
+    }
+
+    #[test]
+    fn taking_private_off_makes_an_item_waiting_only_when_its_folder_is_synced_from() {
         let (db, inbox, other, _) = master_library();
         let feeding = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
         let plain = db.upsert_photo(other, "/other/p.jpg", 1, 1, &meta(Some(20))).unwrap();
-        assert_eq!(db.photo_share(feeding).unwrap(), SHARE_HELD);
-        assert_eq!(db.photo_share(plain).unwrap(), SHARE_NONE);
+        assert_eq!(db.share_counts().unwrap(), (1, 0));
         db.make_private(&[feeding, plain]).unwrap();
         assert_eq!(db.photo_share(plain).unwrap(), SHARE_PRIVATE);
+        assert_eq!(db.share_counts().unwrap(), (0, 2));
         db.release_private(&[feeding, plain]).unwrap();
-        assert_eq!(db.photo_share(feeding).unwrap(), SHARE_HELD, "waits for review again");
-        assert_eq!(db.photo_share(plain).unwrap(), SHARE_NONE, "an ordinary item is ordinary again");
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "the one in a synced-from folder is waiting again; the other is just ordinary");
     }
 
     #[test]
@@ -3975,26 +4121,26 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_master_again_holds_what_was_approved_for_the_one_taken_away() {
+    fn choosing_a_sync_folder_again_starts_again_for_what_was_copied_to_the_one_taken_away() {
         let (db, inbox, _, _) = master_library();
         let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
         let b = db.upsert_photo(inbox, "/inbox/b.jpg", 1, 1, &meta(Some(30))).unwrap();
-        db.approve_held(&[a]).unwrap();
+        db.mark_copied(a, "/inbox/a.jpg", "/master/a.jpg", "copied").unwrap();
         db.make_private(&[b]).unwrap();
         db.set_master_folder(None).unwrap();
         db.set_master_folder(Some("/master")).unwrap();
-        assert_eq!(db.share_counts().unwrap(), (1, 1), "a waits for review again; b is still private");
+        assert_eq!(db.share_counts().unwrap(), (1, 1), "a is waiting again; b is still private");
     }
 
     #[test]
-    fn changing_the_master_holds_what_was_approved_for_the_old_one_but_choosing_the_same_one_keeps_approvals() {
+    fn changing_the_sync_folder_starts_again_for_what_was_copied_but_choosing_the_same_one_keeps_it() {
         let (db, inbox, _, _) = master_library();
         let a = db.upsert_photo(inbox, "/inbox/a.jpg", 1, 1, &meta(Some(20))).unwrap();
-        db.approve_held(&[a]).unwrap();
+        db.mark_copied(a, "/inbox/a.jpg", "/master/a.jpg", "copied").unwrap();
         db.set_master_folder(Some("/master")).unwrap();
-        assert_eq!(db.share_counts().unwrap(), (0, 0), "the same master again: a stays approved");
+        assert_eq!(db.share_counts().unwrap(), (0, 0), "the same sync folder again: a stays copied");
         db.set_master_folder(Some("/elsewhere")).unwrap();
-        assert_eq!(db.share_counts().unwrap(), (1, 0), "a different master: a waits for review again");
+        assert_eq!(db.share_counts().unwrap(), (1, 0), "a different sync folder: a is waiting again");
     }
 
     #[test]

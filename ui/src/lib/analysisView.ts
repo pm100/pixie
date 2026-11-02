@@ -50,6 +50,11 @@ export type AnalysisInput = {
 };
 
 const n = (x: number) => x.toLocaleString();
+
+/** "3 of 1,234 items have no location": said once some items have none; null when every item has one. */
+export function locationsLine(lw: { without: number; total: number } | null | undefined): string | null {
+  return lw && lw.without > 0 ? `${n(lw.without)} of ${plural(lw.total, 'item')} ${lw.without === 1 ? 'has' : 'have'} no location` : null;
+}
 const LABELS: Record<CounterKey, string> = { tags: 'Auto tags', faces: 'People', dupes: 'Duplicates' };
 const MODEL_NAMES = { tags: 'picture-analysis', faces: 'face' } as const;
 const TROUBLE = { tags: 'Picture analysis', faces: 'Face finding', dupes: 'Duplicate finding' } as const;
@@ -140,10 +145,8 @@ export function analysisView(o: AnalysisInput): AnalysisView {
     headline = 'Done';
   }
   // Not an analysis, so it does not count towards finished or the bar: only said, for the whole library.
-  const lw = o.locations;
-  if (load === undefined && lw && lw.without > 0) {
-    counters.push({ key: 'location', label: 'Locations', text: `${n(lw.without)} of ${plural(lw.total, 'item')} ${lw.without === 1 ? 'has' : 'have'} no location`, done: true });
-  }
+  const noLocations = load === undefined ? locationsLine(o.locations) : null;
+  if (noLocations) counters.push({ key: 'location', label: 'Locations', text: noLocations, done: true });
   return {
     headline, fraction, counters, problems, finished,
     working: built.some((b) => b.working),

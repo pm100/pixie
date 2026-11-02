@@ -7,6 +7,8 @@ describe('phaseAfterScan', () => {
   });
   it('finding nothing goes straight to the end screen, which says so', () => {
     expect(phaseAfterScan({ stopped: false, found: 0, photos: 0 })).toBe('allset');
+    expect(phaseAfterScan({ stopped: false, found: 0, photos: 0, adding: true })).toBe('off');
+    expect(phaseAfterScan({ stopped: false, found: 3, photos: 0, adding: true })).toBe('allset');
   });
   it('finding photos goes on to analysing', () => {
     expect(phaseAfterScan({ stopped: false, found: 12, photos: 10 })).toBe('analysing');

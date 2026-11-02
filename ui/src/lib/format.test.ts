@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basename, dirname, folderName, formatBytes, formatDateTime, formatDay, formatDuration, formatGps, plural, weekday } from './format';
+import { basename, dirname, folderName, formatBytes, formatDateTime, formatDay, formatDuration, formatByteRate, formatGps, formatRate, formatTimeLeft, middle, plural, weekday } from './format';
 
 describe('dates', () => {
   it('knows the weekday of a day string', () => {
@@ -87,5 +87,34 @@ describe('plural', () => {
     expect(plural(1, 'person', 'people')).toBe('1 person');
     expect(plural(3, 'person', 'people')).toBe('3 people');
     expect(plural(1234, 'video')).toBe('1,234 videos');
+  });
+});
+
+describe('time left and speed', () => {
+  it('says how long is left in words that are no more exact than the guess', () => {
+    expect(formatTimeLeft(0)).toBe('under a minute');
+    expect(formatTimeLeft(59)).toBe('under a minute');
+    expect(formatTimeLeft(60)).toBe('about 1 min');
+    expect(formatTimeLeft(90)).toBe('about 2 min');
+    expect(formatTimeLeft(3000)).toBe('about 50 min');
+    expect(formatTimeLeft(3600)).toBe('about 1 h');
+    expect(formatTimeLeft(4800)).toBe('about 1 h 20 min');
+    expect(formatTimeLeft(12 * 3600 + 600)).toBe('about 12 h');
+  });
+
+  it('gives a speed in a unit that is not a tiny number', () => {
+    expect(formatRate(12.4, 'photos')).toBe('12 photos/s');
+    expect(formatRate(2.34, 'photos')).toBe('2.3 photos/s');
+    expect(formatRate(0.5, 'photos')).toBe('30 photos/min');
+    expect(formatByteRate(11_900_000)).toBe('11.3 MB/s');
+  });
+});
+
+describe('middle', () => {
+  it('leaves a short text alone and cuts a long one in the middle to the length asked', () => {
+    expect(middle('2019/Summer', 20)).toBe('2019/Summer');
+    const cut = middle('2019/Summer trip/Day 3/Beach/Raw', 16);
+    expect(cut).toBe('2019/Sum…ach/Raw');
+    expect(cut.length).toBe(16);
   });
 });

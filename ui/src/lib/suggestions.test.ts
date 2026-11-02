@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addFound, applyCount, countText, listedRows, lookingText, notInLibrary, tickedPaths, toRows, toggle, type Row } from './suggestions';
+import { addFound, applyCount, chooseByHand, countText, listedRows, lookingText, notInLibrary, tickedPaths, toRows, toggle, type Row } from './suggestions';
 import type { Suggestion } from './api';
 
 const s = (path: string, o: Partial<Suggestion> = {}): Suggestion => ({
@@ -106,5 +106,25 @@ describe('listedRows', () => {
   it('keeps the order the rows came in', () => {
     const rows = toRows([s('C:\B'), s('C:\A', { kind: 'further' })]);
     expect(listedRows(rows).map((r) => r.path)).toEqual(['C:\B', 'C:\A']);
+  });
+});
+
+describe('chooseByHand', () => {
+  const row = (path: string, o: Partial<Row> = {}): Row => ({ path, name: path, kind: 'known', ticked: false, note: null, included_in: null, count: null, ...o });
+  const mine = s('E:/pixie-sync', { note: 'chosen by you' });
+  it('lists and ticks the folder, even when a suggestion for its drive (empty, so not shown) would have swallowed it', () => {
+    const r = chooseByHand([row('E:/', { count: { n: 0, capped: false } }), row('D:/Photos')], [], mine);
+    expect(r.note).toBeNull();
+    expect(tickedPaths(r.rows)).toEqual(['E:/pixie-sync']);
+    expect(r.rows.map((x) => x.path)).toEqual(['D:/Photos', 'E:/pixie-sync']);
+  });
+  it('lets a chosen folder replace the suggestions inside it', () => {
+    const r = chooseByHand([row('E:/pixie-sync/old'), row('D:/Photos')], [], mine);
+    expect(r.rows.map((x) => x.path)).toEqual(['D:/Photos', 'E:/pixie-sync']);
+  });
+  it('says so when the library already has the folder or one that holds it, and changes nothing', () => {
+    const rows = [row('D:/Photos')];
+    expect(chooseByHand(rows, ['e:/PIXIE-SYNC/'], mine)).toEqual({ rows, note: 'E:/pixie-sync is already in your library.' });
+    expect(chooseByHand(rows, ['E:/'], mine)).toEqual({ rows, note: 'E:/pixie-sync is already in your library, inside E:/.' });
   });
 });
