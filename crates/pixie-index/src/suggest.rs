@@ -97,6 +97,8 @@ pub fn known_places(p: &Places) -> Vec<Suggestion> {
     if let Some(h) = &p.home {
         add(known(&h.join("Dropbox").join("Camera Uploads"), "Dropbox Camera Uploads", true));
         add(known(&h.join("Dropbox").join("Photos"), "Dropbox Photos", true));
+        // iCloud for Windows keeps its photos beside Pictures, not inside it (older versions used Pictures\iCloud Photos).
+        add(known(&h.join("iCloudPhotos").join("Photos"), "iCloud Photos", true));
     }
     if let Some(d) = &p.pictures {
         for (sub, name) in [("iCloud Photos", "iCloud Photos"), ("Camera Roll", "Camera Roll"), ("Screenshots", "Screenshots")] {
@@ -108,6 +110,9 @@ pub fn known_places(p: &Places) -> Vec<Suggestion> {
     }
     for root in &p.onedrive {
         add(known(&root.join("Documents"), "OneDrive Documents", false));
+    }
+    if let Some(h) = &p.home {
+        add(known(&h.join("iCloudDrive"), "iCloud Drive", false));
     }
     if let Some(d) = &p.downloads {
         add(known(d, "Downloads", false));
@@ -348,6 +353,20 @@ mod tests {
         assert!(!by_name(&v, "Downloads").ticked);
         assert!(!by_name(&v, "Desktop").ticked);
         assert!(v.iter().all(|s| s.name != "Videos"), "a missing folder is not suggested");
+    }
+
+    #[test]
+    fn icloud_for_windows_folders_under_home_are_suggested() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        for d in ["iCloudPhotos/Photos", "iCloudDrive"] {
+            fs::create_dir_all(home.join(d)).unwrap();
+        }
+        let p = Places { home: Some(home.to_path_buf()), ..Default::default() };
+        let v = known_places(&p);
+        assert!(by_name(&v, "iCloud Photos").ticked);
+        assert!(by_name(&v, "iCloud Photos").path.ends_with("Photos"));
+        assert!(!by_name(&v, "iCloud Drive").ticked);
     }
 
     #[test]
