@@ -145,8 +145,8 @@ function rowOf(t: ActivityTask): Row {
   return { key: `${t.kind}:${t.started_ms}`, kind: t.kind, label: label(t.kind), state: t.state, fraction: t.state === 'done' ? 1 : fractionOf(t), counts: countsOf(t), speed: speedOf(t), left, explain: t.kind === 'scan' ? shorten(explainOf(t)) : explainOf(t), explainFull: explainOf(t), files: [], moreFiles: 0, source: null, place: PLACE_KINDS.includes(t.kind) ? middle(t.place ?? '', 64) : null, placeFull: PLACE_KINDS.includes(t.kind) ? t.place ?? '' : null };
 }
 
-/** Errors first, then what is going, then what is paused. */
-const rank = (t: ActivityTask): number => (t.state === 'error' ? 0 : t.state === 'paused' ? 2 : 1);
+/** Errors first, then the rest in the order they came: a row that is paused stays where it is, so Pause does not shuffle the list. */
+const rank = (t: ActivityTask): number => (t.state === 'error' ? 0 : 1);
 
 /**
  * The time left to show: the latest estimate, or the last one while work goes on but there is none at the moment (the estimate is lost
@@ -162,7 +162,9 @@ export function view(s: ActivitySnapshot | null, held: number | null = null): { 
   const finished = [...tasks.filter((t) => t.state === 'done'), ...(s?.finished ?? [])].sort((a, b) => (b.finished_ms ?? 0) - (a.finished_ms ?? 0));
   const running = open.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i).map(({ t }) => rowOf(t));
   let pill: Pill = null;
-  if (open.length > 0) pill = open.some((t) => t.state === 'error') ? 'error' : open.every((t) => t.state === 'paused') ? 'paused' : 'working';
+  // Pause cannot stop the cloud drive's own download, so a cloud wait going on does not stop the rest showing as paused.
+  const pausable = open.filter((t) => t.kind !== 'cloud_wait');
+  if (open.length > 0) pill = open.some((t) => t.state === 'error') ? 'error' : pausable.length > 0 && pausable.every((t) => t.state === 'paused') ? 'paused' : 'working';
   let overall: string;
   if (open.length === 0) overall = finished.length > 0 ? 'Everything is done.' : 'Nothing is running.';
   else if (pill === 'error') overall = 'Something needs attention.';

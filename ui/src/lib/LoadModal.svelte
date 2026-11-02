@@ -7,9 +7,7 @@
 
   type Sample = StripItem;
 
-  let { folder, strip, snapshot, scanPaused = false, notice = '', onbackground, onpause, onretry }: {
-    /** The folder being read, if known. */
-    folder: string | null;
+  let { strip, snapshot, scanPaused = false, notice = '', onbackground, onpause, onretry }: {
     /** The photos read most recently, oldest first. */
     strip: Sample[];
     /** Everything running in the background: the same rows as the Processing screen. */
@@ -30,7 +28,6 @@
   {#if notice}<p class="err" role="alert">{notice}</p>{/if}
   <!-- The pictures go by the whole time: first as the files are found, then as each is looked at. -->
   <PhotoStrip {strip} />
-  {#if folder}<p class="folder">Reading {folder}</p>{/if}
   <!-- One screen from the first moment: the files are worked on as the walk finds them. -->
   <ActivityScreen {snapshot} {onpause} {onretry} {scanPaused} compact />
   {#snippet footer()}
@@ -40,7 +37,6 @@
 </FlowStage>
 
 <style>
-  .folder { margin: 4px 0 10px; color: #555; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .err { margin-top: 6px; color: #b00020; font-size: 13px; }
   .note { color: #666; font-size: 13px; }
   .foot { margin-right: auto; }

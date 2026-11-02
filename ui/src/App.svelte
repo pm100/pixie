@@ -925,7 +925,6 @@
   let sniffing = $state(false); // still sniffing for photo folders
   let looking = $state<string | null>(null);
   let strip = $state<Sample[]>([]); // the photos read most recently, oldest first
-  let flowFolder = $state<string | null>(null);
   /** How far the analysis has got for the photos of this load's folders (null until first counted). */
   let flowLoad = $state<LoadProgress | null>(null);
   let facePeople = $state(0);
@@ -1034,7 +1033,7 @@
     message = '';
     flowLoad = null;
     flowStartedAt = Date.now(); flowIds = []; flowPhotos = 0; finishing = false;
-    strip = []; flowFolder = null; allSet = null; flowProblems = [];
+    strip = []; allSet = null; flowProblems = [];
     feed?.stop();
     feed = createStripFeed({ load: preload, onShow: (item) => (strip = [...strip.slice(-4), item]), minGapMs: 100 });
     scanning = true; scanFolder = null;
@@ -1273,8 +1272,6 @@
         if (!cancelling) scanPaused = false; // a scan is going, so nothing is waiting to be resumed
         if (e.payload.latest) dialogFeed?.offer(e.payload.latest);
         if (phase !== 'scanning') { if (phase === 'off' || phase === 'background') refreshLive(); return; }
-        const f = folders.find((x) => x.id === e.payload.folder_id);
-        flowFolder = f ? folderName(f.path) : flowFolder;
         if (e.payload.latest) feed?.offer(e.payload.latest);
       }),
       // A photo the analysis has just finished goes by on the loading screen's strip; with the library showing, the grid
@@ -1513,7 +1510,7 @@
 {:else if phase === 'options'}
   <AnalysisStep options={welcomeOptions} onoptions={(o) => (welcomeOptions = o)} onback={() => (phase = 'welcome')} onstart={optionsStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
-  <LoadModal folder={flowFolder} {strip} snapshot={activity} {scanPaused} notice={message}
+  <LoadModal {strip} snapshot={activity} {scanPaused} notice={message}
              onbackground={carryOnInBackground} onpause={pauseResume} onretry={() => analysisRetry()} />
 {:else if phase === 'background'}
   <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}

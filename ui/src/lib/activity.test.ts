@@ -135,14 +135,14 @@ describe('the progress screen view', () => {
     expect([r.label, r.counts]).toEqual(['Getting face models', '4.8 MB of 47.7 MB']);
   });
 
-  it('sorts errors first, then what is running, then what is paused, and puts finished work in its own list', () => {
+  it('sorts errors first, keeps the rest where they were (pausing does not move a row), and puts finished work in its own list', () => {
     const v = view(snap([
       task({ kind: 'faces', state: 'paused', done: 1, total: 9 }),
       task({ kind: 'scan', state: 'done', done: 9, total: 9, started_ms: 0, finished_ms: 125_000 }),
       task({ kind: 'read', done: 1, total: 9 }),
       task({ kind: 'models', state: 'error', note: 'x' }),
     ]));
-    expect(v.running.map((r) => r.kind)).toEqual(['models', 'read', 'faces']);
+    expect(v.running.map((r) => r.kind)).toEqual(['models', 'faces', 'read']);
     expect(v.finished.map((r) => r.kind)).toEqual(['scan']);
     expect(v.finished[0].explain).toBe('Took about 2 min.');
   });
@@ -161,6 +161,8 @@ describe('the progress screen view', () => {
     expect(view(snap([task({ state: 'paused' }), task({ kind: 'faces' })])).pill).toBe('working');
     expect(view(snap([task({ state: 'paused' }), task({ kind: 'models', state: 'error' })])).pill).toBe('error');
     expect(view(snap([task({ state: 'waiting', kind: 'cloud_wait' })])).pill).toBe('working');
+    // Pause cannot stop the cloud drive's download: the rest paused is still "paused" while it goes on.
+    expect(view(snap([task({ state: 'paused' }), task({ state: 'waiting', kind: 'cloud_wait' })])).pill).toBe('paused');
     expect(view(snap([task({ state: 'done', done: 3, total: 3 })])).pill).toBeNull();
   });
 
