@@ -113,8 +113,8 @@ describe('the progress screen view', () => {
   it('names the file a running job has been on for a while, with its size and how long', () => {
     const r = view(snap([task({ kind: 'duplicates', done: 5, total: 20, current: { name: 'big.mp4', bytes: 5_800_000_000, secs: 130 } })])).running[0];
     expect(r.explain).toBe('Working on big.mp4 (5.4 GB) for 2 min 10 s');
-    const quick = view(snap([task({ kind: 'read', done: 5, total: 20, note: 'Checking the copy', current: null })])).running[0];
-    expect(quick.explain).toBe('Checking the copy');
+    const quick = view(snap([task({ kind: 'read', done: 5, total: 20, note: 'Checking what was synced', current: null })])).running[0];
+    expect(quick.explain).toBe('Checking what was synced');
   });
 
   it('does not show a model download, but shows an error with its reason', () => {

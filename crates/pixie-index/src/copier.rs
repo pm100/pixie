@@ -385,7 +385,7 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
             }
             Err(Trouble::Mismatch) => {
                 report.failed += 1;
-                problem(&mut report, "failed", "the copy did not match the original and was removed".into())?;
+                problem(&mut report, "failed", "the synced file did not match the original and was removed".into())?;
             }
             Err(Trouble::Master(e, at)) => {
                 report.paused = Some(describe(&e, &at));

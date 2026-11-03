@@ -153,7 +153,7 @@ pub fn from_cloud(c: &CloudCounts) -> Option<TaskUpdate> {
 /// The sync copy. `running` is whether a copy is going; an idle one is over.
 pub fn from_copy(running: bool, p: &CopyProgress) -> TaskUpdate {
     let state = if running { RunState::Running } else { RunState::Done };
-    let note = (running && p.phase == CopyPhase::Checking).then(|| "Checking the copy".to_string());
+    let note = (running && p.phase == CopyPhase::Checking).then(|| "Checking what was synced".to_string());
     TaskUpdate {
         bytes_done: p.bytes_done,
         bytes_total: (p.bytes_total > 0).then_some(p.bytes_total),
@@ -485,8 +485,8 @@ mod tests {
         let u = from_copy(true, &writing);
         assert_eq!((u.done, u.total, u.bytes_done, u.bytes_total, u.note), (0, Some(5), 4_000_000_000, Some(6_000_000_000), None));
         let checking = CopyProgress { phase: CopyPhase::Checking, ..writing };
-        assert_eq!(from_copy(true, &checking).note.as_deref(), Some("Checking the copy"));
-        assert_eq!(from_copy(false, &checking).note, None, "an idle copy checks nothing");
+        assert_eq!(from_copy(true, &checking).note.as_deref(), Some("Checking what was synced"));
+        assert_eq!(from_copy(false, &checking).note, None, "an idle sync checks nothing");
     }
 
     #[test]

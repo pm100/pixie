@@ -30,24 +30,24 @@ export type CopyReport = { at: number; copied: number; already: number; failed: 
 export type CopyStatus = { pending: number; copied: number; running: boolean; last: CopyReport | null };
 export type CopyProgress = { done: number; total: number; bytes_done: number; bytes_total: number; phase: 'copying' | 'checking' };
 
-/** What the sync section says about the copying now: that it is going (the Processing button has how far), or what is waiting. */
+/** What the sync section says about the syncing now: that it is going (the Processing button has how far), or what is waiting. */
 export function copyLine(s: CopyStatus): string {
-  if (s.running) return 'Copying. The Processing button at the top right shows how far it has got.';
-  if (s.pending === 0) return 'Nothing is waiting to be copied.';
-  return `${plural(s.pending, 'item')} ${s.pending === 1 ? 'is' : 'are'} waiting to be copied.`;
+  if (s.running) return 'Syncing. The Processing button at the top right shows how far it has got.';
+  if (s.pending === 0) return 'Nothing is waiting to be synced.';
+  return `${plural(s.pending, 'item')} ${s.pending === 1 ? 'is' : 'are'} waiting to be synced.`;
 }
 
-/** One line on the last copy: what it did, and why it stopped if it did. */
+/** One line on the last sync: what it did, and why it stopped if it did. */
 export function lastCopyLine(r: CopyReport): string {
   const parts = [
-    r.copied > 0 ? `${r.copied} copied` : '',
+    r.copied > 0 ? `${r.copied} synced` : '',
     r.already > 0 ? `${r.already} already there` : '',
     r.failed > 0 ? `${r.failed} failed` : '',
   ].filter((x) => x !== '');
-  return `Last copy: ${parts.length > 0 ? parts.join(', ') : 'nothing to copy'}${took(r)}.${r.paused !== null ? ` Stopped: ${r.paused}.` : ''}`;
+  return `Last sync: ${parts.length > 0 ? parts.join(', ') : 'nothing to sync'}${took(r)}.${r.paused !== null ? ` Stopped: ${r.paused}.` : ''}`;
 }
 
-/** " (360 MB in 2 min 5 s, 2.9 MB/s)": how much was copied and how fast, so a slow drive shows. Nothing when the run was too short to say. */
+/** " (360 MB in 2 min 5 s, 2.9 MB/s)": how much was synced and how fast, so a slow drive shows. Nothing when the run was too short to say. */
 function took(r: CopyReport): string {
   if (r.copied === 0 || r.seconds < 1) return '';
   const mb = r.bytes / 1_000_000;
@@ -58,7 +58,7 @@ function took(r: CopyReport): string {
 
 /** The start-up reminder: what it says about the new items waiting to be synced. */
 export function reminderLine(held: number, folder: string): string {
-  return `${plural(held, 'item')} ${held === 1 ? 'is' : 'are'} new and not yet synced to ${folder}. Before syncing, look through ${held === 1 ? 'it' : 'them'} and mark any you do not want copied as private.`;
+  return `${plural(held, 'item')} ${held === 1 ? 'is' : 'are'} new and not yet synced to ${folder}. Before syncing, look through ${held === 1 ? 'it' : 'them'} and mark any you do not want synced as private.`;
 }
 
 /** Whether to remind at start: a sync folder is set, something is waiting, and the person has not turned it off. */

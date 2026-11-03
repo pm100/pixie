@@ -344,6 +344,7 @@
     syncCountTimer = setTimeout(() => void loadShare(), 2000);
   }
   async function copyNow() {
+    syncPaused = false; // (a sync started by hand, or the reminder, is no longer waiting to be resumed)
     try { await copyToMaster(); } catch (e) { message = String(e); return; }
     await loadShare();
   }
@@ -1140,11 +1141,14 @@
   let cancelling = false; // a pause has stopped the scan and the scan has not ended yet
   function pauseScan() { scanPaused = true; cancelling = true; void cancelScan(); }
   function resumeScan() { scanPaused = false; scanning = true; startScan(null).catch(() => (scanning = false)); }
+  let syncPaused = $state(false); // a sync into the sync folder was stopped by Pause and has not been started again
   function pauseResume(paused: boolean) {
-    const a = pauseActions(paused, scanning, scanPaused);
+    const a = pauseActions(paused, scanning, scanPaused, (copyStatus?.running ?? false) || (activity?.tasks ?? []).some((t) => t.kind === 'copy_to_master' && t.state === 'running'), syncPaused);
     analysisSetPaused(a.analysisPaused).catch((e) => (message = String(e)));
     if (a.cancelScan) pauseScan();
     if (a.startScan) resumeScan();
+    if (a.stopSync) { syncPaused = true; void stopMasterCopy(); }
+    if (a.startSync) { syncPaused = false; void copyNow(); }
   }
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
@@ -1496,7 +1500,7 @@
 </main>
 
 {#if activityOpen}
-  <ProcessingDialog snapshot={activity} strip={dialogStrip} {scanPaused} onpause={pauseResume} onretry={() => analysisRetry()} onclose={() => (activityOpen = false)} />
+  <ProcessingDialog snapshot={activity} strip={dialogStrip} scanPaused={scanPaused || syncPaused} onpause={pauseResume} onretry={() => analysisRetry()} onclose={() => (activityOpen = false)} />
 {/if}
 
 {#if reminder && master !== null}
@@ -1510,7 +1514,7 @@
 {:else if phase === 'options'}
   <AnalysisStep options={welcomeOptions} onoptions={(o) => (welcomeOptions = o)} onback={() => (phase = 'welcome')} onstart={optionsStart} />
 {:else if phase === 'scanning' || phase === 'analysing'}
-  <LoadModal {strip} snapshot={activity} {scanPaused} notice={message}
+  <LoadModal {strip} snapshot={activity} scanPaused={scanPaused || syncPaused} notice={message}
              onbackground={carryOnInBackground} onpause={pauseResume} onretry={() => analysisRetry()} />
 {:else if phase === 'background'}
   <BackgroundNote scanning={scanning} onpeople={() => { phase = 'off'; pickTab('faces'); }}

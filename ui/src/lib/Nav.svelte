@@ -150,25 +150,6 @@
 {/snippet}
 
 <nav>
-  <!-- The sync folder: only once one is chosen. New items wait here until they have been looked at. -->
-  {#if shareRows.length > 0}
-    {@render head('sharing', 'Sync')}
-    {#if !folded('sharing')}
-      {#each shareRows as r (r.id)}
-        <div class="syncrow">
-          <button class="item" class:active={r.active} class:zero={r.count === 0 && !r.active} aria-pressed={r.active} title={r.title} onclick={() => onshare(r.active ? null : r.id)}>
-            <span class="mark">{#if r.active}<Check />{/if}</span><span class="grow">{r.label}</span><span class="n">{r.count.toLocaleString()}</span>
-          </button>
-          {#if r.id === 'new'}
-            {#if r.count > 0}
-              <button class="syncnow" title="Open Import/Export, Sync, where the items not yet synced are copied into the sync folder" onclick={() => onopensync()}>Go to Sync</button>
-            {/if}
-          {/if}
-        </div>
-      {/each}
-    {/if}
-  {/if}
-
   {@render head('when', 'When')}
   {#if !folded('when')}
     <button class="item" class:active={recent} class:zero={facets && facets.recent === 0 && !recent} aria-pressed={recent} title={recent ? 'Stop showing only the recent items' : 'Show only the recent items'} onclick={() => onrecent(!recent)}><span class="mark">{#if recent}<Check />{/if}</span><span class="grow" use:clipTitle>{recentText}</span>{#if facets}<span class="n">{facets.recent.toLocaleString()}</span>{/if}</button>
@@ -322,12 +303,31 @@
       {/if}
     {/if}
   {/if}
+
+  <!-- The sync folder: only once one is chosen, at the bottom of the tree. New items wait here until they have been looked at. -->
+  {#if shareRows.length > 0}
+    {@render head('sharing', 'Sync')}
+    {#if !folded('sharing')}
+      {#each shareRows as r (r.id)}
+        <div class="syncrow">
+          <button class="item" class:active={r.active} class:zero={r.count === 0 && !r.active} aria-pressed={r.active} title={r.title} onclick={() => onshare(r.active ? null : r.id)}>
+            <span class="mark">{#if r.active}<Check />{/if}</span><span class="grow">{r.label}</span><span class="n">{r.count.toLocaleString()}</span>
+          </button>
+          {#if r.id === 'new'}
+            {#if r.count > 0}
+              <button class="syncnow" title="Open Import/Export, Sync, where the new items are synced into the sync folder" onclick={() => onopensync()}>Sync now</button>
+            {/if}
+          {/if}
+        </div>
+      {/each}
+    {/if}
+  {/if}
 </nav>
 
 <style>
-  .syncrow { display: flex; align-items: center; gap: 4px; }
-  .syncrow .item { flex: 1 1 auto; width: auto; min-width: 0; }
-  .syncnow { flex: none; border: 0; background: none; padding: 2px 8px; color: #1a56c4; text-decoration: underline; cursor: pointer; font-size: 12px; }
+  /* The link to the Sync page sits under the New row, not beside it, so it never takes room from the row's name and count.
+     40px puts it under the row's name: the row's 20px indent, its 16px tick slot and the 4px gap. */
+  .syncnow { display: block; border: 0; background: none; margin: 0 0 4px 40px; padding: 2px 0; color: #1a56c4; text-decoration: underline; cursor: pointer; font-size: 12px; }
   .syncnow:hover { color: #0d3a8c; }
   nav { padding: 4px 4px 16px; font-size: 14px; }
   /* One indent grid: every row has a 16px slot (a chevron, a tick or nothing) and each level moves right by one 12px step,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { facesFor, makePrivate, photoShare, placeFor, releasePrivate, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
+  import { facesFor, makePrivate, photoShare, placeFor, releasePrivate, showInFolder, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
   import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
@@ -106,13 +106,13 @@
 
 <div class="details">
   {#if photo}
-    <h3 title={photo.path}>{basename(photo.path)}</h3>
+    <h3><button class="name" title={`Show this file in its folder (${photo.path})`} onclick={() => showInFolder(photo.id).catch(() => {})}>{basename(photo.path)}</button></h3>
     <dl>
       <dt>Taken</dt><dd>{formatDateTime(photo.taken_at)}</dd>
       {#if photo.width && photo.height}<dt>Size</dt><dd>{photo.width} × {photo.height}</dd>{/if}
       {#if photo.kind === 'video'}<dt>Duration</dt><dd>{formatDuration(photo.duration_ms)}</dd>{/if}
       <dt>File</dt><dd>{formatBytes(photo.size)}</dd>
-      <dt>Folder</dt><dd class="path" title={dirname(photo.path)}><bdi dir="ltr">{dirname(photo.path)}</bdi></dd>
+      <dt>Folder</dt><dd class="path"><button class="name" title={`Show this file in its folder (${dirname(photo.path)})`} onclick={() => showInFolder(photo.id).catch(() => {})}><bdi dir="ltr">{dirname(photo.path)}</bdi></button></dd>
       {#if photo.camera}<dt>Camera</dt><dd>{photo.camera}</dd>{/if}
       {#if gps}<dt>Location</dt><dd>{gps}</dd>{/if}
       {#if faces.length > 0}<dt>People</dt><dd class="chips">{#each faces as f (f.id)}<span class="chip face"><img alt="" src={faceUrl(f.id)} />{personLabel({ name: f.person_name })}</span>{/each}</dd>{/if}
@@ -143,6 +143,11 @@
 <style>
   .details { padding: 12px 14px; font-size: 14px; }
   h3 { margin: 0 0 10px; word-break: break-all; font-size: 15px; }
+  /* The name is a link: it opens the file's folder. */
+  .name { border: 0; background: none; padding: 0; font: inherit; color: inherit; text-align: left; word-break: inherit; cursor: pointer; }
+  .name:hover { color: #1a56c4; text-decoration: underline; }
+  /* in the Folder line the long path is cut at its start, as before */
+  .path .name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 16px; }
   dt { color: #777; }
   dd { margin: 0; min-width: 0; }

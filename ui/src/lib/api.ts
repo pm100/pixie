@@ -63,6 +63,8 @@ export const listDayGroups = (
 /** The current highest photo id, to freeze a listing (see `View.maxId`). */
 export const getMaxPhotoId = () => invoke<number>('max_photo_id');
 export const getPhoto = (id: number) => invoke<Photo | null>('get_photo', { id });
+/** Open the folder of a library item in the system's file manager, with the file picked out. */
+export const showInFolder = (id: number) => invoke<void>('show_in_folder', { id });
 export const listGeoPoints = (
   folderId: number | null = null, kind: MediaKind | null = null, since: number | null = null, until: number | null = null, search = false,
 ) => invoke<GeoPoint[]>('list_geo_points', { folderId, kind, since, until, search });

@@ -6,7 +6,7 @@
 
   let { held, folder, copying, onreview, onsync, onclose }: {
     held: number; folder: string;
-    /** A copy is already running: Sync now is not offered. */
+    /** A sync is already running: Sync now is not offered. */
     copying: boolean;
     onreview: (dontShow: boolean) => void; onsync: (dontShow: boolean) => void; onclose: (dontShow: boolean) => void;
   } = $props();
@@ -25,11 +25,11 @@
     <div class="row">
       <button onclick={() => onclose(dontShow)} title="Close this and leave the new items waiting">Later</button>
       {#if !copying}
-        <button onclick={() => onsync(dontShow)} title={`Copy all ${plural(held, 'new item')} into the sync folder now`}>Sync now</button>
+        <button onclick={() => onsync(dontShow)} title={`Sync all ${plural(held, 'new item')} into the sync folder now`}>Sync now</button>
       {/if}
       <button bind:this={reviewBtn} class="primary" onclick={() => onreview(dontShow)} title="Open Browse showing the new items, where you can mark some private before syncing">Review them</button>
     </div>
-    {#if !copying}<p class="note">Sync now copies all {plural(held, 'new item')} into the sync folder.</p>{/if}
+    {#if !copying}<p class="note">Sync now syncs all {plural(held, 'new item')} into the sync folder.</p>{/if}
     <label class="dont" title="Do not show this reminder when Pixie starts. You can turn it on again in Import/Export, Sync">
       <input type="checkbox" bind:checked={dontShow} /> Don't show this again
     </label>

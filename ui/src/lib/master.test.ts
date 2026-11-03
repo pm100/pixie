@@ -41,32 +41,32 @@ describe('the share choice elsewhere', () => {
   });
 });
 
-describe('copying into the master', () => {
+describe('syncing into the master', () => {
   const idle = { pending: 0, copied: 0, running: false, last: null };
   const report: CopyReport = { at: 1, copied: 0, already: 0, failed: 0, paused: null, problems: [], seconds: 0, bytes: 0 };
   it('says what is waiting, singular and plural', () => {
-    expect(copyLine(idle)).toBe('Nothing is waiting to be copied.');
-    expect(copyLine({ ...idle, pending: 1 })).toBe('1 item is waiting to be copied.');
-    expect(copyLine({ ...idle, pending: 5 })).toBe('5 items are waiting to be copied.');
+    expect(copyLine(idle)).toBe('Nothing is waiting to be synced.');
+    expect(copyLine({ ...idle, pending: 1 })).toBe('1 item is waiting to be synced.');
+    expect(copyLine({ ...idle, pending: 5 })).toBe('5 items are waiting to be synced.');
   });
   it('points to the Processing button while it runs', () => {
-    expect(copyLine({ ...idle, running: true })).toMatch(/^Copying\. .*Processing/);
-    expect(copyLine({ ...idle, running: true, pending: 9 })).toMatch(/^Copying\./);
+    expect(copyLine({ ...idle, running: true })).toMatch(/^Syncing\. .*Processing/);
+    expect(copyLine({ ...idle, running: true, pending: 9 })).toMatch(/^Syncing\./);
   });
-  it('sums up the last copy and says why it stopped', () => {
-    expect(lastCopyLine(report)).toBe('Last copy: nothing to copy.');
-    expect(lastCopyLine({ ...report, copied: 12, already: 3, failed: 1 })).toBe('Last copy: 12 copied, 3 already there, 1 failed.');
-    expect(lastCopyLine({ ...report, copied: 120, seconds: 125, bytes: 360_000_000 })).toBe('Last copy: 120 copied (360 MB in 2 min 5 s, 2.9 MB/s).');
-    expect(lastCopyLine({ ...report, copied: 2, seconds: 4, bytes: 8_000_000 })).toBe('Last copy: 2 copied (8 MB in 4 s, 2.0 MB/s).');
-    expect(lastCopyLine({ ...report, copied: 900, seconds: 600, bytes: 4_500_000_000 })).toBe('Last copy: 900 copied (4.5 GB in 10 min 0 s, 7.5 MB/s).');
-    expect(lastCopyLine({ ...report, already: 3, seconds: 5 })).toBe('Last copy: 3 already there.');
-    expect(lastCopyLine({ ...report, copied: 4, paused: 'the sync folder cannot be reached' })).toBe('Last copy: 4 copied. Stopped: the sync folder cannot be reached.');
+  it('sums up the last sync and says why it stopped', () => {
+    expect(lastCopyLine(report)).toBe('Last sync: nothing to sync.');
+    expect(lastCopyLine({ ...report, copied: 12, already: 3, failed: 1 })).toBe('Last sync: 12 synced, 3 already there, 1 failed.');
+    expect(lastCopyLine({ ...report, copied: 120, seconds: 125, bytes: 360_000_000 })).toBe('Last sync: 120 synced (360 MB in 2 min 5 s, 2.9 MB/s).');
+    expect(lastCopyLine({ ...report, copied: 2, seconds: 4, bytes: 8_000_000 })).toBe('Last sync: 2 synced (8 MB in 4 s, 2.0 MB/s).');
+    expect(lastCopyLine({ ...report, copied: 900, seconds: 600, bytes: 4_500_000_000 })).toBe('Last sync: 900 synced (4.5 GB in 10 min 0 s, 7.5 MB/s).');
+    expect(lastCopyLine({ ...report, already: 3, seconds: 5 })).toBe('Last sync: 3 already there.');
+    expect(lastCopyLine({ ...report, copied: 4, paused: 'the sync folder cannot be reached' })).toBe('Last sync: 4 synced. Stopped: the sync folder cannot be reached.');
   });
 });
 
 describe('the start-up reminder', () => {
   it('says how many are new, to which folder, and to mark some private first', () => {
-    expect(reminderLine(212, 'D:/Family')).toBe('212 items are new and not yet synced to D:/Family. Before syncing, look through them and mark any you do not want copied as private.');
+    expect(reminderLine(212, 'D:/Family')).toBe('212 items are new and not yet synced to D:/Family. Before syncing, look through them and mark any you do not want synced as private.');
     expect(reminderLine(1, 'D:/Family')).toContain('1 item is new');
     expect(reminderLine(1, 'D:/Family')).toContain('look through it');
   });
