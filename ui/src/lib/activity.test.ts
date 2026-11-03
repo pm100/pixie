@@ -159,6 +159,13 @@ describe('the progress screen view', () => {
     expect(new Set(v.finished.map((r) => r.key)).size).toBe(2);
   });
 
+  it('says some work is held when any row is paused, even while another row goes on', () => {
+    expect(view(snap([task({ state: 'paused' }), task({ kind: 'copy_to_master', done: 1, total: 9 })])).held).toBe(true);
+    expect(view(snap([task({ state: 'paused' }), task({ state: 'waiting', kind: 'cloud_wait' })])).held).toBe(true);
+    expect(view(snap([task({ done: 1, total: 9 }), task({ kind: 'copy_to_master', done: 1, total: 9 })])).held).toBe(false);
+    expect(view(snap([task({ state: 'waiting', kind: 'cloud_wait' })])).held).toBe(false);
+  });
+
   it('names the pill by what the unfinished work is doing', () => {
     expect(view(snap([task({ done: 1, total: 9 })])).pill).toBe('working');
     expect(view(snap([task({ state: 'paused' }), task({ kind: 'faces', state: 'paused' })])).pill).toBe('paused');

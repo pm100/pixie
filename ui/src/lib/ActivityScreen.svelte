@@ -31,8 +31,8 @@
     const named = v.running.find((r) => r.kind === 'cloud_wait' && r.files.length > 0 && r.source !== null && r.source !== 'other');
     if (named?.source && named.source !== untrack(() => lastCloud)) lastCloud = named.source;
   });
-  // Paused: everything open is paused, or a scan that Pause stopped is waiting to be resumed.
-  const paused = $derived(v.pill === 'paused' || scanPaused);
+  // Paused: everything open is paused, something is held while other work goes on, or a scan or sync that Pause stopped is waiting to be resumed.
+  const paused = $derived(v.pill === 'paused' || v.held || scanPaused);
   const canToggle = $derived(v.running.length > 0 || scanPaused);
   const overall = $derived(scanPaused && v.pill === null ? 'Paused.' : v.overall);
   // The running area never scrolls: it has room for this many rows (a cloud row, with its list of files, takes the room of two) and says
@@ -60,7 +60,7 @@
     <!-- Always here, Pause at the right edge: nothing below moves them. -->
     <div class="actions">
       {#if v.pill === 'error'}<button onclick={onretry} title="Try again what went wrong, such as getting the models.">Retry</button>{/if}
-      <button disabled={!canToggle} onclick={() => onpause(!paused)} title={!canToggle ? 'Nothing is running to pause.' : paused ? 'Carry on with the background work, and start looking through the folders again if that was paused.' : 'Pause the background work, including looking through the folders. What was found so far is kept, and Resume carries on.'}>{paused ? 'Resume' : 'Pause'}</button>
+      <button disabled={!canToggle} onclick={() => onpause(!paused)} title={!canToggle ? 'Nothing is running to pause.' : paused ? 'Carry on with everything that was paused: the background work, the sync, and looking through the folders.' : 'Pause the background work, including the sync and looking through the folders. What was found so far is kept, and Resume carries on.'}>{paused ? 'Resume' : 'Pause'}</button>
     </div>
   </div>
 

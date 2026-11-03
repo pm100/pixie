@@ -158,7 +158,7 @@ const place = (t: ActivityTask): number => ORDER.indexOf(t.kind);
 export const holdEstimate = (held: number | null, eta: number | null, running: boolean): number | null => (!running ? null : eta ?? held);
 
 /** `held`: the last estimate worked out (see `holdEstimate`), shown when the snapshot has none. */
-export function view(s: ActivitySnapshot | null, held: number | null = null): { running: Row[]; finished: Row[]; overall: string; pill: Pill } {
+export function view(s: ActivitySnapshot | null, held: number | null = null): { running: Row[]; finished: Row[]; overall: string; pill: Pill; held: boolean } {
   const tasks = s?.tasks ?? [];
   // A model download is not shown (it only confuses): a failure is, with its reason and the Retry button.
   const open = tasks.filter((t) => t.state !== 'done' && !((t.kind === 'models' || t.kind === 'face_models') && t.state !== 'error'));
@@ -180,5 +180,6 @@ export function view(s: ActivitySnapshot | null, held: number | null = null): { 
     const eta = s?.eta_secs ?? held;
     overall = eta !== null ? `${capital(formatTimeLeft(eta))} left${speed ? ` · ${speed}` : ''}` : 'Estimating time…';
   }
-  return { running, finished: finished.map(rowOf), overall, pill };
+  // Some work is paused, even if other work goes on: the button then offers Resume, which carries on everything.
+  return { running, finished: finished.map(rowOf), overall, pill, held: pausable.some((t) => t.state === 'paused') };
 }
