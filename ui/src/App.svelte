@@ -45,6 +45,7 @@
   import { pauseActions } from './lib/scanPause';
   import LoadModal from './lib/LoadModal.svelte';
   import Welcome from './lib/Welcome.svelte';
+  import AppIcon from './lib/AppIcon.svelte';
   import { allSetSummary, phaseAfterScan, type Phase } from './lib/loadFlow';
   import { analysisView, type LoadProgress } from './lib/analysisView';
   import { indexFacets, type Facets } from './lib/facets';
@@ -96,6 +97,8 @@
   let tripKey = $state<number | null>(null);
   const recentOn = $derived(view.since !== null && periodKey === null && tripKey === null);
   let folders = $state<Folder[]>([]);
+  /** The first listing and the list of folders have both come back. Until then nothing is known about the library, so a splash covers the window and "add a folder" is not offered. */
+  let started = $state(false);
   /** The photo chosen in the grid (its position in the listing): its details show on the right. */
   let selected = $state<number | null>(null);
   let selectedPhoto = $state<Photo | null>(null);
@@ -1242,7 +1245,7 @@
   });
 
   onMount(() => {
-    refresh().catch((e) => (message = String(e)));
+    const firstListing = refresh().catch((e) => (message = String(e)));
     if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
     void loadPicks();
@@ -1257,12 +1260,13 @@
     void loadUserTags();
     loadPeople();
     // Re-scan all known folders on launch to pick up changes.
-    listFolders().then((fs) => {
+    const folderList = listFolders().then((fs) => {
       folders = fs;
       if (!fs.length) { void openWelcome(); return; }
       scanning = true;
       startScan(null).catch(() => (scanning = false));
     });
+    void Promise.allSettled([firstListing, folderList]).then(() => { started = true; });
     activitySnapshot().then((snapshot) => { activity = snapshot; }).catch(() => {});
     const subs = [
       onActivity((snapshot) => { activity = snapshot; }),
@@ -1414,7 +1418,9 @@
       </div>
       </div>
       <div class="content">
-        {#if folders.length === 0 && total === 0 && !scanning}
+        {#if !started}
+          <!-- the splash covers the window (below) -->
+        {:else if folders.length === 0 && total === 0 && !scanning}
           <div class="empty">
             <p>Add a folder of photos to get started.</p>
             <button onclick={chooseFolder} title="Choose a folder of photos and videos to add to the library">Add photo folder…</button>
@@ -1503,6 +1509,13 @@
   <ProcessingDialog snapshot={activity} strip={dialogStrip} scanPaused={scanPaused || syncPaused} onpause={pauseResume} onretry={() => analysisRetry()} onclose={() => (activityOpen = false)} />
 {/if}
 
+{#if !started}
+  <div class="splash" role="status" aria-label="Pixie is starting">
+    <AppIcon size={96} />
+    <p>Starting Pixie…</p>
+  </div>
+{/if}
+
 {#if reminder && master !== null}
   <SyncReminder held={shareState.unsynced} folder={master} copying={copyStatus?.running ?? false} onreview={reviewNew} onsync={syncFromReminder} onclose={closeReminder} />
 {/if}
@@ -1560,6 +1573,8 @@
   .check input { margin: 0; }
   .filter button:hover { background: rgba(47, 111, 237, .2); }
   .page-over { position: absolute; inset: 0; z-index: 5; }
+  .splash { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #fff; color: #666; font-size: 14px; }
+  .splash p { margin: 0; }
   .empty { text-align: center; margin-top: 20vh; color: #666; }
   .err { color: #b00020; }
   .mapsplit { display: flex; flex-direction: column; height: 100%; }
