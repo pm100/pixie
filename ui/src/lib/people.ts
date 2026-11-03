@@ -75,8 +75,9 @@ export function personRows(people: PersonInfo[], chosen: number | null, expanded
   return { rows, hidden: people.length - limit };
 }
 
-/** Which section to open the People tab on: Named, always, so it opens the same way every time. */
-export const firstSection = (_o: FaceOverview): Section => 'people';
+/** Which section to open the People tab on: Named, so it opens the same way for anyone who has names; with nobody named yet, Named is
+ *  empty, so it opens on To name instead. */
+export const firstSection = (o: FaceOverview): Section => (o.people > 0 ? 'people' : 'groups');
 
 export const sectionTitle: Record<Section, string> = { groups: 'To name', people: 'Named', hidden: 'Ignored' };
 

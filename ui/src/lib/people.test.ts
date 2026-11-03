@@ -89,10 +89,16 @@ describe('faceCardLine', () => {
 });
 
 describe('firstSection', () => {
-  it('always opens on Named', () => {
-    const o: FaceOverview = { groups: 3, people: 0, unsorted: 9, hidden: 1, unchecked: 0, rev: 0 };
+  it('opens on Named once somebody is named, even with nothing left to name', () => {
+    const o: FaceOverview = { groups: 3, people: 2, unsorted: 9, hidden: 1, unchecked: 0, rev: 0 };
     expect(firstSection(o)).toBe('people');
     expect(firstSection({ ...o, groups: 0, unsorted: 0 })).toBe('people');
+  });
+
+  it('opens on To name while nobody is named yet, so it is not an empty page', () => {
+    const o: FaceOverview = { groups: 3, people: 0, unsorted: 9, hidden: 1, unchecked: 0, rev: 0 };
+    expect(firstSection(o)).toBe('groups');
+    expect(firstSection({ ...o, groups: 0, unsorted: 0 })).toBe('groups');
   });
 });
 
