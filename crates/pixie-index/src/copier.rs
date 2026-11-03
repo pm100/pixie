@@ -1,7 +1,8 @@
 //! Copying the items not yet synced into the sync folder (see docs/superpowers/specs/2026-10-31-master-repository-design.md).
 //!
 //! Safe by construction: an original is only ever read; a copy is written under a temporary name, read back and checked
-//! (size and hash) against the original, and only then put in place; a file already there is never overwritten (an
+//! (size and hash) against the original, and only then put in place (the check reads what the system holds, which is not proof that it
+//! has reached a USB drive: nothing is flushed file by file, as that made thousands of photos take hours); a file already there is never overwritten (an
 //! identical one counts as done, a different one with the same name makes the new copy take a numbered name). A master
 //! that cannot be written (offline, disk full) pauses the run with the reason; the items stay waiting and the next run
 //! carries on.
@@ -362,8 +363,8 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
         };
         drop(wait);
         drop(doing);
-        if result.is_err() {
-            let _ = fs::remove_file(&temp); // (after a good copy the temporary name is gone: it was renamed)
+        if !matches!(result, Ok(Step::Copied(..))) {
+            let _ = fs::remove_file(&temp); // (after a good copy the temporary name is gone: it was renamed; any other end leaves it behind)
         }
         if !matches!(result, Err(Trouble::Master(..) | Trouble::Stopped)) {
             bytes_before += size;
@@ -502,6 +503,27 @@ mod tests {
         assert_eq!(s.db.photo_share(id).unwrap(), SHARE_COPIED);
         let c = meter.snapshot();
         assert_eq!((c.files_total, c.files_done, c.bytes_done, c.waiting_files), (1, 1, 11, 0), "the cloud meter saw it arrive");
+    }
+
+    #[test]
+    fn the_temporary_file_is_removed_when_the_same_file_turns_up_while_copying() {
+        let s = setup();
+        s.waiting("a.jpg", b"picture bytes", Some(MARCH_5));
+        let there = s.master_file("2024/2024-03-05/a.jpg");
+        let mut put = false;
+        let copying = || fs::read_dir(there.parent().unwrap()).is_ok_and(|d| d.filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy().ends_with(".part")));
+        // another computer puts the identical file in place after the name was found free and while the copy is being written
+        let r = run(&s.db, &AtomicBool::new(false), |_| {
+            if !put && copying() {
+                put = true;
+                fs::write(&there, b"picture bytes").unwrap();
+            }
+        })
+        .unwrap();
+        assert!(put, "the test did not catch the copy being written");
+        assert_eq!((r.copied, r.already, r.failed), (0, 1, 0));
+        let leftovers: Vec<_> = fs::read_dir(there.parent().unwrap()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".part")).collect();
+        assert!(leftovers.is_empty(), "a hidden half-name was left in the sync folder: {leftovers:?}");
     }
 
     #[test]

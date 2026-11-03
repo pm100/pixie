@@ -28,7 +28,6 @@ export function sharingRows(master: string | null, counts: ShareCounts, chosen: 
 /** How a copy into the sync folder went (the Rust `copier::Report`). */
 export type CopyReport = { at: number; copied: number; already: number; failed: number; paused: string | null; problems: string[]; seconds: number; bytes: number };
 export type CopyStatus = { pending: number; copied: number; running: boolean; last: CopyReport | null };
-export type CopyProgress = { done: number; total: number; bytes_done: number; bytes_total: number; phase: 'copying' | 'checking' };
 
 /** What the sync section says about the syncing now: that it is going (the Processing button has how far), or what is waiting. */
 export function copyLine(s: CopyStatus): string {

@@ -142,6 +142,8 @@ struct Lane {
     slow: usize,
     seq: u64,
     listed: Option<Instant>,
+    /// A reader is fetching more work (without the lane held): the others do not start another fetch, and the run is not over.
+    refilling: bool,
 }
 
 /// What a reader finds when it asks for the next file.
@@ -355,44 +357,47 @@ impl Shared {
         self.workers.saturating_sub(1).clamp(1, 2)
     }
 
-    /// Put more work in the lane: files off the intake, or what the database lists (leaving out the files already started).
-    fn refill(&self, intake: bool, m: &Models, lane: &mut Lane) -> Result<(), String> {
-        lane.listed = Some(Instant::now());
+    /// More work for the lane: files off the intake, or what the database lists (leaving out the files in `exclude`, already waiting or
+    /// started). Done without the lane held: it reads the database and every new file's attributes, which can be slow on a network drive
+    /// or a cloud folder, and the other readers must not wait behind it.
+    fn fetch(&self, intake: bool, m: &Models, limit: i64, exclude: &HashSet<String>) -> Result<Vec<(Option<Candidate>, WorkItem, bool)>, String> {
         let hashing = self.hashing.load(Ordering::SeqCst);
         if intake {
-            for c in self.take_intake(BATCH as usize) {
+            let items = self.take_intake(BATCH as usize).into_iter().map(|c| {
                 let w = intake_item(&c, m.embed.is_some(), m.faces.is_some(), m.art, hashing);
                 let slow = is_slow(&w);
-                lane.pending.push_back((Some(c), w, slow));
-            }
-            return Ok(());
+                (Some(c), w, slow)
+            });
+            return Ok(items.collect());
         }
-        let limit = BATCH + (lane.flight.len() + lane.pending.len()) as i64; // (the files already taken are listed too, until they are stored)
-        let waiting: HashSet<String> = lane.pending.iter().map(|(_, w, _)| w.photo.path.clone()).collect();
-        for w in self.db.photos_needing_work_with(m.embed, m.faces, m.art, hashing, limit).map_err(|e| e.to_string())? {
-            if !lane.flight.contains_key(&w.photo.path) && !waiting.contains(&w.photo.path) {
-                let slow = is_slow(&w);
-                lane.pending.push_back((None, w, slow));
-            }
-        }
-        Ok(())
+        let listed = self.db.photos_needing_work_with(m.embed, m.faces, m.art, hashing, limit).map_err(|e| e.to_string())?;
+        Ok(listed.into_iter().filter(|w| !exclude.contains(&w.photo.path)).map(|w| {
+            let slow = is_slow(&w);
+            (None, w, slow)
+        }).collect())
     }
 
     /// The next file a reader may start: the first waiting one that is not slow, or is while there is room for another slow one.
     fn next_file(&self, intake: bool, m: &Models, lane: &Mutex<Lane>) -> Result<Next, String> {
         let mut l = lock(lane);
-        let room = l.slow < self.max_slow();
         // Looks again when nothing is waiting, or when what is waiting is all slow files with no room for another: the ordinary files
-        // behind them must not be hidden. With files still going, the database is asked only now and then, not constantly.
-        let startable = l.pending.iter().any(|(_, _, slow)| !slow || room);
-        if !startable && l.pending.len() < MAX_WAITING {
-            let busy = !l.flight.is_empty();
-            if intake || !busy || l.listed.map_or(true, |t| t.elapsed() >= LOOK_AGAIN) {
-                self.refill(intake, m, &mut l)?;
-            }
+        // behind them must not be hidden. With files still going, the database is asked only now and then, not constantly. One reader
+        // looks at a time; the others carry on with what is waiting.
+        let startable = l.pending.iter().any(|(_, _, slow)| !slow || l.slow < self.max_slow());
+        if !startable && l.pending.len() < MAX_WAITING && !l.refilling && (intake || l.flight.is_empty() || l.listed.map_or(true, |t| t.elapsed() >= LOOK_AGAIN)) {
+            l.refilling = true;
+            l.listed = Some(Instant::now());
+            let limit = BATCH + (l.flight.len() + l.pending.len()) as i64; // (the files already taken are listed too, until they are stored)
+            let exclude: HashSet<String> = l.flight.keys().cloned().chain(l.pending.iter().map(|(_, w, _)| w.photo.path.clone())).collect();
+            drop(l);
+            let fetched = self.fetch(intake, m, limit, &exclude);
+            l = lock(lane);
+            l.refilling = false;
+            l.pending.extend(fetched?);
         }
+        let room = l.slow < self.max_slow();
         let Some(i) = l.pending.iter().position(|(_, _, slow)| !slow || room) else {
-            return Ok(if l.pending.is_empty() && l.flight.is_empty() { Next::Over } else { Next::Wait });
+            return Ok(if l.pending.is_empty() && l.flight.is_empty() && !l.refilling { Next::Over } else { Next::Wait });
         };
         let (taken, w, slow) = l.pending.remove(i).expect("the position was just found");
         l.seq += 1;
@@ -504,7 +509,7 @@ impl Shared {
             // A twin analysed before hashing was on has no hash yet, so this file would not be seen as the duplicate it is (a copy
             // synced into the sync folder, say) and would be analysed all over again: hash the twin now, which is far cheaper.
             for (twin, path) in self.db.unhashed_twins(p.id, p.size, p.mtime).unwrap_or_default() {
-                if let Ok(b) = std::fs::read(&path) {
+                if let Ok(b) = read_watched(&path) {
                     let _ = self.db.set_file_keys(twin, &quick_key_bytes(&b), Some(&full_hash_bytes(&b)));
                 }
             }

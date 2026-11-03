@@ -17,6 +17,8 @@ type Generator = fn(&Path, ThumbClass, i64, i64, i64, &Path) -> Result<PathBuf>;
 /// A thumbnail that failed is not asked for again for this long: the tile keeps its warning, and a file the cloud drive cannot give (or
 /// a drive that is away) is not asked for again each time the tile is drawn.
 const RETRY_AFTER: Duration = Duration::from_secs(300);
+/// Once this many failures are remembered, the ones past their time are dropped as the next is added.
+const FAILED_KEPT: usize = 512;
 
 struct Pending {
     src: PathBuf,
@@ -183,6 +185,9 @@ fn worker(inner: Arc<Inner>) {
                     st.failed.remove(&key);
                 }
                 Err(e) => {
+                    if st.failed.len() > FAILED_KEPT {
+                        st.failed.retain(|_, (at, _)| at.elapsed() < inner.retry_after); // (forgotten ones are not asked about again)
+                    }
                     st.failed.insert(key, (Instant::now(), e.clone()));
                 }
             }

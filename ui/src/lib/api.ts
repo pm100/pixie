@@ -117,9 +117,6 @@ export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', l
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */
 export const setAnalysisOptions = (o: AnalysisOptions) => invoke<void>('set_analysis_options', { tags: o.tags, faces: o.faces });
-/** The loading Pixie has to do: files found and not yet stored (they get their thumbnails as they are), and the one Pause. */
-export type LoadStatus = { pending: number; paused: boolean };
-export const loadStatus = () => invoke<LoadStatus>('load_status');
 /** Debug builds only: forget everything (folders, photos, faces, names, tags, picks, settings and what was made from the photos) so the
  *  first run starts again. The photo files and the downloaded models are not touched. */
 export const resetLibrary = () => invoke<void>('reset_library');

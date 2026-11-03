@@ -45,7 +45,7 @@
       {#if note}<span class="offnote" role="status">{note}</span>{/if}
       <span class="n">{plural(f.count, 'item')}</span>
       {#if master !== null && f.path === master}
-        <span class="badge" title="Approved photos are synced into this folder">Sync folder</span>
+        <span class="badge" title="Photos from your other folders are synced into this folder">Sync folder</span>
       {/if}
       {#if busy}
         <button onclick={onstop} title="Pause this scan; what was read so far is kept. Resume it from the Processing button at the top right">Pause</button>

@@ -9,20 +9,3 @@ export type AnalysisStatus = {
   paused: boolean;
   error: string | null;
 };
-
-const n = (x: number) => x.toLocaleString();
-
-/** One line for Settings: what is happening right now. */
-export function analysisLine(s: AnalysisStatus): string {
-  if (s.models === 'error') return `Could not get the picture-analysis model: ${s.error ?? 'unknown error'}`;
-  if (s.models === 'missing') return 'Picture-analysis model not downloaded yet';
-  if (s.models === 'downloading') {
-    const pct = s.model_total > 0 ? Math.floor((s.model_done * 100) / s.model_total) : 0;
-    return `Downloading picture-analysis model… ${pct}%`;
-  }
-  if (s.error) return `Picture analysis is having trouble: ${s.error}`; // the model is loaded but failing on photos
-  if (s.total === 0) return 'No photos to analyse yet';
-  if (s.paused && s.done < s.total) return `Paused at ${n(s.done)} of ${n(s.total)}`;
-  if (s.done >= s.total) return s.total === 1 ? '1 photo analysed' : `All ${n(s.total)} photos analysed`;
-  return `Analysing photos… ${n(s.done)} of ${n(s.total)}`;
-}
