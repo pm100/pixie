@@ -14,6 +14,7 @@
 use crate::art::{face_is_art, ArtIndex};
 use crate::embedder::Embedder;
 use crate::faces::{default_workers, FaceEngine};
+use crate::stall::Trail;
 use crate::tags::{vocab, TagIndex, TAGS_VERSION};
 use image::DynamicImage;
 use pixie_core::{FolderId, MediaKind, NewFace, Photo, PhotoId, PhotoMeta};
@@ -26,7 +27,7 @@ use pixie_index::{Candidate, Db, LatestItem, WorkItem};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -36,8 +37,16 @@ use std::time::{Duration, Instant};
 const DECODE_EDGE: u32 = 1024;
 /// Auto tags looks at 224 px; its input is the photo shrunk so the shorter side is this.
 const CLIP_SHORT_SIDE: u32 = 256;
-/// A longer batch keeps the readers busy between listings.
+/// Files taken from the intake, or listed from the database, each time the readers run out of work.
 const BATCH: i64 = 64;
+/// A file this big (a video, a RAW), or one that is not on this computer yet (a cloud file), can take minutes to arrive, and holds a worker
+/// while it does. Only a few such "slow" files are started at once (see `Shared::max_slow`), so they cannot take every worker and the
+/// rest of the library carries on.
+const BIG_FILE: i64 = 64 * 1024 * 1024;
+/// At most this many files wait to be started: a run of slow files makes the lane look further down the list, but only so far.
+const MAX_WAITING: usize = 1024;
+/// How often a reader with nothing new to start looks again, while slow files are still being worked on.
+const LOOK_AGAIN: Duration = Duration::from_millis(200);
 /// Files read ahead at once. A photo on a network share takes about as long to fetch as to analyse, and the share serves
 /// several readers at once (about 3 times the speed of one), so reading runs ahead of the workers on its own threads.
 const READERS: usize = 8;
@@ -53,6 +62,8 @@ const ENGINE_FAILURES: usize = 3;
 /// What a file that could not be read gets as its quick key: it is not offered for hashing again until it changes.
 const UNREADABLE: &str = "!unreadable";
 
+/// How long nothing may move before the log names the last file touched.
+const STALL_AFTER: Duration = Duration::from_secs(30);
 /// At most this often a finished photo is named for the "now reading" strip.
 const LATEST_EVERY: Duration = Duration::from_millis(100);
 
@@ -113,6 +124,42 @@ struct Intake {
     outstanding: HashMap<FolderId, (i64, i64)>,
 }
 
+/// A file started and not yet finished.
+struct Flying {
+    seq: u64,
+    /// The walk's own record of it (a file from the intake), to put back if the run stops before it is stored.
+    taken: Option<Candidate>,
+    slow: bool,
+}
+
+/// The work of one run: what is waiting to be started, what has been started and not finished (and how many slow files are among
+/// those), and when the database was last listed.
+#[derive(Default)]
+struct Lane {
+    /// Each with its record from the walk (an intake file) and whether it is slow (see `BIG_FILE`).
+    pending: VecDeque<(Option<Candidate>, WorkItem, bool)>,
+    flight: HashMap<String, Flying>,
+    slow: usize,
+    seq: u64,
+    listed: Option<Instant>,
+}
+
+/// What a reader finds when it asks for the next file.
+enum Next {
+    Start(WorkItem),
+    /// Nothing it may start now (slow files at their limit, or slow ones still going): ask again shortly.
+    Wait,
+    /// Nothing waiting and nothing going: the run is over.
+    Over,
+}
+
+/// What a run works with, fixed for the run (a change ends it: see `Shared::epoch`).
+struct Models<'a> {
+    embed: Option<&'a str>,
+    faces: Option<&'a str>,
+    art: bool,
+}
+
 struct Shared {
     intake: Mutex<Intake>,
     latest: Mutex<Option<LatestListener>>,
@@ -136,6 +183,8 @@ struct Shared {
     /// Hashing every file (for finding duplicates) is on.
     hashing: AtomicBool,
     stop: AtomicBool,
+    /// Counts changes to what the pipeline works with (models, hashing): a run that began before the latest one ends, so the next starts afresh.
+    epoch: AtomicU64,
     hold_reported: AtomicBool,
     kicked: Mutex<bool>,
     wake: Condvar,
@@ -301,10 +350,75 @@ impl Shared {
         i.queue.drain(..n).collect()
     }
 
-    /// Files taken for a batch that was stopped before they were stored go back to the front, in order.
-    fn requeue(&self, taken: Vec<Candidate>, done: &[bool]) {
+    /// How many slow files may be in flight at once: never every worker, so the rest of the library carries on while they are fetched.
+    fn max_slow(&self) -> usize {
+        self.workers.saturating_sub(1).clamp(1, 2)
+    }
+
+    /// Put more work in the lane: files off the intake, or what the database lists (leaving out the files already started).
+    fn refill(&self, intake: bool, m: &Models, lane: &mut Lane) -> Result<(), String> {
+        lane.listed = Some(Instant::now());
+        let hashing = self.hashing.load(Ordering::SeqCst);
+        if intake {
+            for c in self.take_intake(BATCH as usize) {
+                let w = intake_item(&c, m.embed.is_some(), m.faces.is_some(), m.art, hashing);
+                let slow = is_slow(&w);
+                lane.pending.push_back((Some(c), w, slow));
+            }
+            return Ok(());
+        }
+        let limit = BATCH + (lane.flight.len() + lane.pending.len()) as i64; // (the files already taken are listed too, until they are stored)
+        let waiting: HashSet<String> = lane.pending.iter().map(|(_, w, _)| w.photo.path.clone()).collect();
+        for w in self.db.photos_needing_work_with(m.embed, m.faces, m.art, hashing, limit).map_err(|e| e.to_string())? {
+            if !lane.flight.contains_key(&w.photo.path) && !waiting.contains(&w.photo.path) {
+                let slow = is_slow(&w);
+                lane.pending.push_back((None, w, slow));
+            }
+        }
+        Ok(())
+    }
+
+    /// The next file a reader may start: the first waiting one that is not slow, or is while there is room for another slow one.
+    fn next_file(&self, intake: bool, m: &Models, lane: &Mutex<Lane>) -> Result<Next, String> {
+        let mut l = lock(lane);
+        let room = l.slow < self.max_slow();
+        // Looks again when nothing is waiting, or when what is waiting is all slow files with no room for another: the ordinary files
+        // behind them must not be hidden. With files still going, the database is asked only now and then, not constantly.
+        let startable = l.pending.iter().any(|(_, _, slow)| !slow || room);
+        if !startable && l.pending.len() < MAX_WAITING {
+            let busy = !l.flight.is_empty();
+            if intake || !busy || l.listed.map_or(true, |t| t.elapsed() >= LOOK_AGAIN) {
+                self.refill(intake, m, &mut l)?;
+            }
+        }
+        let Some(i) = l.pending.iter().position(|(_, _, slow)| !slow || room) else {
+            return Ok(if l.pending.is_empty() && l.flight.is_empty() { Next::Over } else { Next::Wait });
+        };
+        let (taken, w, slow) = l.pending.remove(i).expect("the position was just found");
+        l.seq += 1;
+        let seq = l.seq;
+        l.slow += usize::from(slow);
+        l.flight.insert(w.photo.path.clone(), Flying { seq, taken, slow });
+        Ok(Next::Start(w))
+    }
+
+    /// A started file is finished (its result is stored).
+    fn release(&self, lane: &Mutex<Lane>, path: &str) {
+        let mut l = lock(lane);
+        if let Some(f) = l.flight.remove(path) {
+            if f.slow {
+                l.slow -= 1;
+            }
+        }
+    }
+
+    /// Files of the intake that a run left unfinished (stopped by a pause, say) go back to the front, in order.
+    fn requeue(&self, lane: Lane) {
+        let mut flying: Vec<Flying> = lane.flight.into_values().collect();
+        flying.sort_by_key(|f| f.seq);
+        let back: Vec<Candidate> = flying.into_iter().filter_map(|f| f.taken).chain(lane.pending.into_iter().filter_map(|(c, _, _)| c)).collect();
         let mut i = lock(&self.intake);
-        for (c, _) in taken.into_iter().zip(done).filter(|(_, d)| !**d).collect::<Vec<_>>().into_iter().rev() {
+        for c in back.into_iter().rev() {
             i.queue.push_front(c);
         }
     }
@@ -465,88 +579,105 @@ impl Shared {
                 continue;
             }
             self.hold_reported.store(false, Ordering::SeqCst);
+            let epoch = self.epoch.load(Ordering::SeqCst); // (before the models are read: a change after this ends the run)
             let embedder = lock(&self.embedder).clone();
             let faces = lock(&self.faces).clone();
             let index = embedder.as_ref().and_then(|e| self.tag_pass(e));
             let art = embedder.as_ref().and_then(|e| self.art_check(e));
             let (ev, fv) = (embedder.as_ref().map(|e| e.version().to_string()), faces.as_ref().map(|f| f.version().to_string()));
-            let taken = self.take_intake(BATCH as usize);
-            if !taken.is_empty() {
-                let items: Vec<WorkItem> = taken.iter().map(|c| intake_item(c, ev.is_some(), fv.is_some(), art.is_some(), self.hashing.load(Ordering::SeqCst))).collect();
-                let r = self.batch(true, &items, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
-                self.requeue(taken, &r.done);
-                self.tidy_faces(false);
-                self.report();
-                if r.down {
-                    self.wait(self.poll * 10);
-                }
-                continue;
-            }
-            let batch = match self.db.photos_needing_work_with(ev.as_deref(), fv.as_deref(), art.is_some(), self.hashing.load(Ordering::SeqCst), BATCH) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("[analysis] cannot list photos: {e}");
+            // Files a walk handed over go first; when there are none, what the database lists.
+            let intake = !lock(&self.intake).queue.is_empty();
+            let end = self.work(intake, epoch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures));
+            if end.started == 0 && !intake {
+                if self.batch_held(false) {
+                    self.wait(self.poll);
+                } else {
+                    self.tidy_faces(true);
+                    self.report();
                     self.wait(IDLE_WAIT);
-                    continue;
                 }
-            };
-            if batch.is_empty() {
-                self.tidy_faces(true);
-                self.report();
-                self.wait(IDLE_WAIT);
                 continue;
             }
-            let down = self.batch(false, &batch, &embedder, &faces, index, art, (ev.as_deref(), fv.as_deref()), (&mut embed_failures, &mut face_failures)).down;
             self.tidy_faces(false);
             self.report();
-            if down {
+            if end.down {
                 self.wait(self.poll * 10);
             }
         }
     }
 
-    /// Work through one batch with several workers. Returns true if a model kept failing.
-    fn batch(
+    /// Work through the files with several workers, starting the next as soon as a worker is free: a file that is slow (one coming down
+    /// from a cloud drive) holds only its own worker. Runs until nothing is waiting or going, or it is held, stopped, or what it works with
+    /// changes. `intake`: the files are those a walk handed over (otherwise what the database lists).
+    fn work(
         &self,
         intake: bool,
-        batch: &[WorkItem],
+        epoch: u64,
         embedder: &Option<Arc<dyn Embedder>>,
         faces: &Option<Arc<dyn FaceEngine>>,
         index: Option<Arc<TagIndex>>,
         art: Option<ArtCheck>,
         (ev, fv): (Option<&str>, Option<&str>),
         (embed_failures, face_failures): (&mut usize, &mut usize),
-    ) -> BatchEnd {
-        let next_read = AtomicUsize::new(0);
+    ) -> RunEnd {
+        let m = Models { embed: ev, faces: fv, art: art.is_some() };
+        let lane = Mutex::new(Lane::default());
+        // Set when a model keeps failing or the list cannot be read: nothing more is started, and the run backs off.
+        let halt = AtomicBool::new(false);
         let (embed_off, faces_off) = (AtomicBool::new(false), AtomicBool::new(false));
+        let ended = || self.stop.load(Ordering::SeqCst) || self.batch_held(intake) || halt.load(Ordering::SeqCst) || self.epoch.load(Ordering::SeqCst) != epoch;
         // Files read ahead (bounded, so reading cannot run far in front of the work) and results coming back.
-        let (btx, brx) = mpsc::sync_channel::<(usize, std::io::Result<Vec<u8>>)>(self.workers * 2);
+        let (btx, brx) = mpsc::sync_channel::<(WorkItem, std::io::Result<Vec<u8>>)>(self.workers * 2);
         let brx = Mutex::new(brx);
-        let (tx, rx) = mpsc::channel::<(usize, PhotoId, Outcome)>();
-        let mut done = vec![false; batch.len()];
+        let (tx, rx) = mpsc::channel::<(WorkItem, PhotoId, Outcome)>();
         let mut handled = 0usize;
-        let mut down = false;
+        let trail = Trail::new();
+        let (over_tx, over_rx) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
-            for _ in 0..READERS.min(batch.len()) {
+            // Says in the log which file was touched last if nothing moves for a while (a hung read, say).
+            let watch = &trail;
+            scope.spawn(move || {
+                while over_rx.recv_timeout(Duration::from_secs(1)) == Err(mpsc::RecvTimeoutError::Timeout) {
+                    if let Some(line) = watch.stalled(Instant::now(), STALL_AFTER) {
+                        eprintln!("{line}");
+                    }
+                }
+            });
+            for _ in 0..READERS {
                 let btx = btx.clone();
-                let next_read = &next_read;
+                let (lane, trail, m, halt, ended) = (&lane, &trail, &m, &halt, &ended);
                 scope.spawn(move || loop {
-                    if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
+                    if ended() {
                         break;
                     }
-                    let i = next_read.fetch_add(1, Ordering::SeqCst);
-                    let Some(w) = batch.get(i) else { break };
+                    let w = match self.next_file(intake, m, lane) {
+                        Ok(Next::Start(w)) => w,
+                        Ok(Next::Wait) => {
+                            std::thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                        Ok(Next::Over) => break,
+                        Err(e) => {
+                            eprintln!("[analysis] cannot list photos: {e}");
+                            halt.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    };
                     let wanted = w.hash || w.embed || w.faces || w.art || (w.new && w.photo.meta.kind == MediaKind::Photo); // (a row to refresh needs the file's bytes too)
-                    let mut msg = (i, if wanted { read_watched(&w.photo.path) } else { Ok(Vec::new()) });
+                    if wanted {
+                        trail.reading(&w.photo.path);
+                    }
+                    let bytes = if wanted { read_watched(&w.photo.path) } else { Ok(Vec::new()) };
+                    let mut msg = (w, bytes);
                     loop {
                         match btx.try_send(msg) {
                             Ok(()) => break,
                             Err(TrySendError::Disconnected(_)) => return,
-                            Err(TrySendError::Full(m)) => {
-                                if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
+                            Err(TrySendError::Full(back)) => {
+                                if ended() {
                                     return;
                                 }
-                                msg = m;
+                                msg = back;
                                 std::thread::sleep(Duration::from_millis(5));
                             }
                         }
@@ -554,27 +685,26 @@ impl Shared {
                 });
             }
             drop(btx);
-            for _ in 0..self.workers.clamp(1, batch.len()) {
+            for _ in 0..self.workers.max(1) {
                 let tx = tx.clone();
-                let (brx, embed_off, faces_off, art) = (&brx, &embed_off, &faces_off, &art);
+                let (brx, embed_off, faces_off, art, trail, ended) = (&brx, &embed_off, &faces_off, &art, &trail, &ended);
                 scope.spawn(move || loop {
-                    let Ok((i, bytes)) = lock(brx).recv() else { break };
-                    if self.stop.load(Ordering::SeqCst) || self.batch_held(intake) {
+                    let Ok((w, bytes)) = lock(brx).recv() else { break };
+                    if ended() {
                         break;
                     }
-                    let w = &batch[i];
                     let e = embedder.as_deref().filter(|_| w.embed && !embed_off.load(Ordering::SeqCst));
                     let f = faces.as_deref().filter(|_| w.faces && !faces_off.load(Ordering::SeqCst));
-                    let (id, outcome) = self.process_one(w, bytes, e, f, art.as_ref().filter(|_| w.art || w.faces || w.new));
-                    if tx.send((i, id, outcome)).is_err() {
+                    trail.analysing(&w.photo.path);
+                    let (id, outcome) = self.process_one(&w, bytes, e, f, art.as_ref().filter(|_| w.art || w.faces || w.new));
+                    trail.finished();
+                    if tx.send((w, id, outcome)).is_err() {
                         break;
                     }
                 });
             }
             drop(tx);
-            for (i, id, outcome) in rx {
-                done[i] = true;
-                let w = &batch[i];
+            for (w, id, outcome) in rx {
                 match outcome {
                     Outcome::Nothing | Outcome::Duplicate => {}
                     Outcome::Unusable => {
@@ -615,7 +745,7 @@ impl Shared {
                                     if *embed_failures >= ENGINE_FAILURES && !embed_off.swap(true, Ordering::SeqCst) {
                                         eprintln!("[analysis] embedder failing: {e}");
                                         *lock(&self.embed_error) = Some(e);
-                                        down = true;
+                                        halt.store(true, Ordering::SeqCst);
                                     }
                                 }
                             }
@@ -649,27 +779,44 @@ impl Shared {
                                     if *face_failures >= ENGINE_FAILURES && !faces_off.swap(true, Ordering::SeqCst) {
                                         eprintln!("[people] face engine failing: {e}");
                                         *lock(&self.face_error) = Some(e);
-                                        down = true;
+                                        halt.store(true, Ordering::SeqCst);
                                     }
                                 }
                             }
                         }
                     }
                 }
+                self.release(&lane, &w.photo.path);
                 handled += 1;
-                if handled % REPORT_EVERY == 0 {
-                    self.report();
+                let drained = {
+                    let l = lock(&lane);
+                    l.pending.is_empty() && l.flight.is_empty()
+                };
+                if handled % REPORT_EVERY == 0 || drained {
+                    self.report(); // (and when the files run out, so the window sees the end at once)
                 }
+                self.tidy_faces(false); // (the run does not stop between batches any more, so the faces are regrouped as it goes)
             }
+            drop(over_tx);
         });
-        BatchEnd { down, done }
+        let lane = lane.into_inner().unwrap_or_else(|p| p.into_inner());
+        let started = lane.seq;
+        if intake {
+            self.requeue(lane);
+        }
+        RunEnd { down: halt.load(Ordering::SeqCst), started }
     }
 }
 
-/// How a batch ended: whether a model kept failing, and which of its items were handled (the rest were cut short).
-struct BatchEnd {
+/// How a run ended: whether a model kept failing (or the list could not be read), and how many files it started.
+struct RunEnd {
     down: bool,
-    done: Vec<bool>,
+    started: u64,
+}
+
+/// Will this file be slow to get: big, or a cloud file that is not on this computer yet (the cloud app downloads it when it is opened).
+fn is_slow(w: &WorkItem) -> bool {
+    w.photo.size >= BIG_FILE || pixie_index::cloud::is_online_only(Path::new(&w.photo.path))
 }
 
 /// The work for a file a walk found. A new file gets everything that can be done now (the models that are loaded). A file
@@ -719,6 +866,7 @@ impl PhotoPipeline {
             paused: AtomicBool::new(false),
             hashing: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
             hold_reported: AtomicBool::new(false),
             kicked: Mutex::new(false),
             wake: Condvar::new(),
@@ -733,6 +881,7 @@ impl PhotoPipeline {
         *lock(&self.shared.tag_index) = None;
         *lock(&self.shared.art_index) = None;
         *lock(&self.shared.embedder) = Some(e);
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
         self.kick();
     }
 
@@ -741,16 +890,19 @@ impl PhotoPipeline {
         *lock(&self.shared.tag_index) = None;
         *lock(&self.shared.art_index) = None;
         *lock(&self.shared.embedder) = None;
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// People were switched off: no more faces are looked for (what is stored stays).
     pub fn clear_face_engine(&self) {
         *lock(&self.shared.faces) = None;
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Duplicate finding on or off: whether every file is hashed as it is read.
     pub fn set_hashing(&self, on: bool) {
         self.shared.hashing.store(on, Ordering::SeqCst);
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
         if on {
             self.kick();
         }
@@ -759,6 +911,7 @@ impl PhotoPipeline {
     /// The face models are loaded: photos not yet scanned for faces are picked up.
     pub fn set_face_engine(&self, e: Arc<dyn FaceEngine>) {
         *lock(&self.shared.faces) = Some(e);
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
         self.kick();
     }
 
@@ -1224,6 +1377,107 @@ mod tests {
         p.set_embedder(Arc::new(Painted));
         assert!(wait_until(5000, || r.db.face_overview().unwrap().groups == 0), "the faces already found were looked at: paintings are no group");
         assert_eq!(r.db.face_overview().unwrap().unsorted, 0, "and are not listed in Unsure either");
+        p.stop();
+    }
+
+    /// Like `Colour`, but a picture whose top-left red is 7 does not finish until `open` is set (a file the cloud drive is slow to give).
+    struct Stuck {
+        open: Arc<AtomicBool>,
+    }
+    impl Embedder for Stuck {
+        fn embed_image(&self, img: &DynamicImage) -> Result<Vec<f32>, String> {
+            if img.to_rgb8().get_pixel(0, 0)[0] == 7 {
+                while !self.open.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Colour.embed_image(img)
+        }
+        fn embed_text(&self, t: &str) -> Result<Vec<f32>, String> {
+            Colour.embed_text(t)
+        }
+        fn version(&self) -> &str {
+            EV
+        }
+    }
+
+    /// Opens the gate when dropped, so a failed assertion cannot leave a worker stuck and the pipeline unable to stop.
+    struct OpenOnDrop(Arc<AtomicBool>);
+    impl Drop for OpenOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn only_a_few_slow_files_are_started_at_once_and_the_others_go_past_them() {
+        let r = Rig::new();
+        let p = r.pipeline(3); // room for two slow files at once: never every worker
+        let item = |name: &str, size: i64| WorkItem {
+            photo: Photo { id: 0, folder_id: r.folder, path: name.to_string(), size, mtime: 1, meta: PhotoMeta::default(), missing: false },
+            hash: false,
+            embed: false,
+            faces: false,
+            art: false,
+            new: true,
+        };
+        let big = BIG_FILE;
+        let lane = Mutex::new(Lane::default());
+        lock(&lane).pending.extend([item("big1", big), item("big2", big), item("big3", big), item("small", 1000)].map(|w| {
+            let slow = w.photo.size >= BIG_FILE;
+            (None, w, slow)
+        }));
+        let m = Models { embed: None, faces: None, art: false };
+        let next = || match p.shared.next_file(true, &m, &lane).unwrap() {
+            Next::Start(w) => w.photo.path,
+            Next::Wait => "wait".to_string(),
+            Next::Over => "over".to_string(),
+        };
+        assert_eq!([next(), next(), next(), next()], ["big1", "big2", "small", "wait"], "the third big one waits and the small one goes past it");
+        p.shared.release(&lane, "big1");
+        assert_eq!(next(), "big3", "a big one finishing makes room");
+        p.shared.release(&lane, "big2");
+        p.shared.release(&lane, "big3");
+        p.shared.release(&lane, "small");
+        assert_eq!(next(), "over", "nothing waiting and nothing going: the run is over");
+        p.stop();
+    }
+
+    #[test]
+    fn a_long_run_of_slow_files_at_the_front_does_not_hide_the_ordinary_ones_behind_them() {
+        let r = Rig::new();
+        let p = r.pipeline(3); // two slow files at a time
+        p.set_paused(true); // (so the run loop leaves the intake to this test)
+        let cand = |name: String, size: i64, mtime: i64| Candidate { folder_id: r.folder, path: name, size, mtime, is_update: false, kind: MediaKind::Photo };
+        // the newest 100 are all big (more than one listing), then one ordinary photo
+        let mut files: Vec<Candidate> = (0..100).map(|i| cand(format!("big{i}.mp4"), BIG_FILE, 1_000_000 - i)).collect();
+        files.push(cand("small.jpg".to_string(), 1000, 1));
+        p.enqueue(files);
+        let lane = Mutex::new(Lane::default());
+        let m = Models { embed: None, faces: None, art: false };
+        let mut started = Vec::new();
+        for _ in 0..10 {
+            if let Next::Start(w) = p.shared.next_file(true, &m, &lane).unwrap() {
+                started.push(w.photo.path);
+            }
+        }
+        assert!(started.contains(&"small.jpg".to_string()), "two big files were started and then the ordinary photo, not nothing: {started:?}");
+        p.stop();
+    }
+
+    #[test]
+    fn one_slow_file_does_not_hold_up_the_rest_of_the_library() {
+        let r = Rig::new();
+        // 80 photos, more than one batch; the newest (listed first) is the one that gets stuck
+        let reds: Vec<u8> = (0..80).map(|i| if i == 79 { 7 } else if i % 2 == 0 { 250 } else { 5 }).collect();
+        r.pngs(&reds);
+        let open = Arc::new(AtomicBool::new(false));
+        let p = r.pipeline(2);
+        let _guard = OpenOnDrop(open.clone()); // (declared after `p`, so it drops first and the pipeline can stop)
+        p.set_embedder(Arc::new(Stuck { open: open.clone() }));
+        assert!(wait_until(8000, || r.db.embedding_counts(EV).unwrap().0 >= 79), "the other 79 were done while one was stuck: {:?}", r.db.embedding_counts(EV));
+        open.store(true, Ordering::SeqCst);
+        assert!(wait_until(5000, || r.db.embedding_counts(EV).unwrap().0 == 80));
         p.stop();
     }
 

@@ -145,8 +145,11 @@ function rowOf(t: ActivityTask): Row {
   return { key: `${t.kind}:${t.started_ms}`, kind: t.kind, label: label(t.kind), state: t.state, fraction: t.state === 'done' ? 1 : fractionOf(t), counts: countsOf(t), speed: speedOf(t), left, explain: t.kind === 'scan' ? shorten(explainOf(t)) : explainOf(t), explainFull: explainOf(t), files: [], moreFiles: 0, source: null, place: PLACE_KINDS.includes(t.kind) ? middle(t.place ?? '', 64) : null, placeFull: PLACE_KINDS.includes(t.kind) ? t.place ?? '' : null };
 }
 
-/** Errors first, then the rest in the order they came: a row that is paused stays where it is, so Pause does not shuffle the list. */
+/** Errors first, then the rest in a fixed order by kind (the order of LABELS): a row never changes place because it paused, or because
+ *  another started first, so the list does not shuffle. */
+const ORDER = Object.keys(LABELS);
 const rank = (t: ActivityTask): number => (t.state === 'error' ? 0 : 1);
+const place = (t: ActivityTask): number => ORDER.indexOf(t.kind);
 
 /**
  * The time left to show: the latest estimate, or the last one while work goes on but there is none at the moment (the estimate is lost
@@ -157,10 +160,11 @@ export const holdEstimate = (held: number | null, eta: number | null, running: b
 /** `held`: the last estimate worked out (see `holdEstimate`), shown when the snapshot has none. */
 export function view(s: ActivitySnapshot | null, held: number | null = null): { running: Row[]; finished: Row[]; overall: string; pill: Pill } {
   const tasks = s?.tasks ?? [];
-  const open = tasks.filter((t) => t.state !== 'done');
+  // A model download is not shown (it only confuses): a failure is, with its reason and the Retry button.
+  const open = tasks.filter((t) => t.state !== 'done' && !((t.kind === 'models' || t.kind === 'face_models') && t.state !== 'error'));
   // Every run that ended, newest first: the latest run of each kind, and the earlier ones (a kind that runs again is also running).
   const finished = [...tasks.filter((t) => t.state === 'done'), ...(s?.finished ?? [])].sort((a, b) => (b.finished_ms ?? 0) - (a.finished_ms ?? 0));
-  const running = open.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i).map(({ t }) => rowOf(t));
+  const running = open.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || place(a.t) - place(b.t) || a.i - b.i).map(({ t }) => rowOf(t));
   let pill: Pill = null;
   // Pause cannot stop the cloud drive's own download, so a cloud wait going on does not stop the rest showing as paused.
   const pausable = open.filter((t) => t.kind !== 'cloud_wait');

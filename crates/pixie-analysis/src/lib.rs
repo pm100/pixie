@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod search;
 pub mod tags;
 pub mod service;
+pub mod stall;
 pub mod session_pool;
 pub mod vectors;
 pub mod yunet;

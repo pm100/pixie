@@ -6,8 +6,9 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-/// Speed is judged over the last this many seconds.
-pub const WINDOW_SECS: u64 = 30;
+/// Speed is judged over the last this many seconds. Long enough that a slow patch (a few big files, a stalled read) does not send the
+/// time left from minutes to hours and back.
+pub const WINDOW_SECS: u64 = 120;
 /// No speed or time left until the samples span at least this long: two samples a moment apart say nothing.
 pub const MIN_SAMPLE_SECS: u64 = 10;
 /// Reports further apart than this (the computer slept) start the speed over, so the sleep is not counted as slow work.
@@ -137,6 +138,11 @@ struct Inner {
     tasks: Vec<Task>,
     /// Earlier runs that really ended, newest first.
     history: Vec<TaskSnapshot>,
+    /// Milliseconds so far during which a cloud drive was being waited for: the speed is judged on the time left after taking this
+    /// out, because the work stands still while a big file is fetched and that says nothing about how fast it goes.
+    cloud_ms: i64,
+    /// When `cloud_ms` was last brought up to date.
+    last_ms: Option<i64>,
 }
 
 pub struct Activity {
@@ -208,6 +214,15 @@ impl Task {
 }
 
 impl Inner {
+    /// Brings `cloud_ms` up to `now`: the time since the last call counts if a cloud drive was being waited for.
+    fn advance(&mut self, now: i64) {
+        let waiting = self.tasks.iter().any(|t| t.update.kind == TaskKind::CloudWait && t.finished_ms.is_none() && t.update.state == RunState::Waiting);
+        if let (true, Some(last)) = (waiting, self.last_ms) {
+            self.cloud_ms += (now - last).max(0);
+        }
+        self.last_ms = Some(now);
+    }
+
     /// Tasks whose source has been idle for the whole grace are done, as of when it went idle.
     fn settle(&mut self, now: i64) {
         for t in &mut self.tasks {
@@ -237,7 +252,7 @@ impl Activity {
     /// As `new`, but a running or waiting row is shown only once it has gone on for `secs`, and a run that ended in under
     /// `MIN_LISTED_SECS` is not shown at all. A problem (error, pause) shows at once.
     pub fn with_appear_delay(clock: Arc<dyn Clock>, secs: u64) -> Activity {
-        Activity { clock, appear_ms: secs as i64 * 1000, inner: Mutex::new(Inner { tasks: Vec::new(), history: Vec::new() }) }
+        Activity { clock, appear_ms: secs as i64 * 1000, inner: Mutex::new(Inner { tasks: Vec::new(), history: Vec::new(), cloud_ms: 0, last_ms: None }) }
     }
 
     /// A worker's latest counts. A report for a kind that had finished starts a new run of it (the earlier one stays in the finished
@@ -246,6 +261,8 @@ impl Activity {
         let now = self.clock.now_ms();
         let mut inner = self.inner.lock().unwrap();
         inner.settle(now);
+        inner.advance(now);
+        let work = now - inner.cloud_ms; // the clock the speed is judged by: the waits for a cloud drive are cut out of it
         let i = match inner.tasks.iter().position(|t| t.update.kind == u.kind) {
             Some(i) if inner.tasks[i].finished_ms.is_some() => {
                 let old = std::mem::replace(&mut inner.tasks[i], Task::fresh(u.clone(), now));
@@ -262,14 +279,14 @@ impl Activity {
         t.ending_since = None;
         t.waiting_since = if u.state == RunState::Waiting { t.waiting_since.or(Some(now)) } else { None };
         if u.state == RunState::Running {
-            if t.samples.back().is_some_and(|s| now - s.0 > GAP_RESET_SECS as i64 * 1000) {
+            if t.samples.back().is_some_and(|s| work - s.0 > GAP_RESET_SECS as i64 * 1000) {
                 t.samples.clear();
             }
-            if t.samples.back().is_some_and(|s| s.0 == now) {
+            if t.samples.back().is_some_and(|s| s.0 == work) {
                 t.samples.pop_back();
             }
-            t.samples.push_back((now, u.done, u.bytes_done));
-            while t.samples.front().is_some_and(|s| now - s.0 > WINDOW_SECS as i64 * 1000) {
+            t.samples.push_back((work, u.done, u.bytes_done));
+            while t.samples.front().is_some_and(|s| work - s.0 > WINDOW_SECS as i64 * 1000) {
                 t.samples.pop_front();
             }
         } else {
@@ -384,6 +401,38 @@ mod tests {
     }
     fn task(a: &Activity, kind: TaskKind) -> TaskSnapshot {
         a.snapshot().tasks.into_iter().find(|t| t.kind == kind).expect("task is in the snapshot")
+    }
+
+    #[test]
+    fn time_spent_waiting_for_a_cloud_drive_is_not_counted_in_the_speed() {
+        let (clock, a) = setup();
+        let mut done = 0u64;
+        for s in (0..=140).step_by(10) {
+            at(&clock, s);
+            // 10 a second, except while a cloud download holds everything up (20 s to 130 s)
+            done += if (30..=120).contains(&s) { 0 } else { 100 };
+            a.report(upd(TaskKind::AutoTags, RunState::Running, done, Some(done + 1000)));
+            if (20..130).contains(&s) {
+                a.report(upd(TaskKind::CloudWait, RunState::Waiting, 0, Some(3)));
+            } else if s == 130 {
+                a.finish(TaskKind::CloudWait);
+            }
+        }
+        let left = task(&a, TaskKind::AutoTags).eta_secs.unwrap();
+        assert!(left < 150, "1000 left at 10 a second is 100 s, not {left} s");
+    }
+
+    #[test]
+    fn a_slow_half_minute_after_minutes_of_steady_work_does_not_multiply_the_time_left() {
+        let (clock, a) = setup();
+        let mut done = 0u64;
+        for s in (0..=150).step_by(10) {
+            at(&clock, s);
+            done += if s <= 120 { 100 } else { 10 }; // 10 a second, then 1 a second for the last 30 seconds
+            a.report(upd(TaskKind::AutoTags, RunState::Running, done, Some(done + 1000)));
+        }
+        let left = task(&a, TaskKind::AutoTags).eta_secs.unwrap();
+        assert!(left < 200, "1000 left at about 8 a second is a couple of minutes, not {left} s");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import CloudFetch from './CloudFetch.svelte';
-  import { holdEstimate, view, type ActivitySnapshot, type Row } from './activity';
+  import { holdEstimate, view, type ActivitySnapshot, type CloudSource, type Row } from './activity';
 
   // Everything Pixie is doing in the background, one row each, with how far along it is, how fast, and how long is left. The same
   // screen is the pill's page and the middle of the Add folder popup (`compact`: no padding of its own, the popup has its own).
@@ -25,6 +25,12 @@
     if (next !== untrack(() => held)) held = next;
   });
   const v = $derived(view(snapshot, held));
+  // The drive's mark stays when the list of files being fetched is empty for a moment: the last drive named is kept.
+  let lastCloud = $state<CloudSource>('other');
+  $effect(() => {
+    const named = v.running.find((r) => r.kind === 'cloud_wait' && r.files.length > 0 && r.source !== null && r.source !== 'other');
+    if (named?.source && named.source !== untrack(() => lastCloud)) lastCloud = named.source;
+  });
   // Paused: everything open is paused, or a scan that Pause stopped is waiting to be resumed.
   const paused = $derived(v.pill === 'paused' || scanPaused);
   const canToggle = $derived(v.running.length > 0 || scanPaused);
@@ -71,7 +77,7 @@
             </div>
           {:else}
             <!-- A cloud wait has no count or bar (the number of files keeps changing): a picture of files coming down from the cloud. -->
-            <CloudFetch source={r.source} />
+            <CloudFetch source={r.files.length > 0 ? r.source : lastCloud} active={r.files.length > 0} />
           {/if}
           <div class="meta"><span class="explain" title={r.explainFull}>{r.explain}</span></div>
           {#if r.place !== null}<div class="place" title={r.placeFull ? `Working through ${r.placeFull}` : ''}>{r.place || ' '}</div>{/if}

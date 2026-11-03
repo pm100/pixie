@@ -117,9 +117,9 @@ describe('the progress screen view', () => {
     expect(quick.explain).toBe('Checking the copy');
   });
 
-  it('shows a model download as bytes, and an error with its reason', () => {
-    const dl = view(snap([task({ kind: 'models', bytes_done: 30_000_000, bytes_total: 90_000_000 })])).running[0];
-    expect(dl.counts).toBe('28.6 MB of 85.8 MB');
+  it('does not show a model download, but shows an error with its reason', () => {
+    expect(view(snap([task({ kind: 'models', bytes_done: 30_000_000, bytes_total: 90_000_000 })])).running).toEqual([]);
+    expect(view(snap([task({ kind: 'face_models', bytes_done: 5, bytes_total: 50 })])).running).toEqual([]);
     const bad = view(snap([task({ kind: 'models', state: 'error', note: 'no network' })])).running[0];
     expect(bad.explain).toContain('no network');
     expect(bad.left).toBe('');
@@ -130,19 +130,23 @@ describe('the progress screen view', () => {
     expect([r.label, r.counts, r.explain]).toEqual(['Analysing photos', '821 of 14,274 photos', 'Auto tags and faces']);
   });
 
-  it('shows the face models as bytes too, under their own name', () => {
-    const r = view(snap([task({ kind: 'face_models', bytes_done: 5_000_000, bytes_total: 50_000_000 })])).running[0];
-    expect([r.label, r.counts]).toEqual(['Getting face models', '4.8 MB of 47.7 MB']);
+  it('keeps the rows in a fixed order whichever started first, so the analysis and the cloud wait never swap places', () => {
+    const order = (tasks: ActivityTask[]) => view(snap(tasks)).running.map((r) => r.kind);
+    const analysing = task({ kind: 'analysing', done: 1, total: 9 });
+    const cloud = task({ kind: 'cloud_wait', state: 'waiting', done: 1, total: 3 });
+    expect(order([analysing, cloud])).toEqual(['analysing', 'cloud_wait']);
+    expect(order([cloud, analysing])).toEqual(['analysing', 'cloud_wait']);
+    expect(order([cloud, { ...analysing, state: 'paused' }])).toEqual(['analysing', 'cloud_wait']);
   });
 
-  it('sorts errors first, keeps the rest where they were (pausing does not move a row), and puts finished work in its own list', () => {
+  it('sorts errors first, then by kind (pausing does not move a row), and puts finished work in its own list', () => {
     const v = view(snap([
       task({ kind: 'faces', state: 'paused', done: 1, total: 9 }),
       task({ kind: 'scan', state: 'done', done: 9, total: 9, started_ms: 0, finished_ms: 125_000 }),
       task({ kind: 'read', done: 1, total: 9 }),
       task({ kind: 'models', state: 'error', note: 'x' }),
     ]));
-    expect(v.running.map((r) => r.kind)).toEqual(['models', 'faces', 'read']);
+    expect(v.running.map((r) => r.kind)).toEqual(['models', 'read', 'faces']);
     expect(v.finished.map((r) => r.kind)).toEqual(['scan']);
     expect(v.finished[0].explain).toBe('Took about 2 min.');
   });

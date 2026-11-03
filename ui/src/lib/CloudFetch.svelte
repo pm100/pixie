@@ -3,14 +3,15 @@
 
   // A cloud (with the mark of the drive on it), an arrow pulsing towards a laptop: files coming down from the cloud to this computer.
   // The marks are simple drawings of the drives, not their official artwork.
-  let { source }: { source: CloudSource } = $props();
+  // `active`: files are being fetched right now; the arrows pulse only then, and rest while the drive has nothing for us.
+  let { source, active = true }: { source: CloudSource; active?: boolean } = $props();
 
   const NAMES: Record<CloudSource, string> = { onedrive: 'OneDrive', icloud: 'iCloud', google_drive: 'Google Drive', other: 'your cloud drive' };
   const text = $derived(`Fetching files from ${NAMES[source]} to this computer`);
   const CLOUD = 'M7 15a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 6.2 4.4 4.4 0 0 1 17.5 15Z';
 </script>
 
-<div class="fetch" role="img" aria-label={text} title={text}>
+<div class="fetch" class:idle={!active} role="img" aria-label={text} title={text}>
   <svg class="cloud" viewBox="0 0 72 48" aria-hidden="true">
     <g transform="scale(3)"><path d={CLOUD} class="body" /></g>
     {#if source === 'onedrive'}
@@ -50,6 +51,7 @@
   .chev { fill: none; stroke: #2f6fed; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; opacity: .25; animation: pulse 1.5s ease-in-out infinite; }
   .c2 { animation-delay: .25s; }
   .c3 { animation-delay: .5s; }
+  .idle .chev { animation: none; opacity: .25; }
   @keyframes pulse { 0%, 100% { opacity: .2; } 40% { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .chev { animation: none; opacity: .8; } }
 </style>
