@@ -19,8 +19,9 @@
     active: boolean;
     onselect: (ids: string[]) => void;
     onchange: (frames: CollageFrame[]) => void;
-    /** A photo from the list was dropped at a place on the page (fractions), on this frame if there is one. */
-    ondrop: (photoId: number, at: { x: number; y: number }, onFrame: string | null) => void;
+    /** A photo from the list was dropped at a place on the page (fractions), on this frame if there is one. `replace`: Ctrl was held, so
+     *  it takes that frame's place instead of being added on top of it. */
+    ondrop: (photoId: number, at: { x: number; y: number }, onFrame: string | null, replace: boolean) => void;
   } = $props();
 
   const PAD = 28;
@@ -206,7 +207,7 @@
     if (!Number.isFinite(id) || !e.dataTransfer?.getData('application/x-pixie-photo')) return;
     e.preventDefault();
     const at = toFrac(e);
-    ondrop(id, at, topFrameAt(doc.frames, at.x, at.y)?.id ?? null);
+    ondrop(id, at, topFrameAt(doc.frames, at.x, at.y)?.id ?? null, e.ctrlKey || e.metaKey);
   }
 
   // Leaving crop mode: the key, or the frame going away.

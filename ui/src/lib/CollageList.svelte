@@ -32,7 +32,6 @@
               title="Drag onto the page to add it, or double-click it"
               draggable="true" ondragstart={(e) => dragStart(e, p)} ondblclick={() => onadd(p.id)}>
         <img alt="" loading="lazy" draggable="false" src={thumbUrl('grid', p.id, p.mtime, p.size)} />
-        {#if onPage.has(p.id)}<span class="on" aria-hidden="true">✓</span>{/if}
       </button>
     {/each}
   </div>
@@ -52,6 +51,5 @@
   .tile { position: relative; align-self: start; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #e8e8ec; overflow: hidden; cursor: grab; }
   .tile::before { content: ''; display: block; padding-top: 100%; }
   .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
-  .on { position: absolute; right: 3px; top: 3px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: #2f6fed; color: #fff; font-size: 12px; line-height: 1; }
   .none { margin: 0; padding: 0 12px; color: #777; font-size: 13px; }
 </style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bringToFront, firstFreeSpot, MIN_FRAME, moveRect, newFrameRect, resizeRect, sendToBack, swapPhotos, topFrameAt, type Rect } from './collageFrames';
+import { bringToFront, firstFreeSpot, MIN_FRAME, moveRect, newFrameRect, replacePhoto, resizeRect, sendToBack, swapPhotos, topFrameAt, type Rect } from './collageFrames';
 
 const inside = (r: Rect) => r.x >= -1e-9 && r.y >= -1e-9 && r.x + r.w <= 1 + 1e-9 && r.y + r.h <= 1 + 1e-9;
 const r: Rect = { x: 0.1, y: 0.1, w: 0.3, h: 0.2 };
@@ -99,6 +99,24 @@ describe('order', () => {
     expect(bringToFront(frames, ['a', 'b']).map((x) => x.id)).toEqual(['c', 'a', 'b']);
     expect(sendToBack(frames, ['c']).map((x) => x.id)).toEqual(['c', 'a', 'b']);
     expect(sendToBack(frames, ['b', 'c']).map((x) => x.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('replacePhoto', () => {
+  const g = (id: string, photo: number) => ({ id, photo, fx: 0.2, fy: 0.9, zoom: 2 });
+
+  it('shows the new photo in that frame, whole and centred, and leaves the other frames alone', () => {
+    const frames = [g('a', 1), g('b', 2), g('c', 3)];
+    const out = replacePhoto(frames, 'b', 9);
+    expect(out.map((f) => f.photo)).toEqual([1, 9, 3]);
+    expect(out[1]).toMatchObject({ fx: 0.5, fy: 0.5, zoom: 1 });
+    expect(out[0]).toBe(frames[0]);
+    expect(out[2]).toBe(frames[2]);
+  });
+
+  it('does nothing for a frame that is not there', () => {
+    const frames = [g('a', 1)];
+    expect(replacePhoto(frames, 'zzz', 9)).toBe(frames);
   });
 });
 

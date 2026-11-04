@@ -78,6 +78,12 @@ export function sendToBack<T extends { id: string }>(frames: T[], ids: string[])
   return [...frames.filter((f) => moved.has(f.id)), ...frames.filter((f) => !moved.has(f.id))];
 }
 
+/** The frame `frameId` showing `photo` instead of the one it had (shown whole, centred, not zoomed); every other frame is as it was. */
+export function replacePhoto<T extends { id: string; photo: number; fx: number; fy: number; zoom: number }>(frames: T[], frameId: string, photo: number): T[] {
+  if (!frames.some((f) => f.id === frameId)) return frames;
+  return frames.map((f) => (f.id === frameId ? { ...f, photo, fx: 0.5, fy: 0.5, zoom: 1 } : f));
+}
+
 /** The frames `aId` and `bId` with their photos exchanged and each photo shown whole again (centred, not zoomed). */
 export function swapPhotos<T extends { id: string; photo: number; fx: number; fy: number; zoom: number }>(frames: T[], aId: string, bId: string): T[] {
   const a = frames.find((f) => f.id === aId), b = frames.find((f) => f.id === bId);

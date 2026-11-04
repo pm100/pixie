@@ -9,7 +9,7 @@
   import CollagePage from './CollagePage.svelte';
   import CollageSettings from './CollageSettings.svelte';
   import { docDpi, newDoc, pageMm, paperLabel, parseDoc, serializeDoc, toSaveArgs, type CollageDoc, type CollageFrame } from './collageDoc';
-  import { bringToFront, firstFreeSpot, newFrameRect, sendToBack } from './collageFrames';
+  import { bringToFront, firstFreeSpot, newFrameRect, replacePhoto, sendToBack } from './collageFrames';
   import { AUTO_LAYOUT_MAX } from './collageLayout';
   import { framesFromTemplate, makeFrame, relayoutFrames } from './collageStart';
   import ConfirmDialog from './ConfirmDialog.svelte';
@@ -115,8 +115,10 @@
     selected = [frame.id];
   }
 
-  function dropped(photoId: number, at: { x: number; y: number }, onFrame: string | null) {
-    if (onFrame) setFrames(doc.frames.map((f) => (f.id === onFrame ? { ...f, photo: photoId, fx: 0.5, fy: 0.5, zoom: 1 } : f)));
+  /** A photo from the list was dropped on the page: it is added where it was dropped, on top of any photo there (photos may overlap); with Ctrl
+   *  it takes the place of the photo it was dropped on instead. */
+  function dropped(photoId: number, at: { x: number; y: number }, onFrame: string | null, replace: boolean) {
+    if (onFrame && replace) setFrames(replacePhoto(doc.frames, onFrame, photoId));
     else addPhoto(photoId, at);
   }
 
@@ -231,7 +233,7 @@
       {#if saved}<span class="ok" role="status">Saved.</span>{/if}
       {#if note}<span class="note">{note}</span>{/if}
       {#if skippedVideos > 0}<span class="note">{plural(skippedVideos, 'video')} can't go in a collage and {skippedVideos === 1 ? 'was' : 'were'} left out.</span>{/if}
-      <span class="hint">Drag to move (it fills the space you put it in) · drag a handle to resize · double-click a photo to crop it · Ctrl-drop onto another photo to swap · Alt skips snapping</span>
+      <span class="hint">Drag to move (it fills the space you put it in) · drag a handle to resize · double-click a photo to crop it · Ctrl-drop onto another photo to swap (from the list: to replace it) · Alt skips snapping</span>
     </div>
   </div>
 
