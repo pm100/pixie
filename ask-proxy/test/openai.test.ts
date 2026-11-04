@@ -49,7 +49,7 @@ describe('openai-compatible provider', () => {
     const { fn, calls } = fakeFetch(completion({ content: 'ok' }));
     await makeOpenAIProvider(config, fn).ask(askBody());
     const system = JSON.parse(calls[0]!.init.body as string).messages[0].content as string;
-    expect(system.indexOf('SETTINGS SCHEMA')).toBeLessThan(system.indexOf('USER STATE'));
+    expect(system.indexOf('SETTINGS SCHEMA')).toBeLessThan(system.indexOf('USER STATE\nPlatform'));
   });
 
   it('sends a temperature only when one is configured', async () => {

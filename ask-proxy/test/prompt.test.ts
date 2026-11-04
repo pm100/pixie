@@ -15,9 +15,28 @@ describe('systemParts', () => {
     expect(volatile).toContain('analysis_faces (People): On');
   });
 
+  it('tells the model what the user has picked and chosen, in the part that changes, and nothing about which photos', () => {
+    const { volatile, stable } = systemParts(CONTEXT);
+    expect(volatile).toContain('Photos picked: 12.');
+    expect(volatile).toContain('A photo is chosen: yes.');
+    expect(volatile).toContain('working on: picked');
+    expect(stable).not.toContain('Photos picked');
+    const tagged = systemParts({ ...CONTEXT, photos: { picked: 0, chosen: false, workingOn: 'tag' } }).volatile;
+    expect(tagged).toContain("working on: one of the user's tags");
+    expect(systemParts({ ...CONTEXT, photos: undefined }).volatile).not.toContain('Photos picked');
+  });
+
+  it('puts the note the app wrote about the photos at the end of the state, and leaves it out when there is none', () => {
+    const withHint = systemParts({ ...CONTEXT, photos: { picked: 89, chosen: false, workingOn: 'picked', hint: 'SET WORKING ON TO CURRENT FIRST' } }).volatile;
+    expect(withHint).toContain('About the photos, for this answer: SET WORKING ON TO CURRENT FIRST');
+    expect(withHint.indexOf('About the photos')).toBeLessThan(withHint.indexOf('Current values'));
+    expect(systemParts(CONTEXT).volatile).not.toContain('About the photos');
+  });
+
   it('keeps the stable part identical when only current values, language or tab change', () => {
     const changed = {
       ...CONTEXT,
+      photos: { picked: 0, chosen: false, workingOn: 'current' as const },
       tab: 'settings',
       language: 'fr',
       settings: CONTEXT.settings.map((s) => ({ ...s, current: 99, currentLabel: 'changed' })),

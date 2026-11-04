@@ -30,6 +30,7 @@ export const CONTEXT: Context = {
   language: 'en-US',
   tab: 'browse',
   today: '2026-10-28',
+  photos: { picked: 12, chosen: true, workingOn: 'picked' },
   guide: 'THE FAKE APP - Tabs: Browse, Send. Videos are always sent exactly as they are. Print: choose Send, then Print.',
   places: ['browse', 'send-email', 'send-print'],
   settings: [

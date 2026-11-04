@@ -54,6 +54,19 @@ export interface SettingInfo {
   default?: number | boolean;
 }
 
+/** How many photos are picked, whether one is chosen, and what the tools work on (picked, current, or one of the user's tags: never which). */
+export interface PhotoInfo {
+  picked: number;
+  /** How many of the picked items are videos. */
+  pickedVideos?: number;
+  chosen: boolean;
+  /** The chosen item is a video. */
+  chosenVideo?: boolean;
+  workingOn: 'picked' | 'current' | 'tag';
+  /** What that means for the steps, written by the app. */
+  hint?: string;
+}
+
 export interface Context {
   platform: string;
   /** The BCP 47 language of the app, for the reply. */
@@ -63,6 +76,8 @@ export interface Context {
   /** The user's date, YYYY-MM-DD, so "last summer" can be worked out. */
   today: string;
   settings: SettingInfo[];
+  /** What the user has to work on, as numbers only (older apps do not send it). */
+  photos?: PhotoInfo;
   /** How this version of the app works, written by the app (ui/src/lib/askGuide.ts). The worker does not know the app: each version
    *  describes itself, so old and new versions can be in use at once. */
   guide: string;

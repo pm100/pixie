@@ -5,7 +5,7 @@
   import {
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -63,10 +63,10 @@
   import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
   import AskPanel from './lib/AskPanel.svelte';
-  import { newInstallId } from './lib/ask';
+  import { newInstallId, photoState } from './lib/ask';
   import { placeFor as askPlace } from './lib/askGoTo';
   import type { Handlers, SettingValues } from './lib/askSettings';
-  import Resizer from './lib/Resizer.svelte';
+  import AskCard from './lib/AskCard.svelte';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
@@ -525,7 +525,8 @@
   /** The Ask Pixie panel, docked at the right: opened by the ? button and F1, built on first use and then kept, so the conversation survives closing it. */
   let helpOpen = $state(false);
   let helpBuilt = $state(false);
-  let helpW = $state(loadPref('help.panel', 340));
+  /** The ? button, which the card hangs from. */
+  let helpEl = $state<HTMLElement | null>(null);
   function toggleHelp() {
     helpOpen = !helpOpen;
     if (helpOpen) helpBuilt = true;
@@ -1259,6 +1260,8 @@
     trips: (p) => setTripPrefs(p),
   };
   /** A button Ask Pixie offered: go to that tab, Settings page or tool. */
+  /** What the person has to work on, read when a question is asked. */
+  const askPhotos = async () => photoState(picked.size, await pickVideoCount().catch(() => 0), selectedPhoto ? selectedPhoto.kind : null, workSource);
   function askGo(target: string) {
     const place = askPlace(target);
     if (!place) return;
@@ -1370,14 +1373,7 @@
      everywhere except in text fields, where copy and paste are wanted. -->
 <svelte:window oncontextmenu={noBrowserMenu} onkeydown={(e) => { if (e.key === 'F1' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) { e.preventDefault(); toggleHelp(); } }} />
 <main inert={phase !== 'off' || activityOpen}>
-  {#snippet helpPanel()}
-    <Resizer bind:width={helpW} min={260} max={620} side="right" onchange={(w) => savePref('help.panel', w)} />
-    <div class="helpbox" style:width="{helpW}px">
-      <AskPanel on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers}
-                from={tab} language={navigator.language} ongo={askGo} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
-    </div>
-  {/snippet}
-  <Tabs {tabs} active={tab} onpick={pickTab} onhelp={toggleHelp} sideOpen={helpOpen} side={helpBuilt ? helpPanel : undefined}>
+  <Tabs {tabs} active={tab} onpick={pickTab} onhelp={toggleHelp} {helpOpen} bind:helpButton={helpEl}>
     {#snippet status()}
       <ProcessingPill {pill} onclick={() => (activityOpen = true)} />
       {#if message}<span class="err">{message}</span>{/if}
@@ -1548,6 +1544,12 @@
       </div>
     {/if}
   </Tabs>
+  {#if helpBuilt}
+    <AskCard open={helpOpen} anchor={helpEl} onclose={() => (helpOpen = false)}>
+      <AskPanel on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers}
+                from={tab} photos={askPhotos} language={navigator.language} ongo={askGo} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
+    </AskCard>
+  {/if}
   {#if openIndex !== null || soloPhoto !== null}
     <Viewer index={openIndex ?? 0} {total} view={shown} solo={soloPhoto} onclose={closeViewer} onnav={(i) => (openIndex = i)}
             onpopout={() => popOut(openIndex ?? 0)} />

@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TRIP_PREFS } from './trips';
 import { ALL_ON } from './analysisOptions';
+import { photoState } from './ask';
 import { GO_TO_TARGETS } from './askGoTo';
 import { GUIDE } from './askGuide';
 import { applyChanges, checkProposal, settingsSchema, type SettingValues } from './askSettings';
@@ -49,7 +50,7 @@ describe('settingsSchema', () => {
 
   it('writes the contract fixture the proxy tests read, when asked', () => {
     if (process.env.WRITE_ASK_FIXTURE !== '1') return;
-    const context = { platform: 'windows', language: 'en-US', tab: 'browse', today: '2026-10-28', settings: settingsSchema(values), guide: GUIDE, places: [...GO_TO_TARGETS] };
+    const context = { platform: 'windows', language: 'en-US', tab: 'browse', today: '2026-10-28', settings: settingsSchema(values), photos: photoState(0, 0, null, 'picked'), guide: GUIDE, places: [...GO_TO_TARGETS] };
     writeFileSync(new URL('../../../ask-proxy/test/fixtures/context.json', import.meta.url), `${JSON.stringify(context, null, 2)}\n`);
   });
 });

@@ -40,7 +40,7 @@ export function toolSpecs(places: readonly string[]): ToolSpec[] {
               required: ['setting', 'value'],
             },
           },
-          say: { type: 'string', description: 'The words for the user, in their language: what the change does, where the setting is in the app (use the label the schema gives and the place its description names), and why you suggest it. One to three short sentences, plain text. It is shown next to the confirmation card.' },
+          say: { type: 'string', description: 'The words for the user, in their language: what the change does, where the setting is in the app (use the label the schema gives and the place its description names), and why you suggest it. One to three short lines, in the layout of the rules (names in **double asterisks**). It is shown next to the confirmation card.' },
         },
         required: ['changes', 'say'],
       },
@@ -53,7 +53,7 @@ export function toolSpecs(places: readonly string[]): ToolSpec[] {
         type: 'object',
         properties: {
           target: { type: 'string', enum: [...places] },
-          say: { type: 'string', description: 'The answer for the user, in their language: one to three short sentences, plain text. It is shown next to the button.' },
+          say: { type: 'string', description: 'The answer for the user, in their language: a short lead-in line and, for how to do something, numbered lines ("1. ..."), with the names of buttons and tabs in **double asterisks**. It is shown next to the button, so do not add a closing line about taking them there.' },
         },
         required: ['target', 'say'],
       },
@@ -67,7 +67,7 @@ export function toolSpecs(places: readonly string[]): ToolSpec[] {
         properties: {
           category: { type: 'string', enum: ['feature_request', 'bug', 'other'] },
           summary: { type: 'string', description: 'One or two sentences capturing what the user wants or reported, as a note to the developer.' },
-          say: { type: 'string', description: 'The words for the user, in their language: plainly what Pixie cannot do or does not have (for example "Pixie has no dark mode yet."), and how to get by without it if there is a way. One or two short sentences, plain text. Do not mention passing anything on: the card below your words asks that.' },
+          say: { type: 'string', description: 'The words for the user, in their language: plainly what Pixie cannot do or does not have (for example "Pixie has no dark mode yet."), and how to get by without it if there is a way. One or two short lines. Do not mention passing anything on: the card below your words asks that.' },
         },
         required: ['category', 'summary', 'say'],
       },
@@ -112,6 +112,18 @@ export function parseFeedback(input: unknown): Feedback | null {
  * Turns what any provider returned (text blocks plus tool calls) into the service's result.
  * Only well-formed, capped items get through; unknown tools are ignored, and a place the app did not list is dropped.
  */
+/**
+ * Models often end with a line like "I'll take you there." although the button already does that. It says nothing and the card is small,
+ * so a last line of that kind is dropped (never when it is all there is).
+ */
+export function dropClosingLine(text: string): string {
+  const lines = text.trimEnd().split('\n');
+  const last = lines[lines.length - 1]?.trim() ?? '';
+  const closing = /^(I(?:'|\u2019)?ll|I will|I can|Let me|Feel free|Just let me know|Hope this helps)\b/i;
+  if (lines.filter((l) => l.trim() !== '').length > 1 && last.length <= 120 && closing.test(last)) return lines.slice(0, -1).join('\n').trimEnd();
+  return text.trimEnd();
+}
+
 export function interpret(texts: string[], calls: ToolCall[], places: readonly string[]): ModelResult {
   const proposals: Proposal[] = [];
   const feedback: Feedback[] = [];
@@ -142,7 +154,7 @@ export function interpret(texts: string[], calls: ToolCall[], places: readonly s
   return {
     // Models often make the call and write little or nothing beside it (a lead-in ending in a colon), so the answer travels
     // inside the call as well, and the fuller of the two is shown.
-    reply: say.length > text.length ? say : text,
+    reply: dropClosingLine(say.length > text.length ? say : text),
     proposal: proposals.length > 0 ? proposals : null,
     goTo,
     feedback,

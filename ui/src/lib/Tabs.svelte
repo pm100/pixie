@@ -2,12 +2,14 @@
   import type { Snippet } from 'svelte';
   import type { TabId, TabInfo } from './tabs';
 
-  let { tabs, active, onpick, status, children, side, sideOpen = false, onhelp }: {
+  let { tabs, active, onpick, status, children, helpOpen = false, onhelp, helpButton = $bindable(null) }: {
     tabs: TabInfo[]; active: TabId; onpick: (id: TabId) => void;
-    /** The panel docked at the right (Ask Pixie), shown while `sideOpen`; it stays built while hidden, so its conversation is kept. */
-    side?: Snippet; sideOpen?: boolean;
+    /** The Ask Pixie card is open (the ? button shows it). */
+    helpOpen?: boolean;
     /** The ? button was pressed. */
     onhelp: () => void;
+    /** The ? button itself, so the card can hang from it. */
+    helpButton?: HTMLElement | null;
     /** Shown at the right of the title row. */
     status: Snippet;
     /** The screen of the active tab: every tab swaps this one framed area. */
@@ -24,11 +26,10 @@
     </div>
     <span class="sp"></span>
     <span class="status">{@render status()}</span>
-    <button class="help" class:open={sideOpen} aria-label="Ask Pixie" aria-pressed={sideOpen} title="Ask Pixie: ask how to do something, or ask for a setting to be changed (F1)" onclick={onhelp}>?</button>
+    <button class="help" class:open={helpOpen} bind:this={helpButton} aria-label="Ask Pixie" aria-pressed={helpOpen} title="Ask Pixie: ask how to do something, or ask for a setting to be changed (F1)" onclick={onhelp}>?</button>
   </div>
   <div class="panel" role="tabpanel">
     <div class="main">{@render children()}</div>
-    {#if side}<div class="side" hidden={!sideOpen}>{@render side()}</div>{/if}
   </div>
 </div>
 
@@ -46,8 +47,6 @@
   button.help.open { background: #2f6fed; border-color: #2f6fed; color: #fff; }
   button.on { background: #fff; color: #111; font-weight: 600; border-bottom-color: #fff; box-shadow: 0 2px 0 #2f6fed inset; }
   .panel { display: flex; flex-direction: row; flex: 1; min-height: 0; background: #fff; }
-  /* The screen of the tab; the pages that cover it are placed against this box, so a docked panel narrows them. */
+  /* The screen of the tab; the pages that cover it are placed against this box. */
   .main { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-  .side { flex: none; display: flex; min-height: 0; }
-  .side[hidden] { display: none; }
 </style>

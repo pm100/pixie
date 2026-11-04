@@ -1401,6 +1401,15 @@ impl Db {
         Ok(rows)
     }
 
+    /// How many of the picked items are videos (Ask Pixie uses it to say whether a video is among what the tools would work on).
+    pub fn pick_video_count(&self) -> Result<usize> {
+        let c = self.conn();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM picks k JOIN photos p ON p.id = k.photo_id WHERE p.missing = 0 AND p.kind = 1", [], |r| r.get(0))
+            .map_err(db_err)?;
+        Ok(n as usize)
+    }
+
     /// The picked photos themselves, for the Selected tab: newest first, like Browse.
     pub fn list_picked(&self) -> Result<Vec<Photo>> {
         let c = self.conn();
@@ -3563,6 +3572,26 @@ mod tests {
         db.remove_folder(f).unwrap();
         assert!(db.pick_ids().unwrap().is_empty());
         db.clear_picks().unwrap();
+    }
+
+    #[test]
+    fn the_videos_among_the_picked_are_counted() {
+        let (db, f) = mixed_library();
+        let all = db.list_photos(0, 10).unwrap();
+        let videos: Vec<_> = all.iter().filter(|p| p.meta.kind == MediaKind::Video).map(|p| p.id).collect();
+        let photos: Vec<_> = all.iter().filter(|p| p.meta.kind == MediaKind::Photo).map(|p| p.id).collect();
+        assert_eq!((videos.len(), photos.len()), (2, 2));
+        assert_eq!(db.pick_video_count().unwrap(), 0, "nothing picked");
+        db.set_picks(&photos).unwrap();
+        assert_eq!(db.pick_video_count().unwrap(), 0, "only photos picked");
+        db.set_pick(videos[0], true).unwrap();
+        assert_eq!(db.pick_video_count().unwrap(), 1);
+        db.set_picks(&videos).unwrap();
+        assert_eq!(db.pick_video_count().unwrap(), 2);
+        // a video that has gone missing does not count, like it is not listed
+        let seen: std::collections::HashSet<String> = all.iter().filter(|p| p.id != videos[0]).map(|p| p.path.clone()).collect();
+        db.mark_missing_except(f, &seen).unwrap();
+        assert_eq!(db.pick_video_count().unwrap(), 1);
     }
 
     #[test]

@@ -127,19 +127,69 @@ export function platformName(userAgent: string): 'windows' | 'mac' | 'linux' | '
 }
 
 /**
- * The text that goes to the proxy. It is made from the typed turns, the settings, and what this version of the app says about itself
- * (the guide and the places a button can lead to), so there is nowhere for a picture, a name from the library, a file name or a place to be.
+ * The text that goes to the proxy. It is made from the typed turns, the settings, how many photos are picked, and what this version of the app
+ * says about itself (the guide and the places a button can lead to), so there is nowhere for a picture, a name from the library, a file name or a place to be.
  */
-export function buildRequest(history: ChatMessage[], app: { platform: string; language: string; tab: string; today: string }, values: SettingValues): string {
+export function buildRequest(history: ChatMessage[], app: { platform: string; language: string; tab: string; today: string }, values: SettingValues, photos: PhotoState): string {
   return JSON.stringify({
     messages: turnsToSend(history),
-    context: { platform: app.platform, language: app.language, tab: app.tab, today: app.today, settings: settingsSchema(values), guide: GUIDE, places: [...GO_TO_TARGETS] },
+    context: { platform: app.platform, language: app.language, tab: app.tab, today: app.today, settings: settingsSchema(values), guide: GUIDE, places: [...GO_TO_TARGETS], photos },
   });
 }
 
 /** The text that goes to the proxy when the person confirms a note: the note they read, and their system. Nothing else. */
 export function feedbackRequest(note: Feedback, platform: string): string {
   return JSON.stringify({ category: note.category, summary: note.summary, platform });
+}
+
+/** What the person has to work on, as numbers and words only: no photo, no tag name. It lets the answer say "you have 12 photos picked". */
+export interface PhotoState {
+  picked: number;
+  /** How many of the picked items are videos. */
+  pickedVideos: number;
+  /** A photo or video is chosen in Browse. */
+  chosen: boolean;
+  chosenVideo: boolean;
+  workingOn: 'picked' | 'current' | 'tag';
+  /** What this means for the steps, in words (see `photoHint`). */
+  hint: string;
+}
+
+const plural1 = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+/**
+ * What the current state means for the steps of an answer, written here in the app (which knows how its tools behave) and put at the
+ * end of the model's prompt, where it is followed best. Words only: no photo, no tag name.
+ */
+export function photoHint(s: Omit<PhotoState, 'hint'>): string {
+  const { picked, pickedVideos, chosen, chosenVideo, workingOn } = s;
+  if (workingOn === 'tag') return "The tools are working on the photos with one of the user's tags, so the photos need no choosing: start at the tool, and say they are working on a tag.";
+  const usingPicked = picked > 0 && workingOn === 'picked';
+  const parts: string[] = [];
+  if (usingPicked) {
+    parts.push(`${picked} ${plural1(picked, 'photo is', 'photos are')} picked. Send, Create and Organize use the PICKED photos, not the photo or video the user clicks. For "these" or "them", say how many are picked and start the steps at the tool. When the user asks about ONE photo or video, your numbered steps must include this exact step between choosing it and opening the tool: "Set **Working on** to **Current**." (Without it the tool would use the ${plural1(picked, 'picked photo', `${picked} picked photos`)}.) Do not mention how many are picked in that case.`);
+  } else if (workingOn === 'current' || (picked === 0 && chosen)) {
+    parts.push('No photos are picked and the tools use the photo chosen in Browse (Working on: Current), so for one photo or video start at the tool and say the chosen one will be used; for several photos the first step is to pick them.');
+  } else {
+    parts.push('Nothing is picked or chosen: the first step of any answer that works on photos is to choose one photo with a click, or to pick several.');
+  }
+  // Is there a video for the tool to work on? If not, opening the tool first is useless: the answer must start with finding one.
+  const videoReady = usingPicked ? pickedVideos > 0 : chosen && chosenVideo;
+  if (videoReady) {
+    parts.push(usingPicked
+      ? `If the question is about a VIDEO: the picked set holds ${pickedVideos} ${plural1(pickedVideos, 'video', 'videos')} (among ${picked} picked), so say that; the tool would use everything picked.`
+      : 'If the question is about a VIDEO: the video the user has chosen will be used, so start at the tool and say so.');
+  } else {
+    parts.push(`If the question is about a VIDEO, there is no video for the tool yet (${usingPicked ? 'the picked photos include no video' : chosen ? 'the chosen item is not a video' : 'none is chosen'}), so opening the tool first would be useless. The steps must start with: "1. In **Browse**, click **Videos only** under **Library**." "2. Click the video you want." and then go on with the other steps.`);
+  }
+  return parts.join(' ');
+}
+
+/** `source` is the Working on choice: `picked`, `current` or `tag:<name>` (the name is not sent); `chosenKind` is the kind of the photo chosen in Browse, if any. */
+export function photoState(picked: number, pickedVideos: number, chosenKind: 'photo' | 'video' | null, source: string): PhotoState {
+  const workingOn = source === 'current' ? 'current' : source.startsWith('tag:') ? 'tag' : 'picked';
+  const base = { picked, pickedVideos: Math.min(pickedVideos, picked), chosen: chosenKind !== null, chosenVideo: chosenKind === 'video', workingOn } as const;
+  return { ...base, hint: photoHint(base) };
 }
 
 /** The date on the person's own clock as YYYY-MM-DD, so "last summer" can be worked out. */

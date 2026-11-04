@@ -1,4 +1,4 @@
-import type { AskBody, Context, SettingInfo, Turn } from './types';
+import type { AskBody, Context, PhotoInfo, SettingInfo, Turn } from './types';
 
 export const MAX_BODY_BYTES = 65_536;
 export const MAX_TURNS = 6;
@@ -6,6 +6,7 @@ export const MAX_TURN_CHARS = 600;
 export const MAX_SETTINGS = 40;
 export const MAX_GUIDE_CHARS = 20_000;
 export const MAX_PLACES = 40;
+export const MAX_HINT_CHARS = 1500;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -65,6 +66,19 @@ function parseSetting(raw: unknown): SettingInfo | null {
   return setting;
 }
 
+/** The optional photo counts. Anything odd is left out rather than failing the question, so apps of other versions keep working. */
+function parsePhotos(raw: unknown): PhotoInfo | null {
+  if (!isObject(raw)) return null;
+  const picked = num(raw.picked);
+  const { chosen, workingOn } = raw;
+  if (picked === null || !Number.isInteger(picked) || picked < 0 || picked > 10_000_000 || typeof chosen !== 'boolean') return null;
+  if (workingOn !== 'picked' && workingOn !== 'current' && workingOn !== 'tag') return null;
+  const hint = typeof raw.hint === 'string' && raw.hint.length <= MAX_HINT_CHARS && raw.hint.trim() !== '' ? raw.hint.trim() : undefined;
+  const videos = num(raw.pickedVideos);
+  const pickedVideos = videos !== null && Number.isInteger(videos) && videos >= 0 && videos <= picked ? videos : undefined;
+  return { picked, ...(pickedVideos !== undefined ? { pickedVideos } : {}), chosen, ...(typeof raw.chosenVideo === 'boolean' ? { chosenVideo: raw.chosenVideo } : {}), workingOn, ...(hint ? { hint } : {}) };
+}
+
 function parseContext(raw: unknown): Context | null {
   if (!isObject(raw)) return null;
   const platform = str(raw.platform, 16);
@@ -87,7 +101,8 @@ function parseContext(raw: unknown): Context | null {
     if (typeof place !== 'string' || !PLACE.test(place) || places.includes(place)) return null;
     places.push(place);
   }
-  return { platform, language, tab, today, settings, guide, places };
+  const photos = parsePhotos(raw.photos);
+  return { platform, language, tab, today, settings, ...(photos ? { photos } : {}), guide, places };
 }
 
 /** Validates and rebuilds the request body, keeping only known fields within size limits. */

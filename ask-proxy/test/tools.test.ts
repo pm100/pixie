@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { interpret as interpretFor, toolSpecs } from '../src/tools';
+import { dropClosingLine, interpret as interpretFor, toolSpecs } from '../src/tools';
 import type { ToolCall } from '../src/types';
 
 const PLACES = ['browse', 'send-email', 'send-print'];
@@ -58,6 +58,24 @@ describe('interpret, go_to', () => {
 
   it('asks for the sentence in the tool, so the model cannot leave it out', () => {
     expect(TOOL_SPECS.find((t) => t.name === 'go_to')?.schema.required).toEqual(['target', 'say']);
+  });
+});
+
+describe('dropClosingLine', () => {
+  it("drops a last line like \"I'll take you there.\" and keeps everything else", () => {
+    expect(dropClosingLine('To print:\n1. Pick.\n2. Print.\n\nI\'ll take you to the Print screen now.')).toBe('To print:\n1. Pick.\n2. Print.');
+    expect(dropClosingLine('Steps.\nLet me know if you need more help!')).toBe('Steps.');
+    expect(dropClosingLine('Steps.\nI will guide you to the right place.\n')).toBe('Steps.');
+  });
+  it('leaves a reply alone when that is all there is, or when the last line is a real step', () => {
+    expect(dropClosingLine("I'll take you there.")).toBe("I'll take you there.");
+    expect(dropClosingLine('1. Open it.\n2. I can see the list there.')).toBe('1. Open it.\n2. I can see the list there.');
+    expect(dropClosingLine('1. Open it.\n2. Press Print.')).toBe('1. Open it.\n2. Press Print.');
+    expect(dropClosingLine('')).toBe('');
+  });
+  it('is applied to what the user is shown', () => {
+    const call = { name: 'go_to', input: { target: 'browse', say: 'Open it.\n\nI\'ll take you there.' } };
+    expect(interpretFor([], [call], ['browse']).reply).toBe('Open it.');
   });
 });
 

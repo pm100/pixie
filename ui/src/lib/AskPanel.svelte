@@ -5,11 +5,12 @@
   import { tick } from 'svelte';
   import { askFeedback, askPixie } from './api';
   import { localHelp } from './askLocal';
-  import { buildRequest, categoryLabel, dayOf, errorText, feedbackRequest, parseReply, platformName, quotaOf, type ChatMessage, type Quota } from './ask';
+  import RichText from './RichText.svelte';
+  import { buildRequest, categoryLabel, dayOf, errorText, feedbackRequest, parseReply, platformName, quotaOf, type ChatMessage, type PhotoState, type Quota } from './ask';
   import { goToLabel } from './askGoTo';
   import { applyChanges, checkProposal, type Change, type Handlers, type SettingValues } from './askSettings';
 
-  let { on, installId, values, handlers, from, language, ongo, onsettings }: {
+  let { on, installId, values, handlers, from, photos, language, ongo, onsettings }: {
     /** Ask Pixie is turned on (Settings, Ask Pixie). */
     on: boolean;
     /** The random id the proxy counts the day's questions by. */
@@ -18,6 +19,8 @@
     handlers: Handlers;
     /** The tab the person came from (it helps the model answer "here"). */
     from: string;
+    /** How many photos (and videos) are picked, what is chosen, and what the tools work on: read when a question is asked, so it is current. */
+    photos: () => Promise<PhotoState>;
     language: string;
     /** A button for a place in the app was pressed. */
     ongo: (target: string) => void;
@@ -40,8 +43,8 @@
   }
 
   /** No answer from the server: answer from the help built into Pixie, so there is never a dead end. */
-  function answerHere(q: string) {
-    const help = localHelp(q);
+  function answerHere(q: string, state?: PhotoState) {
+    const help = localHelp(q, state);
     history.push(help
       ? { role: 'assistant', local: true, text: help.text, goTo: help.goTo ?? undefined }
       : { role: 'assistant', local: true, text: "I couldn't find that in Pixie's built-in help either. Try other words, or look along the tabs at the top: Browse, Send, Create, Organize, Clean up, Import/Export and Settings." });
@@ -54,8 +57,10 @@
     text = '';
     busy = true;
     void scrollDown();
+    let state: PhotoState | undefined;
     try {
-      const body = buildRequest(history, { platform: platformName(globalThis.navigator?.userAgent ?? ''), language, tab: from, today: dayOf(new Date()) }, values);
+      state ??= await photos();
+      const body = buildRequest(history, { platform: platformName(globalThis.navigator?.userAgent ?? ''), language, tab: from, today: dayOf(new Date()) }, values, state);
       const answer = await askPixie(installId, body);
       let json: unknown = null;
       try { json = JSON.parse(answer.body); } catch { /* not JSON: an error below */ }
@@ -63,7 +68,7 @@
       if (reply === null) {
         if (answer.status === 429) quota = quotaOf(json) ?? quota;
         history.push({ role: 'error', text: errorText(answer.status, json) });
-        answerHere(q);
+        answerHere(q, state);
       } else {
         quota = reply.quota ?? quota;
         const checked = checkProposal(reply.proposal, values);
@@ -76,7 +81,7 @@
       }
     } catch {
       history.push({ role: 'error', text: errorText(0, null) });
-      answerHere(q);
+      answerHere(q, state);
     }
     busy = false;
     void scrollDown();
@@ -142,7 +147,7 @@
       {#each history as m, i (i)}
         <div class="msg {m.role}">
           {#if m.local}<p class="from">From Pixie's built-in help</p>{/if}
-          <p>{m.text}</p>
+          {#if m.role === 'assistant'}<RichText text={m.text} />{:else}<p>{m.text}</p>{/if}
           {#if m.changes && m.card}
             {@const lines = m.card === 'open' ? live(m) : m.changes}
             <div class="card">

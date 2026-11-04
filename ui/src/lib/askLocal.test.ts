@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GO_TO_TARGETS } from './askGoTo';
-import { localHelp, TOPICS } from './askLocal';
+import { localHelp, photosLine, TOPICS } from './askLocal';
 import { TOOLS } from './tools';
 
 describe('help without the server', () => {
@@ -32,6 +32,35 @@ describe('help without the server', () => {
       expect(r?.topics[0], question).toBe(id);
       expect(r?.goTo, question).toBe(place);
     }
+  });
+
+  it('says what the person has already, for a topic that works on photos, and only for those', () => {
+    const picked = localHelp('how do I email these', { picked: 12, chosen: false, workingOn: 'picked' })!;
+    expect(picked.text.split('\n')[0]).toContain('12 photos');
+    expect(picked.text).toContain('go straight to the tool');
+    const chosen = localHelp('how do I print', { picked: 0, chosen: true, workingOn: 'current' })!;
+    expect(chosen.text.split('\n')[0]).toContain('Working on: Current');
+    expect(localHelp('how do I email these', { picked: 0, chosen: false, workingOn: 'picked' })!.text.split('\n')[0]).toContain('Nothing is picked or chosen yet');
+    expect(localHelp('how do I see my trips', { picked: 12, chosen: true, workingOn: 'picked' })!.text).not.toContain('picked');
+    expect(localHelp('how do I email a video')!.text.startsWith('To email')).toBe(true);
+  });
+
+  it('does not bring up the picked photos when the question is about one video or one photo', () => {
+    const state = { picked: 89, chosen: false, workingOn: 'picked' as const };
+    for (const q of ['how do I email a video', 'how do I print this photo', 'how do I tag one photo']) {
+      const text = localHelp(q, state)!.text;
+      expect(text, q).not.toContain('89');
+      expect(text, q).not.toContain('picked, so');
+    }
+  });
+
+  it('never suggests ways of sharing that Pixie does not have, or guesses about the size of a file', () => {
+    for (const t of TOPICS) expect(t.text, t.id).not.toMatch(/cloud drive link|may be refused|share it another way/i);
+  });
+
+  it('counts one photo as one', () => {
+    expect(photosLine({ picked: 1, chosen: false, workingOn: 'picked' })).toContain('**1 photo**');
+    expect(photosLine({ picked: 0, chosen: false, workingOn: 'tag' })).toContain('tag');
   });
 
   it('says plainly that what is not built is not built, with no button', () => {
@@ -66,11 +95,24 @@ describe('help without the server', () => {
     }
   });
 
+  it('lays how-to answers out as numbered steps that count up from 1, and names the controls in bold', () => {
+    for (const t of TOPICS) {
+      const steps = [...t.text.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+      expect(steps, t.id).toEqual(steps.map((_, i) => i + 1));
+    }
+    for (const id of ['email', 'print', 'collage', 'tag', 'duplicates']) {
+      const t = TOPICS.find((x) => x.id === id)!;
+      expect(t.text, id).toMatch(/^1\. /m);
+      expect(t.text, id).toMatch(/\*\*[A-Z][^*]+\*\*/);
+    }
+  });
+
   it('keeps each topic short, plain and unique', () => {
     expect(new Set(TOPICS.map((t) => t.id)).size).toBe(TOPICS.length);
     for (const t of TOPICS) {
       expect(t.text.length, t.id).toBeLessThan(600);
-      expect(t.text, t.id).not.toMatch(/`|\$\{|\*\*/);
+      expect(t.text, t.id).not.toMatch(/`|\$\{/);
+      expect((t.text.match(/\*\*/g) ?? []).length % 2, `${t.id}: bold marks must pair up`).toBe(0);
       expect(t.keywords.length, t.id).toBeGreaterThan(1);
     }
   });

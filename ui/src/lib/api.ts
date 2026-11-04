@@ -86,6 +86,8 @@ export const pickPhoto = (id: number, picked: boolean) => invoke<void>('pick_pho
 export const pickMany = (ids: number[]) => invoke<void>('pick_many', { ids });
 /** The ids of the picked photos, in the order picked. */
 export const pickIds = () => invoke<number[]>('pick_ids');
+/** How many of the picked items are videos. */
+export const pickVideoCount = () => invoke<number>('pick_video_count');
 /** The picked photos themselves, newest first (the Send, Create and Organize tabs). */
 export const listPicked = () => invoke<Photo[]>('list_picked');
 

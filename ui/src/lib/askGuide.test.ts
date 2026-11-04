@@ -5,7 +5,7 @@ import { GUIDE } from './askGuide';
 import { ALL_ON } from './analysisOptions';
 import { GROUPS, TOOLS } from './tools';
 import { DEFAULT_TRIP_PREFS } from './trips';
-import { buildRequest } from './ask';
+import { buildRequest, photoState } from './ask';
 
 const lines = GUIDE.split('\n');
 
@@ -13,7 +13,7 @@ describe('the guide Ask Pixie sends with every question', () => {
   it('fits what the proxy accepts, with room for the settings and the conversation', () => {
     const values: SettingValues = { viewerMode: 'window', emailLimitMb: 20, recentDays: 30, networkRescan: { on: true, minutes: 30 }, analysis: { ...ALL_ON }, trips: { ...DEFAULT_TRIP_PREFS } };
     expect(GUIDE.length).toBeLessThanOrEqual(20_000); // MAX_GUIDE_CHARS in ask-proxy/src/validate.ts
-    const request = buildRequest([{ role: 'user', text: 'x'.repeat(600) }], { platform: 'windows', language: 'en-US', tab: 'browse', today: '2026-11-03' }, values);
+    const request = buildRequest([{ role: 'user', text: 'x'.repeat(600) }], { platform: 'windows', language: 'en-US', tab: 'browse', today: '2026-11-03' }, values, photoState(12, 2, null, 'picked'));
     expect(request.length).toBeLessThan(65_536 / 2); // MAX_BODY_BYTES in ask-proxy/src/validate.ts
     expect(settingsSchema(values).length).toBeLessThanOrEqual(40);
   });
@@ -71,9 +71,30 @@ describe('the guide Ask Pixie sends with every question', () => {
     expect(GUIDE).toContain('works on the user');
   });
 
+  it('knows the tools start on the chosen photo when nothing is picked, and how to use what the user has now', () => {
+    expect(GUIDE).toContain('start on Current by themselves');
+    expect(GUIDE).toContain('for ONE photo or video');
+    expect(GUIDE).toContain('USER STATE says what the user has now');
+    expect(GUIDE).toContain('Never tell the user to pick photos they have already picked');
+  });
+
   it('says in the guide that names from the library are never sent', () => {
     const section = GUIDE.slice(GUIDE.indexOf('PRIVACY'));
     expect(section).toContain('never sent');
     expect(section).toContain('never sends pictures');
+  });
+});
+
+describe('what the guide must not make the model say', () => {
+  it('does not suggest sharing a video through a cloud drive, which Pixie does not have', () => {
+    expect(GUIDE).not.toMatch(/suggest sharing it another way/i);
+    expect(GUIDE).toContain('Pixie has no cloud drive sharing yet');
+  });
+
+  it('does not let the model guess that a file is too big, or open with the picked count for a question about one item', () => {
+    expect(GUIDE).not.toMatch(/may be refused/i);
+    expect(GUIDE).toContain('Do not guess that a video is too big');
+    expect(GUIDE).toContain('is not about the photos that happen to be picked');
+    expect(GUIDE).toContain('A question about ONE named thing');
   });
 });

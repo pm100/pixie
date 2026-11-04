@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isInstallId, MAX_GUIDE_CHARS, MAX_PLACES, MAX_TURN_CHARS, MAX_TURNS, parseAsk } from '../src/validate';
+import { isInstallId, MAX_GUIDE_CHARS, MAX_HINT_CHARS, MAX_PLACES, MAX_TURN_CHARS, MAX_TURNS, parseAsk } from '../src/validate';
 import { askBody, CONTEXT, INSTALL_ID } from './helpers';
 
 describe('isInstallId', () => {
@@ -17,11 +17,31 @@ describe('parseAsk', () => {
     expect(parsed.ok).toBe(true);
   });
 
+  it('keeps the photo counts, and leaves out anything odd about them instead of failing the question', () => {
+    const photos = { picked: 3, chosen: true, workingOn: 'tag' };
+    const ok = parseAsk({ messages: askBody().messages, context: { ...CONTEXT, photos } });
+    expect(ok.ok && ok.body.context.photos).toEqual(photos);
+    for (const bad of [{ picked: -1, chosen: true, workingOn: 'picked' }, { picked: 1.5, chosen: true, workingOn: 'picked' }, { picked: 1, chosen: 'yes', workingOn: 'picked' }, { picked: 1, chosen: true, workingOn: 'everything' }, 'lots', { picked: 1e9, chosen: true, workingOn: 'picked' }]) {
+      const r = parseAsk({ messages: askBody().messages, context: { ...CONTEXT, photos: bad } });
+      expect(r.ok, JSON.stringify(bad)).toBe(true);
+      expect(r.ok && r.body.context.photos, JSON.stringify(bad)).toBeUndefined();
+    }
+    const hinted = parseAsk({ messages: askBody().messages, context: { ...CONTEXT, photos: { ...photos, hint: '  Do this.  ' } } });
+    expect(hinted.ok && hinted.body.context.photos?.hint).toBe('Do this.');
+    for (const hint of ['', '   ', 5, 'x'.repeat(MAX_HINT_CHARS + 1)]) {
+      const r = parseAsk({ messages: askBody().messages, context: { ...CONTEXT, photos: { ...photos, hint } } });
+      expect(r.ok && r.body.context.photos?.hint, String(hint).slice(0, 10)).toBeUndefined();
+      expect(r.ok && r.body.context.photos?.picked).toBe(3);
+    }
+    const old = parseAsk({ messages: askBody().messages, context: { ...CONTEXT, photos: undefined } });
+    expect(old.ok && old.body.context.photos).toBeUndefined();
+  });
+
   it('drops fields it does not know about', () => {
     const body = { ...askBody(), extra: 1, context: { ...CONTEXT, evil: 'x' } };
     const parsed = parseAsk(body);
     expect(parsed.ok && Object.keys(parsed.body)).toEqual(['messages', 'context']);
-    expect(parsed.ok && Object.keys(parsed.body.context)).toEqual(['platform', 'language', 'tab', 'today', 'settings', 'guide', 'places']);
+    expect(parsed.ok && Object.keys(parsed.body.context)).toEqual(['platform', 'language', 'tab', 'today', 'settings', 'photos', 'guide', 'places']);
   });
 
   it.each([

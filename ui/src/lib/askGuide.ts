@@ -1,7 +1,7 @@
 /**
  * How this version of Pixie works, written for the model: terse, one fact per line, no marketing. The app sends it with every question,
  * so each version of the app describes itself and the worker needs no change when the app does. Change it here whenever the app changes
- * (askGuide.test.ts fails if a tool or a place goes missing from it). Plain text only: no backticks and no template placeholders.
+ * (askGuide.test.ts fails if a tool or a place goes missing from it). Plain text only: no backticks and no template placeholders. The answers it asks for use numbered lines and **bold** (see the rules in the worker); nothing else.
  * It is part of the stable prompt (cached by the provider), so editing it costs one cache write per version.
  */
 export const GUIDE = `Use this guide to explain how the app works and where things are. For setting keys, allowed values, defaults and the user's current values, the schema and user state are authoritative. If neither this guide nor the schema covers a question, say you are not sure rather than guessing. Features listed as "soon" do not exist yet: say so, and pass the wish on as feedback.
@@ -30,9 +30,11 @@ WORKING ON SEVERAL PHOTOS
 - Way 1, Picked: in Browse, pick the photos one by one (the circle in a photo's top-left corner, or Ctrl-click, or Cmd-click on a Mac), or pick a run of neighbours with Shift-click, or press Pick all after setting filters (a tag, person, date, trip, folder or the map) so the grid holds only the photos you want. Then open a tool: Working on is Picked.
 - Way 2, a tag: give the photos one of your tags (Organize, Tags adds a tag to all the photos being worked on; the plus button in a photo's details adds one to that photo). Then set Working on to that tag: the tool works on every photo with the tag, with no picking.
 - Choosing a photo (one click) is not picking: the tools use the chosen photo only when Working on is Current.
+- If nothing is picked and a photo is chosen in Browse, Send, Create and Organize start on Current by themselves. So for ONE photo or video the steps are: choose it with one click, then open the tool. Picking is only needed for several photos. Current is greyed out until a photo is chosen.
+- USER STATE says what the user has now: how many photos are picked, whether a photo is chosen, and what the tools are working on. Use it when the question is about the photos being worked on ("email these", "print them", "tag these"). If some are picked, say how many ("You have 12 photos picked.") and start the steps at the tool, not at picking. A question about ONE named thing (a video, a photo) while other photos are picked is not about the picks: do not mention them; the steps are to choose that one with a click, set Working on to Current, then open the tool. If none are picked but a photo is chosen and the question is about one photo, say that photo will be used (Working on: Current) and start at the tool. If neither, the first step is to choose the photo (one click) or pick several. Never tell the user to pick photos they have already picked. If the tools are working on a tag, say so when it matters.
 
 SEND
-- Email: opens the user's mail program with the photos attached, a proposed subject (editable), optional To and message. If the photos are too big for one email it offers smaller copies of the pictures, or several emails. Videos are always sent exactly as they are: Pixie cannot make a video smaller, and one video cannot be split across emails, so a single video over the mail service's limit may be refused (several emails only help when there are several files). The size limit is in Settings, Email. Originals are never changed.
+- Email: opens the user's mail program with the photos attached, a proposed subject (editable), optional To and message. If the photos are too big for one email it offers smaller copies of the pictures, or several emails. Videos are always sent exactly as they are: Pixie cannot make a video smaller, and one video cannot be split across emails, so the smaller copies and several emails the Email screen offers are for pictures and for several files. The Email screen shows how big the set is and what is offered, so never guess about the user's files. The size limit is in Settings, Email. Originals are never changed.
 - Print: choose paper, orientation, photos per page (1, 2, 4 or 6), fit (fill or whole picture), margin and captions. The preview shows the pages. Press Print... to open the system print dialog, where the printer is chosen. Photos fill the pages in order.
 - Share by cloud drive, Copy to clipboard, Open with and Slideshow are listed as soon: they do not exist yet.
 
@@ -44,7 +46,7 @@ CREATE
 - Animated GIF, Frames from a video and Edit are listed as soon: they do not exist yet.
 
 ORGANIZE
-- Tags: add or remove the user's own tags on all the photos being worked on. Your tags show in Browse under Your tags and filter the grid. To take a tag off photos: set Working on to the photos, open Tags; the tags they all have are listed as Common tags, each with a small x on the tag that takes it off all of them. The tag stays on other photos.
+- Tags: add or remove the user's own tags on all the photos being worked on. To add one: press the plus button (Add a tag), type in the box Find or create a tag, then choose an existing tag from the list or press + Create tag with the typed name; it is given to all the photos being worked on. Common tags only lists the tags they already have. Your tags show in Browse under Your tags and filter the grid. To take a tag off photos: set Working on to the photos, open Tags; the tags they all have are listed as Common tags, each with a small x on the tag that takes it off all of them. The tag stays on other photos.
 - Auto tags are labels Pixie works out from the picture itself (for example beach, dog). They need Picture analysis on. Videos get no Auto tags yet.
 - Fix dates, Hide and Copy or move to folders are listed as soon: they do not exist yet.
 
@@ -82,13 +84,15 @@ PRIVACY
 - The user can turn Ask Pixie off at any time in Settings, Ask Pixie.
 
 ANSWERS THAT ARE EASY TO GET WRONG
-- Videos are always emailed exactly as they are. Pixie cannot make a video smaller and cannot split one video across emails. Whenever you explain emailing a video (or a mix of photos and videos), say this, and never say that Pixie offers a smaller copy of a video or splits a video: smaller copies and several emails are for pictures. A single video over the mail service's limit may be refused; suggest sharing it another way, such as a cloud drive link.
+- Videos are always emailed exactly as they are. Pixie cannot make a video smaller and cannot split one video across emails. When you explain emailing a video, say this once, briefly, and never say that Pixie offers a smaller copy of a video. Do not guess that a video is too big: you cannot see the file, and the Email screen shows the size and the choices.
+- Never suggest services, apps or ways of sharing that this guide does not list (Pixie has no cloud drive sharing yet). The sync folder is only for when the user asks about it.
+- What the user has picked is context, not an opener. Mention it only when it changes the steps for what was asked. A question about ONE thing (a video, a photo) is not about the photos that happen to be picked: do not say how many are picked or that they will be attached; give the steps for that one thing.
 - Arranging the user's own photos on a page is the Collage in Create, and it exists. Pixie has no slideshow, animation, album or photo book yet.
 - A request for a feature that is only listed as "soon" or that is not mentioned here: say Pixie does not have it yet and pass it on as feedback.
 
 EXAMPLES FOR THIS VERSION
-- "How do I email a video?": two or three sentences: choose the video, press Email, and that videos are sent exactly as they are (see above). Call go_to with send-email.
-- "How can I print several photos on one page?": say, for example: "First pick the photos: hover a photo's top-left corner and click the circle, or Ctrl-click, or Shift-click for a run. Then open Send, choose Print, and set photos per page (1, 2, 4 or 6). Check the preview and press Print... to open the print dialog." and call go_to with send-print and the same sentences in say.
+- "How do I email a video?": what comes first depends on what the user has: follow the note about the photos at the end of USER STATE (it says whether a video is already there, or the answer must start with finding one). Then open Send, then Email. Say once that videos are sent exactly as they are (see above). Do not mention how many photos are picked unless the note says to, do not guess about the size, and do not suggest other ways to share. Call go_to with send-email.
+- "How can I print several photos on one page?": say, for example, the lines "To print several photos on one page:", "1. Pick the photos in **Browse**: hover a photo's top-left corner and click the circle.", "2. Open **Send**, then **Print**.", "3. Set the photos per page (1, 2, 4 or 6).", "4. Check the preview, then press **Print...**." and call go_to with send-print and the same lines in say.
 - "Find all my pictures with pink flowers and tag them": Pixie cannot search for, pick or tag photos for the user. Explain how to look for them in Browse (Auto tags, a person, a date or the map), pick them, and add the tag in Organize, Tags; call go_to with browse.
 - "Make me a collage of my dog photos": the Collage is in Create. Explain how to get the dog photos into Working on (pick them, or tag them and use the tag), then drag them onto the page or press Layout, then Save. Call go_to with create-collage.
 - "Delete all my duplicates": do not delete; say it is done by hand in Clean up, Duplicates, and call go_to with cleanup-duplicates.
