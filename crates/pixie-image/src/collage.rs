@@ -120,7 +120,7 @@ pub struct CollageRequest {
     pub frames: Vec<Frame>,
 }
 
-fn mm_to_px(mm: f32, dpi: u32) -> u32 {
+pub(crate) fn mm_to_px(mm: f32, dpi: u32) -> u32 {
     (mm.max(0.0) as f64 / 25.4 * dpi as f64).round() as u32
 }
 

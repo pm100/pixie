@@ -215,6 +215,8 @@ struct Plan {
     /// The pool, in the order of `sigs`.
     usable: Vec<TileCandidate>,
     sigs: Vec<TileSig>,
+    /// The average colour of each of the pool, in the same order.
+    avgs: Vec<[u8; 3]>,
     /// Photos that can be tiles but have no signature (they could not be read).
     skipped: usize,
     key: String,
@@ -252,7 +254,8 @@ fn plan(db: &Db, a: &DraftArgs) -> Result<Plan, String> {
     let ids: Vec<i64> = cands.iter().map(|c| c.id).collect();
     let sigs = db.tile_sigs(&ids).map_err(|e| e.user_message())?;
     let have: HashSet<i64> = sigs.iter().map(|s| s.id).collect();
-    let usable: Vec<TileCandidate> = cands.iter().filter(|c| have.contains(&c.id)).cloned().collect();
+    let total = cands.len();
+    let usable: Vec<TileCandidate> = cands.into_iter().filter(|c| have.contains(&c.id)).collect();
     if usable.is_empty() {
         return Err(NO_TILES.into());
     }
@@ -268,7 +271,8 @@ fn plan(db: &Db, a: &DraftArgs) -> Result<Plan, String> {
     let crop = mosaic::crop_target(&img, out_w, out_h, a.focus_x, a.focus_y, a.zoom);
     let layout = Layout { cols, rows, cell_colours: mosaic::cell_colours(&crop, cols, rows) };
     let key = key_of(a, (target.id, target.mtime, target.size), page, &usable);
-    Ok(Plan { page, layout, skipped: cands.len() - usable.len(), usable, sigs, key })
+    let avgs = sigs.iter().map(|s| s.avg).collect();
+    Ok(Plan { page, layout, skipped: total - usable.len(), usable, sigs, avgs, key })
 }
 
 /// Make the signatures that are missing for the photos of the source. `progress(done, total)` is called as it goes.
@@ -321,8 +325,7 @@ fn index_core(db: &Db, job: &MosaicJob, src: &TileSource, progress: &(dyn Fn(usi
 
 fn draft_core(db: &Db, a: &DraftArgs) -> Result<DraftResult, String> {
     let p = plan(db, a)?;
-    let avgs: Vec<[u8; 3]> = p.sigs.iter().map(|s| s.avg).collect();
-    let asg = mosaic::assign(&p.layout.cell_colours, p.layout.cols, &avgs, a.gap);
+    let asg = mosaic::assign(&p.layout.cell_colours, p.layout.cols, &p.avgs, a.gap);
     let tinies: Vec<&[u8]> = p.sigs.iter().map(|s| s.tiny.as_slice()).collect();
     let tile = mosaic::preview_tile_px(p.layout.cols, p.layout.rows);
     let img = mosaic::draft(&p.layout, &asg.picks, &tinies, a.blend, tile);
@@ -350,13 +353,13 @@ fn built_now(db: &Db, job: &MosaicJob) -> Option<BuiltInfo> {
 
 fn build_core(db: &Db, job: &MosaicJob, a: &DraftArgs, progress: &mut dyn FnMut(usize, usize), preview: &mut dyn FnMut(Vec<u8>)) -> Result<BuiltInfo, String> {
     let p = plan(db, a)?;
-    let avgs: Vec<[u8; 3]> = p.sigs.iter().map(|s| s.avg).collect();
-    let asg = mosaic::assign(&p.layout.cell_colours, p.layout.cols, &avgs, a.gap);
+    let asg = mosaic::assign(&p.layout.cell_colours, p.layout.cols, &p.avgs, a.gap);
     let paths: Vec<PathBuf> = p.usable.iter().map(|t| PathBuf::from(&t.path)).collect();
     // A photo that cannot be read gives its cells to the photo nearest in colour that can.
     let mut failed: HashSet<usize> = HashSet::new();
     let mut spare = |bad: usize| -> Option<usize> {
         failed.insert(bad);
+        let avgs = &p.avgs;
         let dist = |i: usize| (0..3).map(|k| (avgs[i][k] as i32 - avgs[bad][k] as i32).pow(2)).sum::<i32>();
         (0..avgs.len()).filter(|i| !failed.contains(i)).min_by_key(|i| dist(*i))
     };

@@ -21,11 +21,12 @@
   function show(b: MosaicBuilt) {
     if (!map) return;
     layer?.remove();
-    layer = L.tileLayer(mosaicTileTemplate(`${b.key}-${b.built_at}`), { tileSize: 256, minNativeZoom: 0, maxNativeZoom: b.levels - 1, minZoom: -2, maxZoom: b.levels + 1, noWrap: true, bounds: bounds(b) }).addTo(map);
-    map.setMaxBounds(bounds(b).pad(0.1));
+    const area = bounds(b);
+    layer = L.tileLayer(mosaicTileTemplate(`${b.key}-${b.built_at}`), { tileSize: 256, minNativeZoom: 0, maxNativeZoom: b.levels - 1, minZoom: -2, maxZoom: b.levels + 1, noWrap: true, bounds: area }).addTo(map);
+    map.setMaxBounds(area.pad(0.1));
     map.setMinZoom(-2);
     map.setMaxZoom(b.levels + 1);
-    map.fitBounds(bounds(b), { animate: false });
+    map.fitBounds(area, { animate: false });
   }
   const bounds = (b: MosaicBuilt) => {
     const u = unit(b);

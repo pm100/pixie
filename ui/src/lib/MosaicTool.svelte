@@ -372,8 +372,6 @@
         <MosaicViewer {built} />
       {:else if draft}
         <img class="draft" alt="A quick draft of the mosaic" src={`data:image/jpeg;base64,${draft.jpeg_base64}`} />
-      {:else if indexing}
-        <p class="msg" role="status">Preparing photos: {indexing.done.toLocaleString()} of {indexing.total.toLocaleString()}<br /><span class="hint">The first time takes a while; later mosaics start straight away.</span></p>
       {:else if drafting}
         <p class="msg" role="status">Making the draft…</p>
       {:else}
@@ -382,8 +380,6 @@
     </div>
 
     <div class="status">
-      {#if indexing && draft}<span role="status">Preparing photos: {indexing.done.toLocaleString()} of {indexing.total.toLocaleString()}</span>{/if}
-      {#if building}<span role="status">Building: {building.done.toLocaleString()} of {building.total.toLocaleString()} photos</span>{/if}
       {#if problem}<span class="err" role="alert">{problem}</span>{/if}
       {#if error}<span class="err" role="alert">{error}</span>{/if}
       {#if saved}<span class="ok" role="status">Saved.</span>{/if}

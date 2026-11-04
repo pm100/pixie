@@ -1,6 +1,6 @@
 //! Photomosaic: rebuild a picture as a grid of small square photos.
 
-use crate::collage::{check_px, cover_crop, MAX_SIDE_PX};
+use crate::collage::{check_px, cover_crop, mm_to_px, MAX_SIDE_PX};
 use crate::decode::decode_scaled;
 use image::{imageops, DynamicImage, GenericImageView, RgbImage};
 use pixie_core::{PixieError, Result};
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// The side of the miniature kept for every photo, in pixels.
-pub const SIG_EDGE: u32 = 12;
+const SIG_EDGE: u32 = 12;
 
 /// What is kept of a photo to use it as a tile: its average colour, and a small picture of its centre square (`SIG_EDGE` square, RGB).
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +36,7 @@ pub fn signature(img: &DynamicImage) -> Signature {
 
 /// The side of a tile in pixels.
 pub fn tile_px(tile_mm: f32, dpi: u32) -> u32 {
-    ((tile_mm.max(0.0) as f64 / 25.4 * dpi as f64).round() as u32).max(1)
+    mm_to_px(tile_mm, dpi).max(1)
 }
 
 /// How many whole tiles fit across and down (at least one each).
@@ -164,6 +164,7 @@ fn try_assign(cells: &[[f32; 3]], cols: u32, tree: &KdTree, gap: u32) -> Option<
         let free = |i: usize| gap == 0 || uses[i].iter().all(|&(uc, ur)| uc.abs_diff(c).max(ur.abs_diff(r)) > gap);
         let i = tree.nearest(*lab, &free)?;
         if gap > 0 {
+            uses[i].retain(|&(_, ur)| r - ur <= gap);
             uses[i].push((c, r));
         }
         picks.push(i);
@@ -308,8 +309,9 @@ pub fn build(
         let (w, h) = img.dimensions();
         let side = w.min(h).max(1);
         let square = img.crop_imm((w - side) / 2, (h - side) / 2, side, side).to_rgb8();
+        let mut sized: HashMap<(u32, u32), RgbImage> = HashMap::new();
         for (k, (x, y, cw, ch)) in cells.iter().zip(rects) {
-            let mut tile = imageops::resize(&square, cw, ch, imageops::FilterType::Lanczos3);
+            let mut tile = sized.entry((cw, ch)).or_insert_with(|| imageops::resize(&square, cw, ch, imageops::FilterType::Lanczos3)).clone();
             tint(&mut tile, layout.cell_colours[*k], blend);
             imageops::replace(&mut page, &tile, x as i64, y as i64);
         }
@@ -335,7 +337,7 @@ pub fn build(
 // ---- the built picture ----
 
 /// The side of a tile of the viewing pyramid.
-pub const VIEW_TILE: u32 = 256;
+const VIEW_TILE: u32 = 256;
 
 /// The colour behind the picture in the viewer (the window's `#2b2b2f`): what the padding of an edge tile is painted, so it does not show.
 const VIEW_BACKGROUND: image::Rgb<u8> = image::Rgb([43, 43, 47]);
@@ -385,25 +387,23 @@ fn write_parts(img: &RgbImage, dir: &std::path::Path, dpi: u32) -> Result<Built>
     crate::collage::save(img, &dir.join("full.png"), dpi, 92)?;
     let (w, h) = img.dimensions();
     let levels = level_count(w, h);
-    let mut level = img.clone();
+    let mut smaller: Option<RgbImage> = None;
     for z in (0..levels).rev() {
+        let level = smaller.as_ref().unwrap_or(img);
         let (lw, lh) = level.dimensions();
         for ty in 0..lh.div_ceil(VIEW_TILE) {
             for tx in 0..lw.div_ceil(VIEW_TILE) {
                 let (x, y) = (tx * VIEW_TILE, ty * VIEW_TILE);
                 let mut tile = RgbImage::from_pixel(VIEW_TILE, VIEW_TILE, VIEW_BACKGROUND);
-                let part = imageops::crop_imm(&level, x, y, VIEW_TILE.min(lw - x), VIEW_TILE.min(lh - y)).to_image();
+                let part = imageops::crop_imm(level, x, y, VIEW_TILE.min(lw - x), VIEW_TILE.min(lh - y)).to_image();
                 imageops::replace(&mut tile, &part, 0, 0);
                 let folder = dir.join("z").join(z.to_string()).join(tx.to_string());
                 std::fs::create_dir_all(&folder)?;
-                let file = std::fs::File::create(folder.join(format!("{ty}.jpg")))?;
-                image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 85)
-                    .encode_image(&tile)
-                    .map_err(|e| PixieError::Image(e.to_string()))?;
+                std::fs::write(folder.join(format!("{ty}.jpg")), jpeg_bytes(&tile, 85)?)?;
             }
         }
         if z > 0 {
-            level = imageops::resize(&level, lw.div_ceil(2), lh.div_ceil(2), imageops::FilterType::Triangle);
+            smaller = Some(imageops::resize(level, lw.div_ceil(2), lh.div_ceil(2), imageops::FilterType::Triangle));
         }
     }
     Ok(Built { width: w, height: h, dpi, levels })
