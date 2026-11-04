@@ -312,3 +312,22 @@ export const duplicateStatus = () => invoke<DupStatus>('duplicate_status');
 /** Show this copy in Browse for its set of identical files (and keep it when the others are removed). */
 export const setDuplicateKeeper = (id: number) => invoke<void>('set_duplicate_keeper', { id });
 export const removeDuplicates = (ids: number[]) => invoke<number[]>('remove_duplicates', { ids });
+
+// ---- collage ----
+/** A cell as fractions of the page (0 to 1). */
+export interface CollageCell { x: number; y: number; w: number; h: number }
+export interface CollageTemplate { id: string; label: string; cells: CollageCell[] }
+/** A photo in a frame, where the frame is on the page (fractions) and the part of the photo shown. */
+export interface SaveFrame { photo_id: number; x: number; y: number; w: number; h: number; focus_x: number; focus_y: number; zoom: number }
+export interface SaveArgs {
+  paper_w_mm: number; paper_h_mm: number; dpi: number;
+  /** `#rrggbb`. */
+  background: string; corner_mm: number; border_mm: number; border_colour: string; shadow: boolean;
+  /** Bottom to top. */
+  frames: SaveFrame[];
+}
+export const collageTemplates = () => invoke<CollageTemplate[]>('collage_templates');
+/** The collage kept last time, as the text that was stored (null when there is none). */
+export const getCollage = () => invoke<string | null>('get_collage');
+export const setCollage = (doc: string) => invoke<void>('set_collage', { doc });
+export const saveCollage = (args: SaveArgs, dst: string) => invoke<void>('save_collage', { args, dst });

@@ -63,7 +63,7 @@ Defaults applied without being asked: US spelling ("Organize", matching issue #1
 
 **Send** (get photos out): Email (#4, #59 Thunderbird, #80 contacts) *built*; Print (#11, #85 print bug) *built*; Share by cloud drive (#81); Copy to clipboard (#74); Open with… (#84); Slideshow (#10). Also Desktop background (#5) and showing on a photo frame (#46, #43) if they come.
 
-**Create** (make something new): Collage and mosaic templates (#12); Animated GIF (#83); Frames from a video (#82; part of it is a "Save this frame" button in the viewer); Edit, non-destructive (#9).
+**Create** (make something new): Collage *built* as a free-form editor, see `2026-11-03-collage-editor-design.md` (#12; the photomosaic is #112); Animated GIF (#83); Frames from a video (#82; part of it is a "Save this frame" button in the viewer); Edit, non-destructive (#9).
 
 **Organize** (change what Pixie knows or where files are): Tags (#24) *built*; Fix dates for a selection (#27); Hide (#71); Copy or move into folders (#13); also Tags from folder names (#25, with a review screen), Master repository (#31), Import/export (#44), and rename or split people (#38, #62).
 

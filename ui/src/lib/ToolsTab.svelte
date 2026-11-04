@@ -10,6 +10,7 @@
   import GroupTags from './GroupTags.svelte';
   import type { CopyStatus } from './master';
   import PlaceholderTool from './PlaceholderTool.svelte';
+  import CollageTool from './CollageTool.svelte';
   import PrintTool from './PrintTool.svelte';
   import Resizer from './Resizer.svelte';
   import SyncTool from './SyncTool.svelte';
@@ -116,8 +117,10 @@
   // Videos cannot be printed: Print works on the pictures among them, and is greyed out when there are none.
   const printable = $derived(photos.filter((p) => p.kind === 'photo'));
   const videosLeft = $derived(photos.length - printable.length);
-  const noPrint = (id: string) => id === 'print' && photos.length > 0 && printable.length === 0;
+  const noPrint = (id: string) => (id === 'print' || id === 'collage') && photos.length > 0 && printable.length === 0;
   const isPicked = $derived(source === 'picked');
+  // The Collage has its own page in the middle and its own photo list on the right, so it takes the whole area beside the tools list.
+  const wide = $derived(current.id === 'collage');
 </script>
 
 <div class="page">
@@ -126,11 +129,11 @@
   {:else}
     <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={photos.length} {onclear} {error} />
   {/if}
-  <div class="body" style:grid-template-columns={whole ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
+  <div class="body" style:grid-template-columns={whole || wide ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
     <nav aria-label={`${groupLabel} tools`}>
       {#each list as t (t.id)}
         <button class:on={current.id === t.id} class:soon={!t.built || (noPrint(t.id) && current.id !== t.id)} aria-current={current.id === t.id ? 'page' : undefined}
-                disabled={noPrint(t.id) && current.id !== t.id} title={noPrint(t.id) ? "Videos can't be printed" : undefined} onclick={() => choose(t.id)}>
+                disabled={noPrint(t.id) && current.id !== t.id} title={noPrint(t.id) ? (t.id === 'print' ? "Videos can't be printed" : "Videos can't go in a collage") : undefined} onclick={() => choose(t.id)}>
           {t.label}{#if !t.built}<small>soon</small>{/if}
         </button>
       {/each}
@@ -148,6 +151,10 @@
         {:else}
           <PlaceholderTool tool={current} />
         {/if}
+      </div>
+    {:else if wide}
+      <div class="whole" role="region" aria-label={current.label}>
+        <CollageTool photos={printable} {active} skippedVideos={videosLeft} defaultDir={master ?? folders[0]?.path ?? null} />
       </div>
     {:else}
       <aside class="side" aria-label={current.label}>

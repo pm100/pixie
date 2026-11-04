@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "Pixie", "width": 1200, "height": 800, "minWidth": 700, "minHeight": 500 }
+      { "label": "main", "title": "Pixie", "width": 1200, "height": 800, "minWidth": 700, "minHeight": 500, "dragDropEnabled": false }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: pixie: http://pixie.localhost; style-src 'self' 'unsafe-inline'"

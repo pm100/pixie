@@ -10,6 +10,11 @@ describe('tools', () => {
     expect(toolsIn('transfer').map((t) => t.id)).toEqual(['sync']);
   });
 
+  it('has the Collage built, as the first tool of Create', () => {
+    expect(toolById('collage')?.built).toBe(true);
+    expect(firstTool('create').id).toBe('collage');
+  });
+
   it('always has Duplicates in Clean up, which opens on it (the duplicate check always runs)', () => {
     expect(toolsIn('cleanup').map((t) => t.id)[0]).toBe('duplicates');
     expect(firstTool('cleanup').id).toBe('duplicates');

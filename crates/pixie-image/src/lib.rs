@@ -1,3 +1,4 @@
+pub mod collage;
 pub mod decode;
 #[cfg(feature = "heic")]
 pub mod heic;

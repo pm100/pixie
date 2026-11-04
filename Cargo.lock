@@ -3600,6 +3600,7 @@ dependencies = [
  "nom-exif",
  "pixie-core",
  "pixie-testutil",
+ "serde",
  "tempfile",
 ]
 

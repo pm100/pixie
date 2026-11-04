@@ -35,7 +35,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'slideshow', group: 'send', label: 'Slideshow', built: false, blurb: 'Show the photos full screen, one after another.',
     mock: [{ label: 'Seconds per photo', value: '5' }, { label: 'Order', value: 'By date' }], action: 'Start' },
 
-  { id: 'collage', group: 'create', label: 'Collage', built: false, blurb: 'Put several photos on one page from a template and save it as a picture.',
+  { id: 'collage', group: 'create', label: 'Collage', built: true, blurb: 'Put several photos on one page from a template and save it as a picture.',
     mock: [{ label: 'Template', value: 'Four across' }, { label: 'Page size', value: 'A4, portrait' }, { label: 'Gap', value: 'Small' }], action: 'Save collage…' },
   { id: 'gif', group: 'create', label: 'Animated GIF', built: false, blurb: 'Turn photos into a short looping animation.',
     mock: [{ label: 'Seconds per photo', value: '0.5' }, { label: 'Longest side', value: '720 pixels · about 2.4 MB' }, { label: 'Order', value: 'By date, then back (bounce)' }], action: 'Save animation…' },

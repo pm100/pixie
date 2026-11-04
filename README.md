@@ -6,7 +6,7 @@ A desktop photo manager for everyday users, not professionals. Point it at the f
 
 Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build runs on Apple silicon but is unsigned.
 
-> **Status: early development.** Browsing, maps, trips, Auto tags, people and duplicate finding work. Slideshow, print, editing and collages are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
+> **Status: early development.** Browsing, maps, trips, Auto tags, people and duplicate finding work. Collages work; slideshow and editing are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
 
 ## What works today
 
@@ -32,7 +32,10 @@ Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows a
 - **People.** Pixie finds faces and groups them into people. Name a group in the People tab and the rest of that person's photos follow. A walk-through lets you confirm uncertain matches, ignore groups, and move faces out of a wrong group.
 - **Duplicates.** Files that appear more than once are found and shown as one item in Browse. Clean up > Duplicates lets you pick which copy to keep. Nothing is deleted for good.
 
-Planned next: a Windows wallpaper and lock-screen slideshow, simple editing, print, collages and emailing photos to people by nickname. The design is in [`docs/superpowers/specs`](docs/superpowers/specs).
+**Create**
+- **Collage.** Create > Collage is a free-form page. Pick photos from the Working-on set on the right and drop them on the page, or press Start with selected and Pixie lays them out (or choose one of the ready-made templates). Move, resize and crop each photo; Pixie snaps edges, middles and equal gaps and shows guide lines. Photos can overlap, with an optional border and shadow. Page sizes are the ones print shops sell, with those of your region first. The collage is kept between sessions. Save writes a PNG or JPEG up to poster size (70 × 100 cm) with the print resolution recorded in the file, and a warning shows when a photo has too few pixels for its frame.
+
+Planned next: a Windows wallpaper and lock-screen slideshow, simple editing and emailing photos to people by nickname. The design is in [`docs/superpowers/specs`](docs/superpowers/specs).
 
 ## Privacy
 
