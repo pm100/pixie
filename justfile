@@ -53,3 +53,22 @@ mac-build:
 # dependencies change, then commit the result. Needs `cargo install cargo-about --locked --features cli`.
 notices:
     node scripts/notices.mjs
+
+# Ask Pixie's server (ask-proxy/, a Cloudflare Worker named pixie-ask). It holds the API key, the daily limit and the fixed rules; what
+# the model is told about the app (the guide, the places a button can lead to) travels with each question from the app, so the app's
+# own tests cover it and old and new versions of Pixie can be in use at once. Redeploy only when ask-proxy/ itself changes.
+
+# Run the server's tests and type check.
+ask-test:
+    npm --prefix ask-proxy install
+    npm --prefix ask-proxy run typecheck
+    npm --prefix ask-proxy test
+
+# Run the server on this computer (http://localhost:8787); point Pixie at it with PIXIE_ASK_URL=http://localhost:8787/v1/ask. Secrets go in ask-proxy/.dev.vars.
+ask-dev:
+    npm --prefix ask-proxy install
+    npm --prefix ask-proxy run dev
+
+# Test, then deploy the server to Cloudflare, live for every copy of Pixie at once (needs `npx wrangler login` once and the secrets set once; see ask-proxy/README.md).
+ask-deploy: ask-test
+    npm --prefix ask-proxy run deploy

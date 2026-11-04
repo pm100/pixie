@@ -113,6 +113,11 @@ export const emailInfo = (ids: number[]) =>
  *  (null: Pixie's own), the addresses to put in To, and some text for the body (both may be empty). */
 export const emailPhotos = (ids: number[], mode: 'asis' | 'smaller' | 'split', limitMb: number, draft: { subject: string | null; to: string; body: string }) =>
   invoke<{ route: 'outlook' | 'newoutlook' | 'mail' | 'share'; emails: number }>('email_photos', { ids, lang: userLang(), mode, limitMb, subject: draft.subject, to: draft.to, body: draft.body });
+/** Ask Pixie: sends one question (JSON made by `buildRequest`) to the proxy. `status` is the HTTP status the proxy answered with,
+ *  0 when there was no connection and -1 when this build has no address for the proxy. */
+export const askPixie = (installId: string, body: string) => invoke<{ status: number; body: string }>('ask_pixie', { installId, body });
+/** Ask Pixie: sends the developer a note the person confirmed (JSON made by `feedbackRequest`). Statuses as for `askPixie`. */
+export const askFeedback = (installId: string, body: string) => invoke<{ status: number; body: string }>('ask_feedback', { installId, body });
 /** Which background analyses are on (kept in the library). */
 export const getAnalysisOptions = () => invoke<AnalysisOptions>('get_analysis_options');
 /** Turn the analyses on or off; what was found is kept, and turning one back on carries on from where it was. */

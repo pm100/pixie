@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'about' | 'developer';
+  export type SettingsPage = 'folders' | 'viewing' | 'browsing' | 'trips' | 'analysis' | 'email' | 'ask' | 'about' | 'developer';
 </script>
 
 <script lang="ts">
@@ -8,6 +8,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import AboutPage from './AboutPage.svelte';
   import AnalysisSettings from './AnalysisSettings.svelte';
+  import AskSettings from './AskSettings.svelte';
   import EmailSettings from './EmailSettings.svelte';
   import type { AnalysisOptions } from './analysisOptions';
   import PhotoFolders from './PhotoFolders.svelte';
@@ -19,7 +20,7 @@
   import type { NetworkRescan } from './networkRescan';
   import type { FolderStates } from './folderState';
 
-  let { folders, folderStates = {}, scanning, scanFolder, onstop, onadd, onremove, master = null, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, locations = null, analysisOptions, onanalysisoptions, emailLimitMb, onemaillimit }: {
+  let { askOn, onask, folders, folderStates = {}, scanning, scanFolder, onstop, onadd, onremove, master = null, networkRescan, onnetworkrescan, page, onpage, viewerMode, onviewer, actionBar, onactionbar, recentDays, onrecentdays, tripPrefs, ontripprefs, onopentool, locations = null, analysisOptions, onanalysisoptions, emailLimitMb, onemaillimit }: {
     /** Which analyses are on, and a change to that. */
     analysisOptions: AnalysisOptions; onanalysisoptions: (next: AnalysisOptions) => void;
     /** The email size limit in megabytes, and how it is changed. */
@@ -39,11 +40,13 @@
     onopentool: (id: string) => void;
     /** How many of the library's items have no location, of how many (a line of Picture analysis). */
     locations?: { without: number; total: number } | null;
+    /** Whether Ask Pixie may send questions, and a change to that. */
+    askOn: boolean; onask: (on: boolean) => void;
   } = $props();
 
   const pages: { id: SettingsPage; label: string }[] = [
     { id: 'folders', label: 'Photo folders' }, { id: 'viewing', label: 'Viewing' }, { id: 'browsing', label: 'Browsing' }, { id: 'trips', label: 'Trips' },
-    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'about', label: 'About' },
+    { id: 'analysis', label: 'Picture analysis' }, { id: 'email', label: 'Email' }, { id: 'ask', label: 'Ask Pixie' }, { id: 'about', label: 'About' },
   ];
   // Debug builds only: a Developer page.
   let debug = $state(false);
@@ -105,6 +108,8 @@
       <AnalysisSettings options={analysisOptions} onoptions={onanalysisoptions} {locations} />
     {:else if page === 'email'}
       <EmailSettings limitMb={emailLimitMb} onlimit={onemaillimit} />
+    {:else if page === 'ask'}
+      <AskSettings on={askOn} onchange={onask} />
     {:else if page === 'developer' && debug}
       <h2>Developer</h2>
       <p>Debug builds only.</p>

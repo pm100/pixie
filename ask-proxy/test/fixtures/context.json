@@ -1,0 +1,163 @@
+{
+  "platform": "windows",
+  "language": "en-US",
+  "tab": "browse",
+  "today": "2026-10-28",
+  "settings": [
+    {
+      "key": "viewer_mode",
+      "label": "Viewing",
+      "type": "choice",
+      "description": "Settings, Viewing: two choices, one of them ticked. Where a photo opens when you double-click it: in the full window, or in a separate window that follows the photo chosen in the grid.",
+      "options": [
+        {
+          "value": 0,
+          "label": "The full window"
+        },
+        {
+          "value": 1,
+          "label": "A separate window"
+        }
+      ],
+      "current": 0,
+      "currentLabel": "The full window",
+      "default": 0
+    },
+    {
+      "key": "email_limit_mb",
+      "label": "Size limit of one message",
+      "type": "int",
+      "description": "Settings, Email, the box Size limit of one message. The most an email may carry, in megabytes. Bigger sets are offered smaller or split into several emails.",
+      "min": 1,
+      "max": 500,
+      "step": 1,
+      "current": 20,
+      "currentLabel": "20 MB",
+      "default": 20
+    },
+    {
+      "key": "recent_days",
+      "label": "Days counted as recent",
+      "type": "int",
+      "description": "Settings, Browsing, the box Days counted as recent. How many days \"Recent\" means in the date list in Browse.",
+      "min": 1,
+      "max": 3650,
+      "step": 1,
+      "current": 30,
+      "currentLabel": "30 days",
+      "default": 30
+    },
+    {
+      "key": "network_rescan",
+      "label": "Check folders on the network",
+      "type": "bool",
+      "description": "Settings, Photo folders, under Keeping up to date, the checkbox Check folders on the network. Whether folders on the network are scanned again from time to time (folders on this computer are watched, so need no setting).",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "network_rescan_minutes",
+      "label": "Time between checks",
+      "type": "choice",
+      "description": "Settings, Photo folders, under Keeping up to date, the box Time between checks. How often folders on the network are scanned again, when checking is on.",
+      "options": [
+        {
+          "value": 5,
+          "label": "5 minutes"
+        },
+        {
+          "value": 15,
+          "label": "15 minutes"
+        },
+        {
+          "value": 30,
+          "label": "30 minutes"
+        },
+        {
+          "value": 60,
+          "label": "1 hour"
+        },
+        {
+          "value": 120,
+          "label": "2 hours"
+        }
+      ],
+      "current": 30,
+      "currentLabel": "30 minutes",
+      "default": 30
+    },
+    {
+      "key": "analysis_tags",
+      "label": "Auto tags",
+      "type": "bool",
+      "description": "Settings, Picture analysis, the Auto tags checkbox. Labels each photo with what is in it (beach, dog, ...), worked out on this computer. Turning it off stops the work and keeps what was found.",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "analysis_faces",
+      "label": "People",
+      "type": "bool",
+      "description": "Settings, Picture analysis, the People checkbox (there is no setting called Find faces). Finds the faces in the photos and groups them into people, on this computer, so they can be named in the People tab; the People tab is only shown while this is on. Turning it off stops the work and keeps what was found.",
+      "current": true,
+      "currentLabel": "On",
+      "default": true
+    },
+    {
+      "key": "trip_radius_km",
+      "label": "Distance from home that counts as away (km)",
+      "type": "float",
+      "description": "Settings, Trips, under What counts as a trip. Photos further than this from home, in kilometres, count as taken away from home. Trips need home to be confirmed first.",
+      "min": 1,
+      "max": 5000,
+      "current": 50,
+      "currentLabel": "50 km",
+      "default": 50
+    },
+    {
+      "key": "trip_min_nights",
+      "label": "Fewest nights away that make a trip",
+      "type": "int",
+      "description": "Settings, Trips, under What counts as a trip. A trip needs at least this many nights away; 0 allows a day trip.",
+      "min": 0,
+      "max": 365,
+      "step": 1,
+      "current": 1,
+      "currentLabel": "1 nights",
+      "default": 1
+    },
+    {
+      "key": "trip_stop_km",
+      "label": "Distance within which photos are one stop (km)",
+      "type": "float",
+      "description": "Settings, Trips, under Where a trip went. Photos within this distance of each other, in kilometres, are one stop of a trip.",
+      "min": 1,
+      "max": 500,
+      "current": 25,
+      "currentLabel": "25 km",
+      "default": 25
+    }
+  ],
+  "guide": "Use this guide to explain how the app works and where things are. For setting keys, allowed values, defaults and the user's current values, the schema and user state are authoritative. If neither this guide nor the schema covers a question, say you are not sure rather than guessing. Features listed as \"soon\" do not exist yet: say so, and pass the wish on as feedback.\n\nWHAT PIXIE IS\n- Pixie lists the photos and videos in folders on the user's computer (or network). It never moves, renames or changes the originals.\n- The pictures stay on the computer. The analysis (Auto tags, faces, duplicates) runs on the computer too.\n\nTHE WINDOW\n- Tabs along the top: Browse, People, Send, Create, Organize, Clean up, Import/Export, Settings. People only shows while face finding is on (Settings, Picture analysis).\n- At the right of the tabs: the Processing pill (what Pixie is working on in the background; press it to see each job, pause or resume) and a round ? button. The ? button (or F1) opens this chat in a panel at the right.\n- There is no menu bar and no undo yet.\n\nBROWSE\n- The list on the left has sections: Library (all, Photos only, Videos only), People, Trips, Your tags, Auto tags, Cameras, When (by year, month, day), Folders, and Sync (New and Private). Click a row to filter. Counts follow the filters in force; a row greyed out has no photos with the current filters.\n- A line above the grid shows the filters as pills with a cross to clear each, and Clear all.\n- The Picked section (a star and the count, Clear, and Pick all) and the Map section (Display and Filter boxes) are on the second line. Turn on Map Display to see a map above the grid; Filter shows only the photos in the part of the map you can see.\n- Click a photo to choose it (its details show on the right). Double-click or Enter opens it in the viewer.\n- Picking marks photos to work on together (email, print, tag, collage). To pick a photo, move the mouse over its top-left corner: a small circle appears; click it. A picked photo shows a blue star in that corner; click the star to unpick it. Ctrl-click (Cmd-click on a Mac) anywhere on a photo also picks or unpicks it; Shift-click picks everything from the photo you chose last. Pick all picks every photo that is shown.\n- The Picked button (a star and the count) shows only the picked photos; press it again to show everything. Clear takes everything off Picked (the photos stay in the library). Picked photos stay picked until cleared, even after Pixie is closed. Picking is not the same as choosing: only one photo is chosen at a time (outlined, details on the right), while any number can be picked.\n- Details (right pane) show the date, place, the photo's tags and people, Auto tags, a map, a Private box, and action buttons.\n\nWORKING ON SEVERAL PHOTOS\n- Send, Create and Organize work on a set of photos, chosen at the top in Working on: Picked, Current (the photo chosen in Browse), or one of your tags. Clean up and Import/Export work on the whole library and have no Working on.\n- There is no Select all and no drag-select. There are two ways to make a set.\n- Way 1, Picked: in Browse, pick the photos one by one (the circle in a photo's top-left corner, or Ctrl-click, or Cmd-click on a Mac), or pick a run of neighbours with Shift-click, or press Pick all after setting filters (a tag, person, date, trip, folder or the map) so the grid holds only the photos you want. Then open a tool: Working on is Picked.\n- Way 2, a tag: give the photos one of your tags (Organize, Tags adds a tag to all the photos being worked on; the plus button in a photo's details adds one to that photo). Then set Working on to that tag: the tool works on every photo with the tag, with no picking.\n- Choosing a photo (one click) is not picking: the tools use the chosen photo only when Working on is Current.\n\nSEND\n- Email: opens the user's mail program with the photos attached, a proposed subject (editable), optional To and message. If the photos are too big for one email it offers smaller copies of the pictures, or several emails. Videos are always sent exactly as they are: Pixie cannot make a video smaller, and one video cannot be split across emails, so a single video over the mail service's limit may be refused (several emails only help when there are several files). The size limit is in Settings, Email. Originals are never changed.\n- Print: choose paper, orientation, photos per page (1, 2, 4 or 6), fit (fill or whole picture), margin and captions. The preview shows the pages. Press Print... to open the system print dialog, where the printer is chosen. Photos fill the pages in order.\n- Share by cloud drive, Copy to clipboard, Open with and Slideshow are listed as soon: they do not exist yet.\n\nCREATE\n- Collage: a page you fill with photos. Working on supplies the photos, listed on the right. Drag a photo from the list onto the page, or double-click it, to add it. Move a photo by dragging it, resize it with the handles on its corners and sides, and double-click it to crop inside its frame (drag to move the picture, scroll to zoom, Esc to finish). Photos may overlap; To front and To back (or the ] and [ keys) change which is on top; Remove takes a photo off the page.\n- The Layout button arranges all the photos on the page so they fill it, and each press gives another arrangement; Undo layout goes back. Clear empties the page. Save writes a PNG or JPEG named collage and the date, starting in the sync folder (or the first photo folder).\n- The gear above the page opens the collage settings: start from a template or a blank page, the paper (print sizes in inches or centimetres, posters, frames, square sizes, or a custom size), landscape, resolution, background, gap, corner rounding, border, shadow and snapping. With snapping on, a photo moved into a free space fills that space when it is let go; hold Alt to skip it.\n- The collage is kept between sessions: it is there when you come back.\n- Animated GIF, Frames from a video and Edit are listed as soon: they do not exist yet.\n\nORGANIZE\n- Tags: add or remove the user's own tags on all the photos being worked on. Your tags show in Browse under Your tags and filter the grid. To take a tag off photos: set Working on to the photos, open Tags; the tags they all have are listed as Common tags, each with a small x on the tag that takes it off all of them. The tag stays on other photos.\n- Auto tags are labels Pixie works out from the picture itself (for example beach, dog). They need Picture analysis on. Videos get no Auto tags yet.\n- Fix dates, Hide and Copy or move to folders are listed as soon: they do not exist yet.\n\nCLEAN UP\n- Duplicates: groups of identical files. In each group the copy marked Keep is the one Browse shows; choose another with the circle beside it. Removing the others (they go to the Recycle Bin and can be got back from there) is done there by the user, not by Ask Pixie. The list loads a screenful at a time as you scroll.\n- Missing dates: finds photos with no date or a wrong one, and lets the user choose which dates count as missing and when the file's date stands in.\n- Bursts and Thumbnails and cache are listed as soon: they do not exist yet.\n\nIMPORT/EXPORT AND THE SYNC FOLDER\n- Sync: the user chooses one of the photo folders as the sync folder. Sync now copies the photos from the other folders into it, filed by year and date (for example 2026 then 2026-11-03), checking each copy and never overwriting a file. The copies can then be shared by putting the sync folder in OneDrive, iCloud Drive or similar.\n- In Settings, Photo folders, each folder has a box saying whether it feeds the sync folder.\n- In Browse, Sync, New lists photos not yet copied and Private lists photos marked private. A photo marked Private (the box in its details) is never copied into the sync folder.\n\nPEOPLE\n- Face finding works on the user's computer; no picture or face is sent anywhere. Pixie looks for faces in each photo and groups similar faces into people. The user names each group in the People tab, and named people appear in Browse under People. It works through the library in the background (the Processing pill shows how far it has got).\n- The switch is the People checkbox in Settings, Picture analysis (beside the Auto tags checkbox). There is no setting called \"Find faces\". Turning People off stops the work, hides the People tab and keeps the faces already found; turning it on again carries on. Always call it the People checkbox, and say it is in Settings, Picture analysis.\n\nTRIPS\n- Trips are runs of days away from home. Pixie needs to know where home is first: Settings, Trips. How far counts as away, the minimum nights and the size of a stop are set there.\n\nSETTINGS\n- Photo folders: add or remove the folders Pixie looks at, and see which one is the sync folder.\n- Viewing: whether photos open in the full window or in a separate window.\n- Browsing: how many days Recent means, and how often network folders are scanned again.\n- Trips: home, how far away counts, minimum nights, stop size.\n- Picture analysis: turn Auto tags and face finding on or off, and pause them. Finding duplicates always runs.\n- Email: the size limit, and the account.\n- Ask Pixie: turn this assistant on or off, and what it sends.\n- About: version, licences and notices.\n- Start again from a clean slate (Developer page, debug builds) forgets everything.\n\nPRIVACY\n- Pixie sends nothing about the pictures anywhere. Ask Pixie sends the typed questions and some app information (settings, version, language) to a server; it never sends pictures, thumbnails, faces, file names or folder names.\n- The names of the user's tags, people and trips, where home is, map coordinates, and folder and file names are never sent.\n- The user can turn Ask Pixie off at any time in Settings, Ask Pixie.\n\nANSWERS THAT ARE EASY TO GET WRONG\n- Videos are always emailed exactly as they are. Pixie cannot make a video smaller and cannot split one video across emails. Whenever you explain emailing a video (or a mix of photos and videos), say this, and never say that Pixie offers a smaller copy of a video or splits a video: smaller copies and several emails are for pictures. A single video over the mail service's limit may be refused; suggest sharing it another way, such as a cloud drive link.\n- Arranging the user's own photos on a page is the Collage in Create, and it exists. Pixie has no slideshow, animation, album or photo book yet.\n- A request for a feature that is only listed as \"soon\" or that is not mentioned here: say Pixie does not have it yet and pass it on as feedback.\n\nEXAMPLES FOR THIS VERSION\n- \"How do I email a video?\": two or three sentences: choose the video, press Email, and that videos are sent exactly as they are (see above). Call go_to with send-email.\n- \"How can I print several photos on one page?\": say, for example: \"First pick the photos: hover a photo's top-left corner and click the circle, or Ctrl-click, or Shift-click for a run. Then open Send, choose Print, and set photos per page (1, 2, 4 or 6). Check the preview and press Print... to open the print dialog.\" and call go_to with send-print and the same sentences in say.\n- \"Find all my pictures with pink flowers and tag them\": Pixie cannot search for, pick or tag photos for the user. Explain how to look for them in Browse (Auto tags, a person, a date or the map), pick them, and add the tag in Organize, Tags; call go_to with browse.\n- \"Make me a collage of my dog photos\": the Collage is in Create. Explain how to get the dog photos into Working on (pick them, or tag them and use the tag), then drag them onto the page or press Layout, then Save. Call go_to with create-collage.\n- \"Delete all my duplicates\": do not delete; say it is done by hand in Clean up, Duplicates, and call go_to with cleanup-duplicates.\n",
+  "places": [
+    "browse",
+    "people",
+    "send-email",
+    "send-print",
+    "create-collage",
+    "organize-tags",
+    "cleanup-duplicates",
+    "cleanup-missing-dates",
+    "transfer-sync",
+    "settings-folders",
+    "settings-viewing",
+    "settings-browsing",
+    "settings-trips",
+    "settings-analysis",
+    "settings-email",
+    "settings-ask",
+    "settings-about"
+  ]
+}

@@ -39,10 +39,11 @@ Planned next: a Windows wallpaper and lock-screen slideshow, simple editing and 
 
 ## Privacy
 
-Pixie works offline, and your photos never leave your computer. There are two uses of the network:
+Pixie works offline, and your photos never leave your computer. There are three uses of the network:
 
 - **Locations.** When you select a photo that has GPS, Pixie sends **that photo's coordinates** (and nothing else) to OpenStreetMap, for map tiles and the town, region and country line (Nominatim), and to Wikipedia, to find a well-known place nearby. Answers are cached on your machine. With no network the map shows "Map unavailable" and everything else keeps working.
 - **Analysis models.** The first time Pixie analyses pictures it downloads small open models (CLIP for Auto tags, YuNet and SFace for faces) from Hugging Face and GitHub. Only the model files are downloaded; none of your photos or data are sent. After that the analysis runs entirely offline.
+- **Ask Pixie.** When you ask a question in the help panel (the **?** button, or F1), the words you type, your last few messages, and some information about Pixie (its settings, version, language and system) are sent to a server, where a language model writes the reply. Never pictures, thumbnails, faces, file or folder names, or the names of your tags, people or trips. It is on by default and can be turned off in Settings, Ask Pixie, which also lists exactly what is and is not sent.
 
 ## Building and running
 

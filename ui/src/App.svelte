@@ -62,6 +62,11 @@
   import { isToolGroup, toolById } from './lib/tools';
   import { listingAffected } from './lib/userTags';
   import AnalysisStep from './lib/AnalysisStep.svelte';
+  import AskPanel from './lib/AskPanel.svelte';
+  import { newInstallId } from './lib/ask';
+  import { placeFor as askPlace } from './lib/askGoTo';
+  import type { Handlers, SettingValues } from './lib/askSettings';
+  import Resizer from './lib/Resizer.svelte';
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
@@ -505,6 +510,26 @@
   // A tab whose analysis was switched off is gone: leave it.
   $effect(() => { if (tab === 'faces' && !analysisOptions.faces) tab = 'browse'; });
   const tabs = $derived(visibleTabs({ people: analysisOptions.faces }));
+
+  // Ask Pixie is on unless turned off (Settings, Ask Pixie). It sends the typed questions to a server, which the panel and that page say.
+  let askOn = $state(loadPref<unknown>('askOn', true) !== false);
+  /** The random id the server counts the day's questions by; made the first time it is needed. */
+  let askInstall = $state(loadPref<unknown>('askInstall', null));
+  function setAskOn(on: boolean) {
+    askOn = on;
+    savePref('askOn', on);
+  }
+  $effect(() => {
+    if (askOn && typeof askInstall !== 'string') { askInstall = newInstallId(); savePref('askInstall', askInstall); }
+  });
+  /** The Ask Pixie panel, docked at the right: opened by the ? button and F1, built on first use and then kept, so the conversation survives closing it. */
+  let helpOpen = $state(false);
+  let helpBuilt = $state(false);
+  let helpW = $state(loadPref('help.panel', 340));
+  function toggleHelp() {
+    helpOpen = !helpOpen;
+    if (helpOpen) helpBuilt = true;
+  }
 
   async function loadFolderInfos() {
     try { folderInfos = await listFolderInfo(); } catch (e) { message = String(e); }
@@ -1224,6 +1249,23 @@
     toolStart = toolId;
     pickTab(t.group);
   }
+  const askValues = $derived<SettingValues>({ viewerMode, emailLimitMb, recentDays, networkRescan, analysis: analysisOptions, trips: tripPrefs });
+  const askHandlers: Handlers = {
+    viewer: (m) => setViewerMode(m),
+    emailLimit: (mb) => setEmailLimit(mb),
+    recentDays: (n) => setRecentDays(n),
+    networkRescan: (r) => setNetworkRescanPref(r),
+    analysis: (o) => void applyAnalysisOptions(o),
+    trips: (p) => setTripPrefs(p),
+  };
+  /** A button Ask Pixie offered: go to that tab, Settings page or tool. */
+  function askGo(target: string) {
+    const place = askPlace(target);
+    if (!place) return;
+    if (place.settings) settingsPage = place.settings;
+    toolStart = place.tool ?? null;
+    pickTab(place.tab);
+  }
   // The start tool is for the tab it was meant for, once: opening any other tab, or this one later, starts it as usual (at the tool it was last left at).
   $effect(() => { if (toolStart !== null && !(isToolGroup(tab) && toolById(toolStart)?.group === tab)) toolStart = null; });
   /** The photos the buttons beside Picked act on. */
@@ -1326,9 +1368,16 @@
 
 <!-- The webview's own right-click menu (Share, Magnify image, ...) does nothing useful here, so it is off
      everywhere except in text fields, where copy and paste are wanted. -->
-<svelte:window oncontextmenu={noBrowserMenu} />
+<svelte:window oncontextmenu={noBrowserMenu} onkeydown={(e) => { if (e.key === 'F1' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) { e.preventDefault(); toggleHelp(); } }} />
 <main inert={phase !== 'off' || activityOpen}>
-  <Tabs {tabs} active={tab} onpick={pickTab}>
+  {#snippet helpPanel()}
+    <Resizer bind:width={helpW} min={260} max={620} side="right" onchange={(w) => savePref('help.panel', w)} />
+    <div class="helpbox" style:width="{helpW}px">
+      <AskPanel on={askOn && typeof askInstall === 'string'} installId={typeof askInstall === 'string' ? askInstall : ''} values={askValues} handlers={askHandlers}
+                from={tab} language={navigator.language} ongo={askGo} onsettings={() => { settingsPage = 'ask'; pickTab('settings'); }} />
+    </div>
+  {/snippet}
+  <Tabs {tabs} active={tab} onpick={pickTab} onhelp={toggleHelp} sideOpen={helpOpen} side={helpBuilt ? helpPanel : undefined}>
     {#snippet status()}
       <ProcessingPill {pill} onclick={() => (activityOpen = true)} />
       {#if message}<span class="err">{message}</span>{/if}
@@ -1493,7 +1542,7 @@
     {/if}
     {#if tab === 'settings'}
       <div class="page-over">
-        <Settings locations={libLocations} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} {scanning} {scanFolder} onstop={pauseScan} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master}
+        <Settings askOn={askOn} onask={setAskOn} locations={libLocations} analysisOptions={analysisOptions} onanalysisoptions={applyAnalysisOptions} emailLimitMb={emailLimitMb} onemaillimit={setEmailLimit} folders={folderInfos} folderStates={folderStateMap} {scanning} {scanFolder} onstop={pauseScan} onadd={chooseFolder} onremove={removeFolderAndRefresh} {master}
                   {networkRescan} onnetworkrescan={setNetworkRescanPref}
                   page={settingsPage} onpage={(p) => (settingsPage = p)} {tripPrefs} ontripprefs={setTripPrefs} onopentool={(id) => openTool(id, 'picked')} {viewerMode} onviewer={setViewerMode} actionBar={barActions} onactionbar={setBarActions} {recentDays} onrecentdays={setRecentDays} />
       </div>
