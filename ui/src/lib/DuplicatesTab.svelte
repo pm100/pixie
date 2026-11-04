@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { duplicateGroups, duplicateStatus, removeDuplicates, setDuplicateKeeper } from './api';
-  import { dupLine, extrasOf, totalSize, type DupGroup, type DupStatus } from './dupes';
+  import { dupLine, extrasOf, moreSets, setsShown, totalSize, type DupGroup, type DupStatus } from './dupes';
   import { dirname, formatBytes, formatDateTime } from './format';
   import { thumbUrl } from './url';
   import VideoPoster from './VideoPoster.svelte';
@@ -25,6 +25,22 @@
   let busy = $state(false);
   /** How many sets were on screen when the list was loaded; a different count means there is more to see. */
   let loadedGroups = $state(0);
+  /** How many sets are drawn: a screenful, and more as the list is scrolled (thousands of sets drawn at once froze the window). */
+  let drawn = $state(0);
+  const visible = $derived(groups.slice(0, setsShown(drawn, groups.length)));
+  const showMore = () => { drawn = moreSets(visible.length, groups.length); };
+
+  /** Calls `more` when this element comes near the visible part of the list, and again if it is still near after the next sets are drawn. */
+  function nearEnd(node: HTMLElement, more: () => void) {
+    const io = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return;
+      more();
+      // (the element only reports a change, so look again once the new sets are in place)
+      requestAnimationFrame(() => { io.unobserve(node); io.observe(node); });
+    }, { root: node.closest('.scroll'), rootMargin: '900px' });
+    io.observe(node);
+    return { update: (next: () => void) => { more = next; }, destroy: () => io.disconnect() };
+  }
 
   async function load() {
     try {
@@ -113,7 +129,7 @@
     {:else if groups.length === 0}
       <p class="hint">{checking ? 'No duplicates so far. Pixie is still looking, in the background.' : 'Every photo and video is a different file.'}</p>
     {:else}
-      {#each groups as g (g.hash)}
+      {#each visible as g (g.hash)}
         {@const others = g.photos.filter((p) => p.id !== g.keeper)}
         <section class="set">
           <div class="cover">
@@ -140,6 +156,12 @@
           </div>
         </section>
       {/each}
+      {#if visible.length < groups.length}
+        <div class="more" use:nearEnd={showMore}>
+          <span class="hint">Showing {visible.length.toLocaleString()} of {groups.length.toLocaleString()} sets.</span>
+          <button onclick={showMore} title="Show more sets of duplicates now">Show more</button>
+        </div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -177,4 +199,5 @@
   .dir { color: #777; font-size: 12px; }
   .meta { color: #666; font-size: 12px; white-space: nowrap; }
   .row { margin-top: 4px; }
+  .more { display: flex; align-items: center; gap: 12px; padding: 4px 0 8px; }
 </style>

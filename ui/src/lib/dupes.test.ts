@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dupLine, extrasOf, totalSize, type DupGroup } from './dupes';
+import { dupLine, extrasOf, moreSets, SETS_AT_A_TIME, setsShown, totalSize, type DupGroup } from './dupes';
 import type { Photo } from './api';
 
 const photo = (id: number, size = 100): Photo =>
@@ -24,5 +24,24 @@ describe('dupLine', () => {
   });
   it('says how far the checking has got', () => {
     expect(dupLine({ done: 3, total: 10, groups: 0, extra_files: 0, extra_bytes: 0, hidden: 0, paused: false })).toBe('Checking for duplicates: 3 of 10 looked at.');
+  });
+});
+
+describe('how many sets are drawn', () => {
+  it('starts with a screenful and never more than there are', () => {
+    expect(SETS_AT_A_TIME).toBe(30);
+    expect(setsShown(0, 6617)).toBe(30);
+    expect(setsShown(0, 5)).toBe(5);
+    expect(setsShown(0, 0)).toBe(0);
+  });
+  it('keeps what was already drawn, up to the total (the list can get shorter)', () => {
+    expect(setsShown(90, 6617)).toBe(90);
+    expect(setsShown(90, 40)).toBe(40);
+  });
+  it('draws a screenful more each time, to the end', () => {
+    expect(moreSets(30, 6617)).toBe(60);
+    expect(moreSets(6600, 6617)).toBe(6617);
+    expect(moreSets(6617, 6617)).toBe(6617);
+    expect(moreSets(5, 5)).toBe(5);
   });
 });
