@@ -5,7 +5,7 @@
   import {
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -274,6 +274,7 @@
   }
 
   // The sync folder: none until one is chosen, and nothing of the feature shows without one. `activeShare` is the New / Private choice in the tree.
+  let syncSub = $state('');
   let master = $state<string | null>(null), shareState = $state({ unsynced: 0, private: 0 }), activeShare = $state<ShareChoice | null>(null);
   // The copy of the items not yet synced into the sync folder: what waits and how the last run went, and how far a running one has got.
   let copyStatus = $state<CopyStatus | null>(null);
@@ -282,6 +283,7 @@
   async function loadShare() {
     try {
       master = await getMasterFolder();
+      syncSub = (await getSyncSubfolder()) ?? '';
       shareState = master === null ? { unsynced: 0, private: 0 } : await fetchShareCounts();
       copyStatus = master === null ? null : await masterCopyStatus();
       if (master === null && activeShare !== null) await setShare(null);
@@ -361,6 +363,12 @@
     try { await setMasterFolder(path); } catch (e) { message = String(e); return; }
     await shareChanged();
     await loadFolderInfos();
+  }
+  /** The folder inside the sync folder that copies go into; a name that cannot be used rejects, for the tool to show. */
+  async function chooseSyncSub(name: string) {
+    await setSyncSubfolder(name);
+    await loadShare();
+    await shareChanged();
   }
   async function feedsMaster(id: number, feeds: boolean) {
     try { await setFolderFeeds(id, feeds); } catch (e) { message = String(e); }
@@ -1532,7 +1540,7 @@
       {#key tab}
         <div class="page-over">
           <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
-                    folders={folderInfos} {master} onmaster={chooseMaster} {copyStatus} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster} remind={remindSync} onremind={setRemindSync} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
+                    folders={folderInfos} {master} onmaster={chooseMaster} subfolder={syncSub} onsubfolder={chooseSyncSub} {copyStatus} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster} remind={remindSync} onremind={setRemindSync} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
         </div>
       {/key}
     {/if}

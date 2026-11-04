@@ -5,6 +5,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// A folder name inside the sync folder, as typed: `/` or `\` separate levels; empty parts are dropped. None when nothing is left. A name
+/// that could leave the sync folder (`..`, a drive or a leading separator) or that Windows cannot make is refused, with words for the person.
+pub fn clean_subfolder(text: &str) -> Result<Option<String>> {
+    let mut parts = Vec::new();
+    for part in text.trim().split(['/', '\\']).map(str::trim).filter(|p| !p.is_empty()) {
+        if part == "." || part == ".." || part.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c)) || part.ends_with('.') {
+            return Err(PixieError::Invalid(format!("\"{part}\" cannot be used as a folder name. Use plain names such as paul_sync.")));
+        }
+        parts.push(part);
+    }
+    Ok(if parts.is_empty() { None } else { Some(parts.join("/")) })
+}
+
 pub(crate) fn db_err<E: std::fmt::Display>(e: E) -> PixieError {
     PixieError::Db(e.to_string())
 }
@@ -1862,6 +1875,34 @@ impl Db {
                 tx.commit().map_err(db_err)?;
             }
         }
+        Ok(())
+    }
+
+    /// The folder inside the sync folder that Pixie copies into (for example `paul_sync`, or `a/b`), or None for the sync folder itself.
+    pub fn sync_subfolder(&self) -> Result<Option<String>> {
+        Ok(self.get_setting("master_subfolder")?.filter(|s| !s.is_empty()))
+    }
+
+    /// Choose the folder inside the sync folder that Pixie copies into; empty goes back to the sync folder itself. The name is made safe
+    /// first (see `clean_subfolder`). Like a different sync folder, a different one means what was copied is worked out afresh (what
+    /// is already there is found again by its hashes, as the sync folder is watched with everything inside it).
+    pub fn set_sync_subfolder(&self, name: &str) -> Result<()> {
+        let clean = clean_subfolder(name)?;
+        if clean == self.sync_subfolder()? {
+            return Ok(());
+        }
+        {
+            let mut c = self.conn();
+            let tx = c.transaction().map_err(db_err)?;
+            match &clean {
+                Some(s) => tx.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('master_subfolder', ?1)", params![s]).map_err(db_err)?,
+                None => tx.execute("DELETE FROM settings WHERE key = 'master_subfolder'", []).map_err(db_err)?,
+            };
+            tx.execute("UPDATE photos SET share = 0 WHERE share = ?1", params![SHARE_COPIED]).map_err(db_err)?;
+            Db::rebuild_share_hits(&tx)?;
+            tx.commit().map_err(db_err)?;
+        }
+        self.reconcile_sync()?;
         Ok(())
     }
 
@@ -3956,6 +3997,16 @@ mod tests {
 
     fn share_ask(share: Option<&'static str>) -> FacetAsk<'static> {
         FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share }
+    }
+
+    #[test]
+    fn a_folder_name_inside_the_sync_folder_is_tidied_and_one_that_could_leave_it_is_refused() {
+        assert_eq!(clean_subfolder("").unwrap(), None);
+        assert_eq!(clean_subfolder("  paul_sync ").unwrap().as_deref(), Some("paul_sync"));
+        assert_eq!(clean_subfolder(r"\family//paul\").unwrap().as_deref(), Some("family/paul"));
+        for bad in ["..", "a/../b", r"C:\x", "a:b", "x?", "pic.", "a\tb"] {
+            assert!(matches!(clean_subfolder(bad), Err(PixieError::Invalid(_))), "{bad}");
+        }
     }
 
     #[test]

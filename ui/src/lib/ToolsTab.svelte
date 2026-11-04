@@ -21,7 +21,7 @@
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { posterUrl, thumbUrl } from './url';
 
-  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
+  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
     group: ToolGroup;
     /** The tool to open at; otherwise the one used last in this tab, or the first. */
     tool?: string | null;
@@ -46,6 +46,7 @@
     dateRules: DateRules; ondaterules: (r: DateRules) => void; onshowundated: () => void;
     /** Sync: the watched folders, the sync folder (null while there is none) and choosing it, what is waiting to be copied, and the controls to copy. */
     folders: FolderInfo[]; master: string | null; onmaster: (path: string | null) => void;
+    subfolder: string; onsubfolder: (name: string) => Promise<void>;
     copyStatus: CopyStatus | null; oncopy: () => void; onstopcopy: () => void; onfeeds: (id: number, feeds: boolean) => void;
     /** Whether Pixie reminds at start about new items to sync, and a change to that. */
     remind: boolean; onremind: (on: boolean) => void;
@@ -147,7 +148,7 @@
         {:else if current.id === 'missing-dates'}
           <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
         {:else if current.id === 'sync'}
-          <SyncTool {folders} {master} {onmaster} {copyStatus} {oncopy} {onstopcopy} {onfeeds} {remind} {onremind} />
+          <SyncTool {folders} {master} {onmaster} {subfolder} {onsubfolder} {copyStatus} {oncopy} {onstopcopy} {onfeeds} {remind} {onremind} />
         {:else}
           <PlaceholderTool tool={current} />
         {/if}

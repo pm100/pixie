@@ -320,6 +320,8 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
         report.paused = Some("the sync folder cannot be reached".into());
         return finish(db, report);
     }
+    // Where the copies go: the sync folder itself, or the folder inside it that was chosen (made when the first copy needs it).
+    let root = db.sync_subfolder()?.map_or_else(|| master.clone(), |s| s.split('/').fold(master.clone(), |p, part| p.join(part)));
     let items = db.pending_items()?;
     let total = items.len();
     let bytes_total: u64 = items.iter().map(|i| i.size.max(0) as u64).sum();
@@ -340,7 +342,7 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
             }
             db.log_copy_problem(item.id, &item.path, outcome, &why)
         };
-        let dir = dest_dir(&master, item.taken_at);
+        let dir = dest_dir(&root, item.taken_at);
         // (the temporary file is in the folder the copy goes to, so only that folder has to be writable)
         let temp = dir.join(format!(".pixie-copy-{}.part", std::process::id()));
         let wait = crate::cloud::watch_with(meter, src, online_only);
@@ -372,7 +374,7 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
         match result {
             Ok(Step::Copied(p, size)) => {
                 report.bytes += size;
-                notes.push(note_line(&master, src, &p));
+                notes.push(note_line(&root, src, &p));
                 db.mark_copied(item.id, &item.path, &p.to_string_lossy(), "copied")?;
                 report.copied += 1;
             }
@@ -399,7 +401,7 @@ pub fn run_with(db: &Db, stop: &AtomicBool, mut progress: impl FnMut(Progress), 
         }
     }
     progress(Progress { done: total, total, bytes_done: bytes_before, bytes_total, phase: Phase::Copying });
-    write_notes(&master, &notes);
+    write_notes(&root, &notes);
     report.seconds = started.elapsed().as_secs();
     finish(db, report)
 }
@@ -503,6 +505,42 @@ mod tests {
         assert_eq!(s.db.photo_share(id).unwrap(), SHARE_COPIED);
         let c = meter.snapshot();
         assert_eq!((c.files_total, c.files_done, c.bytes_done, c.waiting_files), (1, 1, 11, 0), "the cloud meter saw it arrive");
+    }
+
+    #[test]
+    fn copies_go_into_the_chosen_folder_inside_the_sync_folder_and_the_note_goes_there_too() {
+        let s = setup();
+        s.db.set_sync_subfolder("paul_sync").unwrap();
+        s.waiting("a.jpg", b"picture bytes", Some(MARCH_5));
+        let r = s.run();
+        assert_eq!((r.copied, r.failed), (1, 0));
+        assert_eq!(fs::read(s.master_file("paul_sync/2024/2024-03-05/a.jpg")).unwrap(), b"picture bytes");
+        assert!(!s.master_file("2024").exists(), "nothing at the top of the sync folder");
+        assert!(s.master_file("paul_sync").join(NOTE_FILE).is_file());
+        assert!(fs::read_to_string(s.master_file("paul_sync").join(NOTE_FILE)).unwrap().contains("\"dest\":\"2024/2024-03-05/a.jpg\""), "named from the folder it is in");
+    }
+
+    #[test]
+    fn a_levelled_name_makes_each_level() {
+        let s = setup();
+        s.db.set_sync_subfolder(r"family\paul").unwrap();
+        s.waiting("a.jpg", b"x", None);
+        s.run();
+        assert!(s.master_file("family/paul/Undated/a.jpg").is_file());
+    }
+
+    #[test]
+    fn choosing_another_folder_works_out_again_what_was_copied() {
+        let s = setup();
+        let id = s.waiting("a.jpg", b"picture bytes", Some(MARCH_5));
+        s.run();
+        assert_eq!(s.db.photo_share(id).unwrap(), SHARE_COPIED);
+        s.db.set_sync_subfolder("paul_sync").unwrap();
+        assert_ne!(s.db.photo_share(id).unwrap(), SHARE_COPIED, "waiting again: the new folder has nothing yet");
+        s.run();
+        assert!(s.master_file("paul_sync/2024/2024-03-05/a.jpg").is_file());
+        s.db.set_sync_subfolder("  ").unwrap();
+        assert_eq!(s.db.sync_subfolder().unwrap(), None);
     }
 
     #[test]

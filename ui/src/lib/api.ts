@@ -244,6 +244,8 @@ export const setMissingFilter = (kind: string | null) => invoke<void>('set_missi
 /** The sync folder, or null while there is none (then none of the master feature is shown). */
 export const getMasterFolder = () => invoke<string | null>('get_master_folder');
 export const setMasterFolder = (path: string | null) => invoke<void>('set_master_folder', { path });
+export const getSyncSubfolder = () => invoke<string | null>('get_sync_subfolder');
+export const setSyncSubfolder = (name: string) => invoke<void>('set_sync_subfolder', { name });
 /** Whether what is in a folder is synced into the sync folder. */
 export const setFolderFeeds = (id: number, feeds: boolean) => invoke<void>('set_folder_feeds', { id, feeds });
 /** Items not yet synced, and items kept private. */

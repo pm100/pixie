@@ -57,7 +57,8 @@ CLEAN UP
 
 IMPORT/EXPORT AND THE SYNC FOLDER
 - Sync: the user chooses one of the photo folders as the sync folder. Sync now copies the photos from the other folders into it, filed by year and date (for example 2026 then 2026-11-03), checking each copy and never overwriting a file. The copies can then be shared by putting the sync folder in OneDrive, iCloud Drive or similar.
-- In Settings, Photo folders, each folder has a box saying whether it feeds the sync folder.
+- The sync folder is chosen in Import/Export, Sync. Under it, Subfolder can name a folder (for example paul_sync) so the copies go into P:\paul_sync instead of straight into the drive's top level; empty copies straight into the sync folder. Changing it does not move photos already copied.
+- In Import/Export, Sync, each other folder has a box saying whether it feeds the sync folder.
 - In Browse, Sync, New lists photos not yet copied and Private lists photos marked private. A photo marked Private (the box in its details) is never copied into the sync folder.
 
 PEOPLE
