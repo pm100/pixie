@@ -6,6 +6,7 @@
   import { docDpi, pageMm, type CollageDoc } from './collageDoc';
   import { paperGroups } from './collagePapers';
   import { plural } from './format';
+  import ColourPicker from './ColourPicker.svelte';
 
   let { doc, templates, locale, photoCount, onchange, onstart, ondone }: {
     doc: CollageDoc;
@@ -77,26 +78,26 @@
           <option value={150}>150</option><option value={200}>200</option><option value={300}>300</option>
         </select>
       </label>
-      <label>Background
-        <input type="color" value={doc.background} onchange={(e) => set({ background: e.currentTarget.value })} title="The colour of the page behind and between the photos" />
-      </label>
+      <div class="line">Background <ColourPicker label="Background" value={doc.background} onchange={(hex) => set({ background: hex })} /></div>
     </section>
 
     <section>
       <h4>Photos</h4>
-      <label>Gap (mm)
-        <input type="number" min="0" max="50" step="0.5" value={doc.gap} onchange={(e) => set({ gap: num(e, 0, 50, doc.gap) })} title="The space left between photos when a template or Pixie lays them out, and the room kept next to a photo when snapping" />
-      </label>
-      <label>Corner rounding (mm)
-        <input type="number" min="0" max="100" step="0.5" value={doc.corner} onchange={(e) => set({ corner: num(e, 0, 100, doc.corner) })} title="How round the corners of each photo are, in millimetres" />
-      </label>
-      <label>Border (mm)
-        <input type="number" min="0" max="50" step="0.5" value={doc.border} onchange={(e) => set({ border: num(e, 0, 50, doc.border) })} title="The width of the border around each photo, in millimetres; 0 for none" />
-      </label>
-      <label>Border colour
-        <input type="color" value={doc.borderColour} onchange={(e) => set({ borderColour: e.currentTarget.value })} title="The colour of the border around each photo" />
-      </label>
-      <label class="check"><input type="checkbox" checked={doc.shadow} onchange={(e) => set({ shadow: e.currentTarget.checked })} title="Give each photo a soft shadow, which helps when photos overlap" /> Shadow</label>
+      <div class="line">
+        <label class="narrow">Gap (mm)
+          <input type="number" min="0" max="50" step="0.5" value={doc.gap} onchange={(e) => set({ gap: num(e, 0, 50, doc.gap) })} title="The space left between photos when a template or Pixie lays them out, and the room kept next to a photo when snapping" />
+        </label>
+        <label class="narrow">Corner (mm)
+          <input type="number" min="0" max="100" step="0.5" value={doc.corner} onchange={(e) => set({ corner: num(e, 0, 100, doc.corner) })} title="How round the corners of each photo are, in millimetres" />
+        </label>
+        <label class="narrow">Border (mm)
+          <input type="number" min="0" max="50" step="0.5" value={doc.border} onchange={(e) => set({ border: num(e, 0, 50, doc.border) })} title="The width of the border around each photo, in millimetres; 0 for none" />
+        </label>
+      </div>
+      <div class="line">
+        Border colour <ColourPicker label="Border colour" value={doc.borderColour} disabled={doc.border === 0} onchange={(hex) => set({ borderColour: hex })} />
+        <label class="check"><input type="checkbox" checked={doc.shadow} onchange={(e) => set({ shadow: e.currentTarget.checked })} title="Give each photo a soft shadow, which helps when photos overlap" /> Shadow</label>
+      </div>
     </section>
 
     <section>
@@ -121,7 +122,8 @@
   label { display: flex; flex-direction: column; gap: 2px; }
   label.check { flex-direction: row; align-items: center; gap: 6px; }
   select, input[type='number'] { padding: 3px 6px; }
-  input[type='color'] { width: 48px; height: 28px; padding: 0; }
+  .line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+  label.narrow input[type='number'] { width: 72px; }
   button.on { border-color: #2f6fed; box-shadow: 0 0 0 1px #2f6fed; }
   .templates { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .tpl { padding: 3px; line-height: 0; }

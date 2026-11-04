@@ -79,7 +79,7 @@
   }
 
   function snapContext(skip: string[]): SnapContext {
-    return { others: doc.frames.filter((f) => !skip.includes(f.id)), pageMm: mm, marginMm: doc.gap / 2, page: doc.snapPage, frames: doc.snapFrames, thresholdPx: 6, pagePx: { w: pageW, h: pageH } };
+    return { others: doc.frames.filter((f) => !skip.includes(f.id)), pageMm: mm, marginMm: doc.gap / 2, page: doc.snap && doc.snapPage, frames: doc.snap && doc.snapFrames, thresholdPx: 6, pagePx: { w: pageW, h: pageH } };
   }
 
   const replace = (id: string, patch: Partial<CollageFrame>) => onchange(doc.frames.map((f) => (f.id === id ? { ...f, ...patch } : f)));
@@ -114,7 +114,7 @@
   function move(e: PointerEvent) {
     if (!drag) return;
     const [dx, dy] = [(e.clientX - drag.x) / pageW, (e.clientY - drag.y) / pageH];
-    const snapping = !e.altKey && (doc.snapPage || doc.snapFrames);
+    const snapping = !e.altKey && doc.snap && (doc.snapPage || doc.snapFrames);
     if (drag.kind === 'move') {
       const starts = [...drag.starts.values()];
       if (starts.length === 1) {
@@ -125,7 +125,7 @@
         guides = [];
         if (!e.altKey) {
           // A photo moved into a free space fills it, keeping its shape (and so its crop); over another photo it just moves, and lines up.
-          const filled = doc.snapFill ? fillSpace(r, doc.frames.filter((f) => f.id !== moving), mm, doc.gap, { x: r.x + r.w / 2, y: r.y + r.h / 2 }) : null;
+          const filled = doc.snap && doc.snapFill ? fillSpace(r, doc.frames.filter((f) => f.id !== moving), mm, doc.gap, { x: r.x + r.w / 2, y: r.y + r.h / 2 }) : null;
           if (filled) target = filled;
           else if (snapping) ({ rect: target, guides } = snapMove(r, snapContext(drag.ids)));
         }

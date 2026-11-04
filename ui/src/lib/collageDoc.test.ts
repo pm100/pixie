@@ -16,6 +16,8 @@ describe('parseDoc', () => {
     expect(parseDoc('{"v":1,"snapPage":false}').snapFill).toBe(true);
     expect(parseDoc('{"v":1,"snapFill":false}').snapFill).toBe(false);
     expect(parseDoc('{"v":1,"snapFill":"no"}').snapFill).toBe(true);
+    expect(parseDoc('{"v":1,"snap":false,"snapPage":true}')).toMatchObject({ snap: false, snapPage: true });
+    expect(parseDoc('{"v":1}').snap).toBe(true);
   });
 
   it('puts every number back in range and every frame on the page', () => {

@@ -94,7 +94,6 @@
   const onPage = $derived(new Set(doc.frames.map((f) => f.photo)));
   /** What a template arranges: the photos on the page, or all the Working-on photos while the page is empty. */
   const templatePhotos = $derived(doc.frames.length > 0 ? doc.frames.map((f) => byId.get(f.photo)).filter((p): p is Photo => !!p) : photos);
-  const snapOn = $derived(doc.snapPage || doc.snapFrames || doc.snapFill);
 
   const touch = () => { saved = false; };
   const setFrames = (frames: CollageFrame[]) => {
@@ -149,10 +148,10 @@
     } else {
       const made = framesFromTemplate(templates.find((t) => t.id === id)?.cells ?? [], doc, templatePhotos);
       if (made.frames.length === 0) return;
-      const before = doc.frames.length > 0 ? ($state.snapshot(doc.frames) as CollageFrame[]) : null;
+      const before = $state.snapshot(doc.frames) as CollageFrame[]; // an empty page too: Undo layout then empties the page again
       setDoc({ ...doc, frames: made.frames, template: id });
       beforeLayout = before;
-      if (made.leftOut > 0) note = `${plural(made.leftOut, 'photo')} left out: the template has no room for ${made.leftOut === 1 ? 'it' : 'them'}. Undo layout brings ${made.leftOut === 1 ? 'it' : 'them'} back.`;
+      if (made.leftOut > 0) note = `Pixie used the first ${made.frames.length === 1 ? 'photo' : plural(made.frames.length, 'photo')}.`;
     }
     layoutPress = 0;
     selected = [];
@@ -209,7 +208,7 @@
     <div class="bar">
       <button class="gear" aria-label="Settings" title="Open the collage settings: how to start, the page size, and how the photos look" onclick={() => (settingsOpen = true)}>⚙</button>
       <span class="summary">{summary}</span>
-      <label class="check"><input type="checkbox" checked={snapOn} onchange={(e) => setDoc({ ...doc, snapPage: e.currentTarget.checked, snapFrames: e.currentTarget.checked, snapFill: e.currentTarget.checked })} title="Snapping: a photo moved into a free space fills it, and edges line up with the page and with other photos; hold Alt to skip it for one move" /> Snap</label>
+      <label class="check"><input type="checkbox" checked={doc.snap} onchange={(e) => setDoc({ ...doc, snap: e.currentTarget.checked })} title="Snapping: a photo moved into a free space fills it, and edges line up with the page and with other photos; hold Alt to skip it for one move" /> Snap</label>
       <span class="grow"></span>
       <button onclick={layout} disabled={doc.frames.length === 0 || doc.frames.length > AUTO_LAYOUT_MAX}
               title={doc.frames.length > AUTO_LAYOUT_MAX ? `Layout arranges up to ${AUTO_LAYOUT_MAX} photos: take some off the page first` : 'Arrange the photos on the page for you; press it again for another arrangement'}>Layout</button>

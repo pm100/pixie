@@ -31,6 +31,8 @@ export interface CollageDoc {
   gap: number; corner: number; border: number;
   borderColour: string;
   shadow: boolean;
+  /** Snapping as a whole (the Snap box above the page). The three kinds below keep the person's choice while this is off. */
+  snap: boolean;
   snapPage: boolean; snapFrames: boolean;
   /** A photo moved into a free space grows or shrinks to fill it. */
   snapFill: boolean;
@@ -43,7 +45,7 @@ export interface CollageDoc {
 export function newDoc(locale?: string): CollageDoc {
   return {
     v: 1, paper: defaultPaperId(locale), customW: 40, customH: 60, landscape: false, dpi: null, background: '#ffffff',
-    gap: 4, corner: 0, border: 0, borderColour: '#ffffff', shadow: false, snapPage: true, snapFrames: true, snapFill: true, template: null, frames: [],
+    gap: 4, corner: 0, border: 0, borderColour: '#ffffff', shadow: false, snap: true, snapPage: true, snapFrames: true, snapFill: true, template: null, frames: [],
   };
 }
 
@@ -86,7 +88,7 @@ export function parseDoc(text: string | null, locale?: string): CollageDoc {
     background: colour(d.background, fresh.background),
     gap: num(d.gap, 0, 50, fresh.gap), corner: num(d.corner, 0, 100, fresh.corner), border: num(d.border, 0, 50, fresh.border),
     borderColour: colour(d.borderColour, fresh.borderColour),
-    shadow: bool(d.shadow, false), snapPage: bool(d.snapPage, true), snapFrames: bool(d.snapFrames, true), snapFill: bool(d.snapFill, true),
+    shadow: bool(d.shadow, false), snap: bool(d.snap, true), snapPage: bool(d.snapPage, true), snapFrames: bool(d.snapFrames, true), snapFill: bool(d.snapFill, true),
     template: typeof d.template === 'string' ? d.template : null,
     frames: (Array.isArray(d.frames) ? d.frames : []).map(frameOf).filter((f): f is CollageFrame => f !== null),
   };
