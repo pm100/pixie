@@ -61,16 +61,25 @@ export function frameDpi(photoW: number, photoH: number, frame: { w: number; h: 
   return crop.w / (wMm / 25.4);
 }
 
-/** The name a saved collage starts with: `collage_2026-11-03.png`, by the local date. */
-export function collageFileName(date: Date): string {
+/** The local date as `2026-11-03`, for the name a saved picture starts with. */
+export function dayStamp(date: Date): string {
   const two = (n: number) => String(n).padStart(2, '0');
-  return `collage_${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}.png`;
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`;
 }
 
-/** Where the save dialog starts: that name in `dir` (written with the folder's own kind of separator), or just the name when there is no folder. */
-export function defaultSavePath(dir: string | null | undefined, date: Date): string {
-  const name = collageFileName(date);
+/** The name a saved collage starts with: `collage_2026-11-03.png`, by the local date. */
+export function collageFileName(date: Date): string {
+  return `collage_${dayStamp(date)}.png`;
+}
+
+/** `name` in `dir`, written with the folder's own kind of separator; just the name when there is no folder. */
+export function pathIn(dir: string | null | undefined, name: string): string {
   if (!dir) return name;
   const sep = dir.includes('\\') ? '\\' : '/';
   return dir.endsWith('\\') || dir.endsWith('/') ? `${dir}${name}` : `${dir}${sep}${name}`;
+}
+
+/** Where the save dialog starts: that name in `dir`, or just the name when there is no folder. */
+export function defaultSavePath(dir: string | null | undefined, date: Date): string {
+  return pathIn(dir, collageFileName(date));
 }

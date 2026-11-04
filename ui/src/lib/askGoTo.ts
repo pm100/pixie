@@ -6,7 +6,7 @@ import { GROUPS, TOOLS } from './tools';
  *  and askGuide.test.ts checks the guide against them. A tool is named by its tab and its id: `send-email`, `cleanup-missing-dates`. */
 export const GO_TO_TARGETS = [
   'browse', 'people',
-  'send-email', 'send-print', 'create-collage', 'organize-tags', 'cleanup-duplicates', 'cleanup-missing-dates', 'transfer-sync',
+  'send-email', 'send-print', 'create-collage', 'create-mosaic', 'organize-tags', 'cleanup-duplicates', 'cleanup-missing-dates', 'transfer-sync',
   'settings-folders', 'settings-viewing', 'settings-browsing', 'settings-trips', 'settings-analysis', 'settings-email', 'settings-ask', 'settings-about',
 ] as const;
 export type GoToTarget = (typeof GO_TO_TARGETS)[number];

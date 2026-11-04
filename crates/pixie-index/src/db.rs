@@ -241,6 +241,15 @@ const MIGRATIONS: &[&str] = &[
     "UPDATE photos SET share = 0 WHERE share IN (1, 2);",
     // V28: finding the twin of a file just read (same size, about the same time) without looking at every photo.
     "CREATE INDEX idx_photos_size ON photos(size);",
+    // V29: what is kept of each photo to use it as a tile in a photomosaic: its average colour and a small picture of its centre square,
+    // made from the file as it was (its time and size), so a changed file is made again.
+    "CREATE TABLE tile_sigs (
+        photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+        mtime    INTEGER NOT NULL,
+        size     INTEGER NOT NULL,
+        avg      BLOB NOT NULL,
+        tiny     BLOB NOT NULL
+     );",
 ];
 
 /// An item the copier has yet to copy.
@@ -3101,6 +3110,21 @@ mod tests {
         let dates: Vec<(String, Option<i64>)> = db.list_photos(0, 10).unwrap().into_iter().map(|p| (p.path, p.meta.taken_at)).collect();
         assert!(dates.contains(&("/p/cam1980.jpg".into(), None)) && dates.contains(&("/p/olympus2000.jpg".into(), None)), "{dates:?}");
         assert!(dates.contains(&("/p/real.jpg".into(), Some(1_577_934_245))), "{dates:?}");
+    }
+
+    #[test]
+    fn a_library_from_before_photomosaics_gets_the_tile_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v28.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for m in &MIGRATIONS[..28] {
+                c.execute_batch(m).unwrap();
+            }
+            c.pragma_update(None, "user_version", 28).unwrap();
+        }
+        let db = Db::open(&p).unwrap();
+        assert!(db.tile_sigs(&[1]).unwrap().is_empty(), "the table is there and empty");
     }
 
     #[test]

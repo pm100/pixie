@@ -18,6 +18,12 @@ export function tileTemplate(isWindows: boolean = /Windows/i.test(navigator.user
   return `${base}/tile/{z}/{x}/{y}`;
 }
 
+/** Leaflet tile URL template for the built mosaic; `key` makes the window ask again after a new one is built. */
+export function mosaicTileTemplate(key: string, isWindows: boolean = /Windows/i.test(navigator.userAgent)): string {
+  const base = isWindows ? 'http://pixie.localhost' : 'pixie://localhost';
+  return `${base}/mosaic/{z}/{x}/{y}?v=${encodeURIComponent(key)}`;
+}
+
 const base = (isWindows: boolean) => (isWindows ? 'http://pixie.localhost' : 'pixie://localhost');
 const win = () => /Windows/i.test(navigator.userAgent);
 

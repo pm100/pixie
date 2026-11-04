@@ -50,7 +50,7 @@ fn parse_colour(text: &str) -> Result<[u8; 3], String> {
 }
 
 /// The text for the person: the picture errors already name the file and say what is wrong.
-fn say(e: PixieError) -> String {
+pub(crate) fn say(e: PixieError) -> String {
     match e {
         PixieError::Image(m) | PixieError::Invalid(m) => m,
         other => other.user_message(),

@@ -4,6 +4,7 @@ pub mod decode;
 pub mod heic;
 pub mod media;
 pub mod meta;
+pub mod mosaic;
 pub mod posters;
 pub mod range;
 pub mod service;

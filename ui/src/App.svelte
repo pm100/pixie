@@ -1546,7 +1546,7 @@
     {#if isToolGroup(tab)}
       {#key tab}
         <div class="page-over">
-          <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
+          <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} browse={shown} shownCount={total} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
                     folders={folderInfos} {master} onmaster={chooseMaster} subfolder={syncSub} onsubfolder={chooseSyncSub} {copyStatus} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster} remind={remindSync} onremind={setRemindSync} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
         </div>
       {/key}

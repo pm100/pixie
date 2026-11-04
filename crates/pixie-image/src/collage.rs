@@ -130,10 +130,16 @@ pub fn page_px(page_w_mm: f32, page_h_mm: f32, dpi: u32) -> Result<(u32, u32)> {
         return Err(PixieError::Invalid("The resolution must be between 72 and 600 dpi.".into()));
     }
     let (w, h) = (mm_to_px(page_w_mm, dpi).max(1), mm_to_px(page_h_mm, dpi).max(1));
+    check_px(w, h)?;
+    Ok((w, h))
+}
+
+/// Refuses a page whose longest side is over the limit, in words for the person.
+pub fn check_px(w: u32, h: u32) -> Result<()> {
     if w > MAX_SIDE_PX || h > MAX_SIDE_PX {
         return Err(PixieError::Invalid(format!("That page would be {w} by {h} pixels; the longest side can be at most {MAX_SIDE_PX}. Choose a smaller page or a lower resolution.")));
     }
-    Ok((w, h))
+    Ok(())
 }
 
 /// Is the pixel `(x, y)` of a `w` by `h` rectangle inside its rounded corners (radius `r`)?

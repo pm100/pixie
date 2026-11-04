@@ -2,6 +2,7 @@ pub mod cloud;
 pub mod copier;
 pub mod db;
 pub mod dupes;
+pub mod mosaic;
 pub mod people;
 pub mod regroup;
 pub mod queue;

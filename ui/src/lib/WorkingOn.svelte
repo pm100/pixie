@@ -4,8 +4,8 @@
   import { plural } from './format';
   import { dismiss } from './popover';
 
-  let { source = $bindable(), pickedCount, hasPhoto, userTags, count, onclear, error = '' }: {
-    /** `picked`, `current` (the photo chosen in Browse), or `tag:<name>`. */
+  let { source = $bindable(), pickedCount, hasPhoto, userTags, count, onclear, error = '', tiles = false }: {
+    /** `picked`, `current` (the photo chosen in Browse), or `tag:<name>`; for tiles (`tiles`), `filtered` (what Browse shows now) instead of `current`. */
     source: string;
     pickedCount: number;
     /** A photo is chosen in Browse, so "Current" can be used. */
@@ -15,6 +15,8 @@
     count: number;
     onclear: () => void;
     error?: string;
+    /** The photos are the tiles of a mosaic, not photos acted on: "Filtered", what Browse shows now, stands in for "Current". */
+    tiles?: boolean;
   } = $props();
 
   const onTag = $derived(source.startsWith('tag:'));
@@ -27,14 +29,19 @@
 </script>
 
 <div class="bar">
-  <span class="lbl" id="working-on-label">Working on:</span>
+  <span class="lbl" id="working-on-label">{tiles ? 'Tiles from:' : 'Working on:'}</span>
   <div class="seg" role="group" aria-labelledby="working-on-label">
-    <button class="opt" title="Work on the photos you have picked" aria-pressed={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
-    <button class="opt" aria-pressed={source === 'current'} class:on={source === 'current'} disabled={!hasPhoto}
-            title={hasPhoto ? 'The photo chosen in Browse' : 'Choose a photo in Browse first'} onclick={() => (source = 'current')}>Current</button>
+    <button class="opt" title={tiles ? 'Use the photos you have picked' : 'Work on the photos you have picked'} aria-pressed={source === 'picked'} class:on={source === 'picked'} onclick={() => (source = 'picked')}>★ Picked ({pickedCount.toLocaleString()})</button>
+    {#if tiles}
+      <button class="opt" aria-pressed={source === 'filtered'} class:on={source === 'filtered'}
+              title="The photos Browse is showing now, with its filters (all your photos when there is none)" onclick={() => (source = 'filtered')}>Filtered</button>
+    {:else}
+      <button class="opt" aria-pressed={source === 'current'} class:on={source === 'current'} disabled={!hasPhoto}
+              title={hasPhoto ? 'The photo chosen in Browse' : 'Choose a photo in Browse first'} onclick={() => (source = 'current')}>Current</button>
+    {/if}
     <span class="tagpick" use:dismiss={{ active: listOpen, close: () => (listOpen = false) }}>
       <button class="opt" class:on={onTag} aria-pressed={onTag} aria-haspopup="listbox" aria-expanded={listOpen} disabled={userTags.length === 0}
-              title={userTags.length === 0 ? 'You have no tags yet' : 'Work on the photos with one of your tags'} onclick={() => (listOpen = !listOpen)}>{onTag ? tagName : 'A tag…'} ▾</button>
+              title={userTags.length === 0 ? 'You have no tags yet' : tiles ? 'Use the photos with one of your tags' : 'Work on the photos with one of your tags'} onclick={() => (listOpen = !listOpen)}>{onTag ? tagName : 'A tag…'} ▾</button>
       {#if listOpen}
         <ul class="list" role="listbox" aria-label="Your tags">
           {#each userTags as t (t.name)}

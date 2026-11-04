@@ -29,4 +29,6 @@ pub struct AppState {
     pub copy: Arc<pixie_index::copier::CopyJob>,
     /// Everything running in the background, with its speed and time left (one screen shows it).
     pub activity: Arc<pixie_core::activity::Activity>,
+    /// The Photomosaic tool: one run at a time, and where the picture it built is kept.
+    pub mosaic: Arc<crate::mosaic::MosaicJob>,
 }

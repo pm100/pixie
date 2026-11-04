@@ -4,7 +4,7 @@ import { firstTool, GROUPS, isToolGroup, toolById, TOOLS, toolsIn, worksOnWholeL
 describe('tools', () => {
   it('lists each tab\'s tools in order', () => {
     expect(toolsIn('send').map((t) => t.id)).toEqual(['email', 'print', 'share', 'clipboard', 'open-with', 'slideshow']);
-    expect(toolsIn('create').map((t) => t.id)).toEqual(['collage', 'gif', 'frames', 'edit']);
+    expect(toolsIn('create').map((t) => t.id)).toEqual(['collage', 'mosaic', 'gif', 'frames', 'edit']);
     expect(toolsIn('organize').map((t) => t.id)).toEqual(['tags', 'dates', 'hide', 'move']);
     expect(toolsIn('cleanup').map((t) => t.id)).toEqual(['duplicates', 'missing-dates', 'bursts', 'thumbnails']);
     expect(toolsIn('transfer').map((t) => t.id)).toEqual(['sync']);

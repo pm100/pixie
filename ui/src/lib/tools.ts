@@ -37,6 +37,7 @@ export const TOOLS: ToolDef[] = [
 
   { id: 'collage', group: 'create', label: 'Collage', built: true, blurb: 'Put several photos on one page from a template and save it as a picture.',
     mock: [{ label: 'Template', value: 'Four across' }, { label: 'Page size', value: 'A4, portrait' }, { label: 'Gap', value: 'Small' }], action: 'Save collage…' },
+  { id: 'mosaic', group: 'create', label: 'Photomosaic', built: true, blurb: 'Rebuild a photo, or part of one, out of many small photos from your library and save it as a picture.' },
   { id: 'gif', group: 'create', label: 'Animated GIF', built: false, blurb: 'Turn photos into a short looping animation.',
     mock: [{ label: 'Seconds per photo', value: '0.5' }, { label: 'Longest side', value: '720 pixels · about 2.4 MB' }, { label: 'Order', value: 'By date, then back (bounce)' }], action: 'Save animation…' },
   { id: 'frames', group: 'create', label: 'Frames from a video', built: false, blurb: 'Save still pictures from a video as photos.',

@@ -11,6 +11,7 @@
   import type { CopyStatus } from './master';
   import PlaceholderTool from './PlaceholderTool.svelte';
   import CollageTool from './CollageTool.svelte';
+  import MosaicTool from './MosaicTool.svelte';
   import PrintTool from './PrintTool.svelte';
   import Resizer from './Resizer.svelte';
   import SyncTool from './SyncTool.svelte';
@@ -22,7 +23,7 @@
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { COLLAGE_MAX, PRINT_MAX } from './toolLimits';
 
-  let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
+  let { group, tool = null, active, source = $bindable(), photo, browse, shownCount, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
     group: ToolGroup;
     /** The tool to open at; otherwise the one used last in this tab, or the first. */
     tool?: string | null;
@@ -31,6 +32,10 @@
     source: string;
     /** The photo chosen in Browse, if any. */
     photo: Photo | null;
+    /** The listing Browse shows now (the Photomosaic can take its tiles from it). */
+    browse: View;
+    /** How many photos Browse shows now. */
+    shownCount: number;
     /** The email size limit (Settings, Email). */
     emailLimitMb: number;
     /** The picked photos' ids: the list is read again when they change. */
@@ -54,7 +59,6 @@
   } = $props();
 
   const list = $derived(toolsIn(group));
-  const whole = $derived(worksOnWholeLibrary(group));
   const groupLabel = $derived(GROUPS.find((g) => g.id === group)?.label ?? group);
 
   // The widths of the tools list and of the options column; the photos take the rest. Remembered, as Browse's panes are.
@@ -64,6 +68,8 @@
   // Each tab remembers the tool it was left at.
   let chosenId = $state(untrack(() => (tool && toolsIn(group).some((t) => t.id === tool) ? tool : loadPref<string>(`tools.tool.${group}`, firstTool(group).id))));
   const current = $derived(list.find((t) => t.id === chosenId) ?? firstTool(group));
+  // Clean up and Import/Export look after the whole library; so does the Photomosaic, which takes its tiles from it (or from what Browse shows, or the picks) by itself.
+  const whole = $derived(worksOnWholeLibrary(group) || current.id === 'mosaic');
   function choose(id: string) {
     chosenId = id;
     savePref(`tools.tool.${group}`, id);
@@ -150,9 +156,9 @@
 </script>
 
 <div class="page">
-  {#if whole}
+  {#if whole && current.id !== 'mosaic'}
     <div class="scope"><b>Whole library.</b> {current.label} works on every photo, not on the ones you picked.</div>
-  {:else}
+  {:else if !whole}
     <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={ids.length} {onclear} {error} />
   {/if}
   <div class="body" style:grid-template-columns={whole || wide ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
@@ -172,6 +178,8 @@
           <DuplicatesTab {active} onchange={onduplicates} />
         {:else if current.id === 'missing-dates'}
           <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
+        {:else if current.id === 'mosaic'}
+          <MosaicTool photo={here} {browse} filteredCount={shownCount} pickedCount={picks.size} {userTags} {onclear} {active} defaultDir={master ?? folders[0]?.path ?? null} />
         {:else if current.id === 'sync'}
           <SyncTool {folders} {master} {onmaster} {subfolder} {onsubfolder} {copyStatus} {oncopy} {onstopcopy} {onfeeds} {remind} {onremind} />
         {:else}

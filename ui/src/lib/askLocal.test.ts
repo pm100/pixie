@@ -15,6 +15,7 @@ describe('help without the server', () => {
       ['what are duplicates', 'duplicates', 'cleanup-duplicates'],
       ['delete duplicates', 'duplicates', 'cleanup-duplicates'],
       ['how do I make a collage', 'collage', 'create-collage'],
+      ['how do I make a photomosaic', 'mosaic', 'create-mosaic'],
       ['how does finding faces work', 'people', 'people'],
       ['how do I stop the face thing', 'people', 'people'],
       ['my photos have the wrong date', 'dates', 'cleanup-missing-dates'],

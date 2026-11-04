@@ -353,3 +353,46 @@ export const collageTemplates = () => invoke<CollageTemplate[]>('collage_templat
 export const getCollage = () => invoke<string | null>('get_collage');
 export const setCollage = (doc: string) => invoke<void>('set_collage', { doc });
 export const saveCollage = (args: SaveArgs, dst: string) => invoke<void>('save_collage', { args, dst });
+
+// ---- photomosaic ----
+
+/** Where the tiles come from: `browse` carries the listing Browse shows now (the same filters as Pick all). */
+export interface MosaicSource {
+  which: 'library' | 'browse' | 'picked' | 'tag';
+  /** The user's tag, for `tag`. */
+  tag?: string;
+  order?: SortOrder; folder_id?: number | null; kind?: MediaKind | null; bounds?: Bounds | null;
+  max_id?: number | null; since?: number | null; until?: number | null; search?: boolean;
+}
+export interface MosaicArgs {
+  source: MosaicSource;
+  target: number;
+  focus_x: number; focus_y: number; zoom: number;
+  paper_w_mm: number; paper_h_mm: number; dpi: number;
+  tile_mm: number; gap: number; blend: number;
+}
+export interface MosaicIndexed { candidates: number; skipped: number }
+export interface MosaicDraft {
+  jpeg_base64: string; cols: number; rows: number; tiles: number; photos: number; skipped: number; gap_used: number;
+  /** Everything the picture depends on: a built picture with the same key matches these settings. */
+  key: string;
+}
+export interface MosaicBuilt { key: string; width: number; height: number; dpi: number; levels: number; built_at: number }
+export interface MosaicProgress { done: number; total: number }
+export const getMosaic = () => invoke<string | null>('get_mosaic');
+export const setMosaic = (doc: string) => invoke<void>('set_mosaic', { doc });
+export const mosaicIndex = (source: MosaicSource) => invoke<MosaicIndexed>('mosaic_index', { source });
+export const mosaicDraft = (args: MosaicArgs) => invoke<MosaicDraft>('mosaic_draft', { args });
+export const mosaicBuild = (args: MosaicArgs) => invoke<MosaicBuilt>('mosaic_build', { args });
+export const mosaicCancel = () => invoke<void>('mosaic_cancel');
+/** What the tool is doing now (it keeps going when the window is away): `idle`, `index` or `build`, and how far. */
+export interface MosaicStatus { phase: 'idle' | 'index' | 'build'; done: number; total: number }
+export const mosaicStatus = () => invoke<MosaicStatus>('mosaic_status');
+/** Forget the picture built last: a new mosaic starts from nothing. */
+export const mosaicClear = () => invoke<void>('mosaic_clear');
+export const getMosaicBuilt = () => invoke<MosaicBuilt | null>('get_mosaic_built');
+export const mosaicSave = (dst: string) => invoke<void>('mosaic_save', { dst });
+export const onMosaicIndex = (f: (p: MosaicProgress) => void) => listen<MosaicProgress>('mosaic-index', (e) => f(e.payload));
+/** The mosaic so far while it is built, as a small JPEG (base64). */
+export const onMosaicPreview = (f: (jpegBase64: string) => void) => listen<{ jpeg_base64: string }>('mosaic-preview', (e) => f(e.payload.jpeg_base64));
+export const onMosaicBuild = (f: (p: MosaicProgress) => void) => listen<MosaicProgress>('mosaic-build', (e) => f(e.payload));
