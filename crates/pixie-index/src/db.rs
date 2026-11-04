@@ -649,6 +649,8 @@ impl Db {
         let db = Db { conn: Arc::new(Mutex::new(conn)) };
         // Dates kept before the person's rules (or under older rules) are brought into line with them, from the dates remembered.
         db.apply_date_rules(&db.date_rules())?;
+        // Picks and tags left on copies that are hidden as duplicates move to the copy that is shown, before the window reads them.
+        db.carry_to_keepers()?;
         Ok(db)
     }
 
@@ -875,7 +877,46 @@ impl Db {
                 c.execute("UPDATE photos SET dup = ?2 WHERE id = ?1", params![id, want as i64]).map_err(db_err)?;
             }
         }
+        drop(c);
+        self.carry_to_keepers()?;
         Ok(())
+    }
+
+    /// Picks and the person's own tags belong to what Browse shows. When a copy is hidden as a duplicate (another copy is shown for the
+    /// same content), whatever was picked or tagged on it moves to the copy that is shown, so a photo is never picked or tagged where
+    /// nothing can see it. Safe to run any time: it only touches hidden copies that have a pick or a tag and a shown twin, and heals
+    /// what was stranded before this existed. Returns how many hidden copies gave theirs up.
+    pub fn carry_to_keepers(&self) -> Result<usize> {
+        let mut c = self.conn();
+        let pairs: Vec<(PhotoId, PhotoId)> = {
+            let mut s = c
+                .prepare(
+                    "SELECT h.id, (SELECT v.id FROM photos v WHERE v.hash = h.hash AND v.dup = 0 AND v.missing = 0 ORDER BY v.id LIMIT 1)
+                       FROM photos h
+                      WHERE h.dup = 1 AND h.hash IS NOT NULL
+                        AND h.id IN (SELECT photo_id FROM picks UNION SELECT photo_id FROM user_tags)",
+                )
+                .map_err(db_err)?;
+            let rows = s
+                .query_map([], |r| Ok((r.get::<_, PhotoId>(0)?, r.get::<_, Option<PhotoId>>(1)?)))
+                .map_err(db_err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows.into_iter().filter_map(|(hidden, keeper)| keeper.map(|k| (hidden, k))).collect()
+        };
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let tx = c.transaction().map_err(db_err)?;
+        for (hidden, keeper) in &pairs {
+            tx.execute("INSERT OR IGNORE INTO picks(photo_id, picked_at) SELECT ?2, picked_at FROM picks WHERE photo_id = ?1", params![hidden, keeper]).map_err(db_err)?;
+            tx.execute("DELETE FROM picks WHERE photo_id = ?1", params![hidden]).map_err(db_err)?;
+            tx.execute("INSERT OR IGNORE INTO user_tags(photo_id, tag) SELECT ?2, tag FROM user_tags WHERE photo_id = ?1", params![hidden, keeper]).map_err(db_err)?;
+            tx.execute("DELETE FROM user_tags WHERE photo_id = ?1", params![hidden]).map_err(db_err)?;
+        }
+        crate::utags::refresh_utag(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(pairs.len())
     }
 
     /// How far the analysis has got for the photos in these folders (see `LoadProgress`). `embed_version` and
@@ -1168,17 +1209,19 @@ impl Db {
         };
         let hide: Vec<PhotoId> = want.difference(&have).copied().collect();
         let show: Vec<PhotoId> = have.difference(&want).copied().collect();
-        if hide.is_empty() && show.is_empty() {
-            return Ok(0);
+        if !(hide.is_empty() && show.is_empty()) {
+            let tx = c.transaction().map_err(db_err)?;
+            for id in &hide {
+                tx.execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
+            }
+            for id in &show {
+                tx.execute("UPDATE photos SET dup = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
+            }
+            tx.commit().map_err(db_err)?;
         }
-        let tx = c.transaction().map_err(db_err)?;
-        for id in &hide {
-            tx.execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![id]).map_err(db_err)?;
-        }
-        for id in &show {
-            tx.execute("UPDATE photos SET dup = 0 WHERE id = ?1", params![id]).map_err(db_err)?;
-        }
-        tx.commit().map_err(db_err)?;
+        drop(c);
+        // Even when no flag changed: it also heals picks and tags stranded on copies that were hidden earlier.
+        self.carry_to_keepers()?;
         Ok(hide.len() + show.len())
     }
 
@@ -4054,6 +4097,100 @@ mod tests {
         assert_eq!(db.share_counts().unwrap().0, 1, "the new folder does not hold b: it is not yet synced again");
         db.set_master_folder(None).unwrap();
         assert_eq!((db.photo_share(a).unwrap(), db.photo_share(b).unwrap()), (SHARE_NONE, SHARE_NONE), "no sync folder, nothing is synced or waiting");
+    }
+
+    /// Two files with the same content (`a` is the older, so it is the one shown) and one picked and tagged while both were shown.
+    fn twins_with_a_pick_and_a_tag_on_the_later_one() -> (Db, PhotoId, PhotoId) {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/src").unwrap();
+        let a = add_hashed(&db, f, "/src/a.jpg", 100, "h1");
+        let b = add_hashed(&db, f, "/src/deep/b.jpg", 200, "h1");
+        db.set_pick(b, true).unwrap();
+        db.tag_photos(&[b], "xx").unwrap();
+        (db, a, b)
+    }
+
+    #[test]
+    fn a_pick_and_a_tag_follow_the_copy_that_is_shown_when_the_one_they_were_on_is_hidden() {
+        let (db, a, b) = twins_with_a_pick_and_a_tag_on_the_later_one();
+        assert_eq!(db.refresh_dup_flags().unwrap(), 1, "b is hidden");
+        assert_eq!(db.pick_ids().unwrap(), [a], "picked: the copy Browse shows");
+        let tags = db.user_tags().unwrap();
+        assert_eq!(tags.iter().map(|t| (t.name.as_str(), t.count)).collect::<Vec<_>>(), [("xx", 1)], "the tag is listed, on the shown copy");
+        assert_eq!(db.list_tagged("xx").unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [a]);
+        assert!(db.tag_usage(&[b]).unwrap().iter().all(|t| t.on == 0), "nothing is left on the hidden copy");
+    }
+
+    #[test]
+    fn choosing_another_copy_to_show_takes_the_pick_and_the_tag_along() {
+        let (db, _a, b) = twins_with_a_pick_and_a_tag_on_the_later_one();
+        db.refresh_dup_flags().unwrap();
+        db.set_keep_pick(b).unwrap();
+        assert_eq!(db.pick_ids().unwrap(), [b]);
+        assert_eq!(db.list_tagged("xx").unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [b]);
+        assert_eq!(db.user_tags().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn opening_the_library_moves_stranded_picks_and_tags_before_anything_reads_them() {
+        let dir = std::env::temp_dir().join(format!("pixie-carry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lib.db");
+        let (a, b) = {
+            let db = Db::open(&path).unwrap();
+            let f = db.add_folder("/src").unwrap();
+            let a = add_hashed(&db, f, "/src/a.jpg", 100, "h1");
+            let b = add_hashed(&db, f, "/src/deep/b.jpg", 200, "h1");
+            db.set_pick(b, true).unwrap();
+            db.tag_photos(&[b], "xx").unwrap();
+            db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![b]).unwrap(); // hidden, still holding them
+            (a, b)
+        };
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.pick_ids().unwrap(), [a]);
+        assert_eq!(db.user_tags().unwrap().len(), 1);
+        assert!(db.tag_usage(&[b]).unwrap().iter().all(|t| t.on == 0));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn picks_and_tags_stranded_on_a_hidden_copy_earlier_are_healed_even_when_no_flag_changes() {
+        let (db, a, b) = twins_with_a_pick_and_a_tag_on_the_later_one();
+        // How the library already looks for someone who picked and tagged before this existed: b is hidden and still holds them.
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![b]).unwrap();
+        assert!(db.user_tags().unwrap().is_empty(), "stranded: the tag is on nothing Browse shows");
+        assert_eq!(db.refresh_dup_flags().unwrap(), 0, "no flag changed");
+        assert_eq!(db.pick_ids().unwrap(), [a]);
+        assert_eq!(db.user_tags().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pick_made_twice_on_copies_of_one_photo_is_one_pick_and_a_photo_with_no_twin_keeps_its_own() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/src").unwrap();
+        let a = add_hashed(&db, f, "/src/a.jpg", 100, "h1");
+        let b = add_hashed(&db, f, "/src/deep/b.jpg", 200, "h1");
+        let c = add_hashed(&db, f, "/src/deep/c.jpg", 300, "h1");
+        let lone = db.upsert_photo(f, "/src/lone.jpg", 1, 1, &meta(Some(400))).unwrap(); // never hashed: nothing to be a copy of
+        db.set_picks(&[a, b, c, lone]).unwrap();
+        db.refresh_dup_flags().unwrap();
+        assert_eq!(db.pick_ids().unwrap().len(), 2, "one pick for the photo whatever the copy, and the lone one");
+        assert!(db.pick_ids().unwrap().contains(&a) && db.pick_ids().unwrap().contains(&lone));
+    }
+
+    #[test]
+    fn a_hidden_copy_with_no_shown_twin_keeps_its_pick() {
+        // Its twin went missing: nothing is shown for the content, so there is nowhere to move it to (and the copy is shown again soon).
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/src").unwrap();
+        let a = add_hashed(&db, f, "/src/a.jpg", 100, "h1");
+        let b = add_hashed(&db, f, "/src/b.jpg", 200, "h1");
+        db.set_pick(b, true).unwrap();
+        db.conn().execute("UPDATE photos SET dup = 1 WHERE id = ?1", params![b]).unwrap();
+        db.conn().execute("UPDATE photos SET missing = 1 WHERE id = ?1", params![a]).unwrap();
+        assert_eq!(db.carry_to_keepers().unwrap(), 0);
+        assert_eq!(db.pick_ids().unwrap(), [b], "b keeps its pick: there is no shown copy to move it to");
     }
 
     #[test]
