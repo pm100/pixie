@@ -5,7 +5,7 @@
   import {
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
-    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
+    listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickAllMatching, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -492,11 +492,18 @@
       await loadPicks();
     }
   }
-  /** Pick every photo the filters show (up to the limit; see pickAllState) to the ones picked now. */
-  const pickAll = $derived(pickAllState(total, activeUtag === 'picked', undefined, picked.size));
+  /** Pick every photo the filters show, however many, to the ones picked now (done in the library in one go). */
+  const pickAll = $derived(pickAllState(total, activeUtag === 'picked', picked.size));
   async function pickAllShown() {
     if (!pickAll.enabled) return;
-    await pickPositions(Array.from({ length: total }, (_, i) => i));
+    const v = shown; // the listing the button refers to
+    try {
+      await pickAllMatching(v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search);
+    } catch (e) {
+      message = String(e);
+    }
+    await loadPicks();
+    if (activeUtag === 'picked') void utagChanged(); else void loadUserTags();
   }
   async function clearAllPicks() {
     picked = new Set();

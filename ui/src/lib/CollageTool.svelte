@@ -17,12 +17,14 @@
   import { loadPref, savePref } from './prefs';
   import Resizer from './Resizer.svelte';
 
-  let { photos, active, skippedVideos = 0, defaultDir = null }: {
+  let { photos, active, skippedVideos = 0, beyond = 0, defaultDir = null }: {
     /** The photos the tools work on (videos already taken out). */
     photos: Photo[];
     active: boolean;
     /** How many videos were left out of `photos`, for the note. */
     skippedVideos?: number;
+    /** How many more pictures there are than the list holds (the newest are listed). */
+    beyond?: number;
     /** Where the save dialog starts: the sync folder, or else the first watched folder (null when there is none). */
     defaultDir?: string | null;
   } = $props();
@@ -231,6 +233,7 @@
       {#if error}<span class="err" role="alert">{error}</span>{/if}
       {#if saved}<span class="ok" role="status">Saved.</span>{/if}
       {#if note}<span class="note">{note}</span>{/if}
+      {#if beyond > 0}<span class="note">The list holds the newest {plural(photos.length, 'photo')}; {plural(beyond, 'photo')} more {beyond === 1 ? 'is' : 'are'} not listed. Pick fewer, or use a tag, to use {beyond === 1 ? 'it' : 'them'}.</span>{/if}
       {#if skippedVideos > 0}<span class="note">{plural(skippedVideos, 'video')} can't go in a collage and {skippedVideos === 1 ? 'was' : 'were'} left out.</span>{/if}
       <span class="hint">Drag to move (it fills the space you put it in) · drag a handle to resize · double-click a photo to crop it · Ctrl-drop onto another photo to swap (from the list: to replace it) · Alt skips snapping</span>
     </div>

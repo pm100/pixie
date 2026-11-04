@@ -51,6 +51,11 @@ export const listPhotos = (
   kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null, since: number | null = null,
   until: number | null = null, search = false,
 ) => invoke<Photo[]>('list_photos', { offset, limit, order, folderId, kind, bounds, maxId, since, until, search });
+/** Pick every photo these filters show, added to the picks already made; returns how many. */
+export const pickAllMatching = (
+  order: SortOrder = 'newest', folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null,
+  maxId: number | null = null, since: number | null = null, until: number | null = null, search = false,
+) => invoke<number>('pick_all_matching', { order, folderId, kind, bounds, maxId, since, until, search });
 export const countPhotos = (
   folderId: number | null = null, kind: MediaKind | null = null, bounds: Bounds | null = null, maxId: number | null = null,
   since: number | null = null, until: number | null = null, search = false,
@@ -102,6 +107,14 @@ export const userTags = () => invoke<UserTagCount[]>('user_tags');
 /** Every tag with how many of these photos have it. */
 export const tagUsage = (ids: number[]) => invoke<TagUse[]>('tag_usage', { ids });
 export const listTagged = (tag: string) => invoke<Photo[]>('list_tagged', { tag });
+/** The ids of the picked photos, newest first, without the photos themselves (a long list is then read a screenful at a time with `photosAmong`). */
+export const listPickedIds = () => invoke<number[]>('list_picked_ids');
+/** The ids of the photos with a tag, newest first. */
+export const listTaggedIds = (tag: string) => invoke<number[]>('list_tagged_ids', { tag });
+/** The photos among these ids (newest first); only pictures when `photosOnly`; at most `limit`. */
+export const photosAmong = (ids: number[], photosOnly: boolean, limit: number) => invoke<Photo[]>('photos_among', { ids, photosOnly, limit });
+/** How many of these photos are pictures and how many are videos. */
+export const kindCounts = (ids: number[]) => invoke<[number, number]>('kind_counts', { ids });
 /** Show only the picked photos (`"picked"`) or those with a tag (`"tag:<name>"`); null turns it off. List with the `search` flag. */
 export const setUserTagFilter = (key: string | null) => invoke<void>('set_user_tag_filter', { filter: key });
 /** Nothing is picked. */

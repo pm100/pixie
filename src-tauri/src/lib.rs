@@ -1607,6 +1607,24 @@ fn pick_many(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<(), PixieEr
     state.db.set_picks(&ids)
 }
 
+/// Pick every photo the filters show (added to the picks already made); returns how many. No limit: it is done in the library, not photo by photo.
+#[tauri::command]
+fn pick_all_matching(
+    state: tauri::State<AppState>,
+    order: Option<SortOrder>,
+    folder_id: Option<i64>,
+    kind: Option<MediaKind>,
+    bounds: Option<Bounds>,
+    max_id: Option<i64>,
+    since: Option<i64>,
+    until: Option<i64>,
+    search: Option<bool>,
+) -> Result<usize, PixieError> {
+    let ids = state.db.photo_ids_in(&query_of(order, folder_id, kind, bounds, max_id, since, until, search))?;
+    state.db.set_picks(&ids)?;
+    Ok(ids.len())
+}
+
 /// How many of the picked items are videos.
 #[tauri::command]
 fn pick_video_count(state: tauri::State<AppState>) -> Result<usize, PixieError> {
@@ -1664,6 +1682,30 @@ fn set_user_tag_filter(state: tauri::State<AppState>, filter: Option<String>) ->
 }
 
 /// The picked photos themselves, for the Selected tab.
+/// The ids of the picked photos, newest first (the list is then shown a screenful at a time with `photos_among`).
+#[tauri::command]
+fn list_picked_ids(state: tauri::State<AppState>) -> Result<Vec<i64>, PixieError> {
+    state.db.list_picked_ids()
+}
+
+/// The ids of the photos with a tag, newest first.
+#[tauri::command]
+fn list_tagged_ids(state: tauri::State<AppState>, tag: String) -> Result<Vec<i64>, PixieError> {
+    state.db.list_tagged_ids(&tag)
+}
+
+/// The photos among `ids` (newest first), only pictures when `photos_only`, at most `limit`: a screenful of a long list, or the pictures a tool can use.
+#[tauri::command]
+fn photos_among(state: tauri::State<AppState>, ids: Vec<i64>, photos_only: bool, limit: usize) -> Result<Vec<Photo>, PixieError> {
+    state.db.photos_among(&ids, photos_only, limit)
+}
+
+/// How many of `ids` are pictures and how many videos.
+#[tauri::command]
+fn kind_counts(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<(usize, usize), PixieError> {
+    state.db.kind_counts(&ids)
+}
+
 #[tauri::command]
 fn list_picked(state: tauri::State<AppState>) -> Result<Vec<Photo>, PixieError> {
     state.db.list_picked()
@@ -2063,7 +2105,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, get_sync_subfolder, set_sync_subfolder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster, collage::collage_templates, collage::get_collage, collage::set_collage, collage::save_collage,
-            open_in_default_player, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

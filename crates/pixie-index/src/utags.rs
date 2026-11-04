@@ -128,7 +128,7 @@ impl Db {
 
     /// Every tag in the library with how many of these photos have it (0 for one they do not).
     pub fn tag_usage(&self, ids: &[PhotoId]) -> Result<Vec<TagUse>> {
-        let json = format!("[{}]", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let json = crate::db::id_list(ids);
         let c = self.conn();
         let mut s = c
             .prepare(
@@ -137,6 +137,19 @@ impl Db {
             )
             .map_err(db_err)?;
         let rows = s.query_map(params![json], |r| Ok(TagUse { name: r.get(0)?, on: r.get(1)? })).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The ids of the photos with the tag in the order `list_tagged` gives them, without reading the photos.
+    pub fn list_tagged_ids(&self, tag: &str) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT id FROM photos WHERE missing = 0 AND dup = 0 AND id IN (SELECT photo_id FROM user_tags WHERE tag = ?1) ORDER BY {}",
+                order_sql(SortOrder::Newest)
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map(params![tag.trim()], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
     }
 

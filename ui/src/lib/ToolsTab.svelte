@@ -2,7 +2,7 @@
   /** One of the tool tabs (Send, Create, Organize, Clean up, Import/Export), laid out like Settings: the tab's tools down the left, the options of the chosen tool in the middle, and the photos
    *  the tools work on on the right. Clean up and Import/Export look after the whole library, so they have no "Working on" and no photos. */
   import { untrack } from 'svelte';
-  import { listPicked, listTagged, type FolderInfo, type Photo, type UserTagCount, type View } from './api';
+  import { kindCounts, listPickedIds, listTaggedIds, photosAmong, type FolderInfo, type Photo, type UserTagCount, type View } from './api';
   import DuplicatesTab from './DuplicatesTab.svelte';
   import MissingDatesTool from './MissingDatesTool.svelte';
   import type { DateRules } from './dateRules';
@@ -14,12 +14,13 @@
   import PrintTool from './PrintTool.svelte';
   import Resizer from './Resizer.svelte';
   import SyncTool from './SyncTool.svelte';
+  import ToolsGrid from './ToolsGrid.svelte';
   import Viewer from './Viewer.svelte';
   import WorkingOn from './WorkingOn.svelte';
   import { plural } from './format';
   import { loadPref, savePref } from './prefs';
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
-  import { posterUrl, thumbUrl } from './url';
+  import { COLLAGE_MAX, PRINT_MAX } from './toolLimits';
 
   let { group, tool = null, active, source = $bindable(), photo, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
     group: ToolGroup;
@@ -84,20 +85,23 @@
   // A tag that has no photos left is gone from the list: go back to Picked.
   $effect(() => { if (source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'picked'; });
 
-  let photos = $state<Photo[]>([]);
-  /** The source `photos` was read for. */
+  /** The ids of the photos the tools work on, newest first. Only the ids are held: the photos of the rows on show are read as they are needed
+   *  (see ToolsGrid), and the tools that need the photos themselves ask for the ones they can use (see `usable`). */
+  let ids = $state<number[]>([]);
+  /** How many of them are pictures and how many videos. */
+  let kinds = $state({ pictures: 0, videos: 0 });
+  /** The source `ids` was read for. */
   let listed = '';
   let error = $state('');
-  let broken = $state<Record<number, boolean>>({});
   /** The photo clicked here (blue outline); double-click or Enter opens the viewer. */
   let chosen = $state<number | null>(null);
   /** The photo open in the viewer (its position among these photos), if any. */
   let viewing = $state<number | null>(null);
   // The viewer pages through these photos as they are listed here (it does not use Browse's listing).
   const noListing: View = { order: 'newest', folderId: null, kind: null, bounds: null, maxId: null, since: null, until: null, search: false };
-  const pageOfPhotos = (offset: number, limit: number) => Promise.resolve(photos.slice(offset, offset + limit));
+  const pageOfPhotos = (offset: number, limit: number) => photosAmong(shownIds.slice(offset, offset + limit), false, limit);
   // A photo that leaves the list while it is open: close the viewer rather than show a different one.
-  $effect(() => { if (viewing !== null && viewing >= photos.length) viewing = null; });
+  $effect(() => { if (viewing !== null && viewing >= shownIds.length) viewing = null; });
 
   $effect(() => {
     picks; userTags; // read again whenever the picks or the tags change
@@ -105,20 +109,41 @@
     const one = here;
     if (!active || whole) return;
     // Another set of photos: the old list must not stay on show (and be acted on) while the new one is read, or if it cannot be.
-    if (from !== listed) { listed = from; photos = []; }
-    if (from === 'current') { photos = one ? [one] : []; error = ''; return; }
+    if (from !== listed) { listed = from; ids = []; kinds = { pictures: 0, videos: 0 }; }
+    if (from === 'current') {
+      ids = one ? [one.id] : [];
+      kinds = { pictures: one && one.kind === 'photo' ? 1 : 0, videos: one && one.kind === 'video' ? 1 : 0 };
+      error = '';
+      return;
+    }
     let live = true;
-    (from === 'picked' ? listPicked() : listTagged(from.slice(4)))
-      .then((l) => { if (live) { photos = l; error = ''; } })
-      .catch((e) => { if (live) { photos = []; error = String(e); } });
+    (from === 'picked' ? listPickedIds() : listTaggedIds(from.slice(4)))
+      .then(async (l) => {
+        const [pictures, videos] = l.length === 0 ? [0, 0] : await kindCounts(l);
+        if (live) { ids = l; kinds = { pictures, videos }; error = ''; }
+      })
+      .catch((e) => { if (live) { ids = []; kinds = { pictures: 0, videos: 0 }; error = String(e); } });
     return () => { live = false; };
   });
 
-  const ids = $derived(photos.map((p) => p.id));
-  // Videos cannot be printed: Print works on the pictures among them, and is greyed out when there are none.
-  const printable = $derived(photos.filter((p) => p.kind === 'photo'));
-  const videosLeft = $derived(photos.length - printable.length);
-  const noPrint = (id: string) => (id === 'print' || id === 'collage') && photos.length > 0 && printable.length === 0;
+  // Print and Collage work on the pictures among them (videos cannot be printed), as many as they can take: the photos themselves are read for those two only.
+  const usable = $derived(current.id === 'print' ? PRINT_MAX : current.id === 'collage' ? COLLAGE_MAX : 0);
+  let printable = $state<Photo[]>([]);
+  $effect(() => {
+    const list = ids;
+    const cap = usable;
+    if (cap === 0 || !active || whole) return;
+    if (list.length === 0) { printable = []; return; }
+    let live = true;
+    photosAmong(list, true, cap).then((l) => { if (live) printable = l; }).catch(() => { if (live) printable = []; });
+    return () => { live = false; };
+  });
+  const videosLeft = $derived(kinds.videos);
+  /** The photos listed on the right: Print leaves the videos out of the list too, since it cannot print them. */
+  const shownIds = $derived(current.id === 'print' && kinds.videos > 0 ? printable.map((p) => p.id) : ids);
+  /** Pictures the tool has no room for. */
+  const beyond = $derived(usable === 0 ? 0 : Math.max(0, kinds.pictures - usable));
+  const noPrint = (id: string) => (id === 'print' || id === 'collage') && ids.length > 0 && kinds.pictures === 0;
   const isPicked = $derived(source === 'picked');
   // The Collage has its own page in the middle and its own photo list on the right, so it takes the whole area beside the tools list.
   const wide = $derived(current.id === 'collage');
@@ -128,7 +153,7 @@
   {#if whole}
     <div class="scope"><b>Whole library.</b> {current.label} works on every photo, not on the ones you picked.</div>
   {:else}
-    <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={photos.length} {onclear} {error} />
+    <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={ids.length} {onclear} {error} />
   {/if}
   <div class="body" style:grid-template-columns={whole || wide ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
     <nav aria-label={`${groupLabel} tools`}>
@@ -155,7 +180,7 @@
       </div>
     {:else if wide}
       <div class="whole" role="region" aria-label={current.label}>
-        <CollageTool photos={printable} {active} skippedVideos={videosLeft} defaultDir={master ?? folders[0]?.path ?? null} />
+        <CollageTool photos={printable} {active} skippedVideos={videosLeft} beyond={beyond} defaultDir={master ?? folders[0]?.path ?? null} />
       </div>
     {:else}
       <aside class="side" aria-label={current.label}>
@@ -163,7 +188,10 @@
           <div class="tool wide"><EmailForm {ids} limitMb={emailLimitMb} /></div>
         {:else if current.id === 'print'}
           {#if videosLeft > 0}
-            <p class="note">{plural(videosLeft, 'video')} can't be printed{printable.length > 0 ? ' and left out' : ''}.</p>
+            <p class="note">{plural(videosLeft, 'video')} can't be printed{kinds.pictures > 0 ? `, so ${videosLeft === 1 ? 'it is' : 'they are'} left out` : ''}.</p>
+          {/if}
+          {#if beyond > 0}
+            <p class="note">Print takes {PRINT_MAX.toLocaleString()} photos at a time, the newest first: {plural(beyond, 'photo')} left out. Pick fewer, or use a tag, to print the rest.</p>
           {/if}
           <PrintTool photos={printable} />
         {:else if current.id === 'tags'}
@@ -175,7 +203,7 @@
       <Resizer bind:width={sideW} min={240} max={560} side="left" onchange={(w) => savePref('tools.side', w)} />
 
       <div class="mid">
-        {#if photos.length === 0}
+        {#if ids.length === 0}
           <div class="none">
             {#if isPicked}
               <p><b>Nothing is picked yet.</b></p>
@@ -188,28 +216,7 @@
             {/if}
           </div>
         {:else}
-          <div class="grid">
-            {#each photos as p, i (p.id)}
-              <div class="tile" class:chosen={chosen === p.id}>
-                <!-- The whole photo is the button: one click chooses it, a double click or Enter opens it. The unpick marker is a separate button over its corner. -->
-                <button class="open" aria-label={p.kind === 'video' ? `Video ${p.path}` : `Photo ${p.path}`} aria-pressed={chosen === p.id}
-                        onclick={() => (chosen = p.id)} ondblclick={() => (viewing = i)}
-                        onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); viewing = i; } }}></button>
-                {#if p.kind === 'video' && !broken[p.id]}
-                  <img alt="" loading="lazy" src={posterUrl(p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
-                {:else if p.kind === 'photo' && !broken[p.id]}
-                  <img alt="" loading="lazy" src={thumbUrl('grid', p.id, p.mtime, p.size)} onerror={() => (broken[p.id] = true)} />
-                {:else}
-                  <span class="ph" aria-hidden="true">{p.kind === 'video' ? '▶' : '⚠︎'}</span>
-                {/if}
-                {#if isPicked}
-                  <button class="pick on" aria-label="Take off Picked" title="Take off Picked" onclick={() => onunpick(p.id)}>
-                    <span class="tk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.7 1.3 6.7L12 17.5 6 20.9l1.3-6.7-5-4.7 6.8-.8z" /></svg></span>
-                  </button>
-                {/if}
-              </div>
-            {/each}
-          </div>
+          <ToolsGrid ids={shownIds} {chosen} load={(l) => photosAmong(l, false, l.length)} onchoose={(id) => (chosen = id)} onopen={(i) => (viewing = i)} picked={isPicked} {onunpick} />
         {/if}
       </div>
     {/if}
@@ -217,7 +224,7 @@
 </div>
 
 {#if viewing !== null}
-  <Viewer index={viewing} total={photos.length} view={noListing} page={pageOfPhotos} onclose={() => (viewing = null)} onnav={(i) => (viewing = i)} />
+  <Viewer index={viewing} total={shownIds.length} view={noListing} page={pageOfPhotos} onclose={() => (viewing = null)} onnav={(i) => (viewing = i)} />
 {/if}
 
 <style>
@@ -239,17 +246,4 @@
   .note { margin: 0; padding: 10px 14px 0; font-size: 13px; color: #8a6d00; }
   .tool { padding: 12px 14px; font-size: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .tool.wide { align-items: stretch; }
-  .grid { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 12px 14px; }
-  .tile { position: relative; width: 180px; height: 180px; border-radius: 6px; overflow: hidden; background: #e8e8ec; flex: none; }
-  .tile.chosen { outline: 3px solid #2f6fed; outline-offset: -3px; }
-  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .ph { display: grid; place-items: center; height: 100%; color: #888; font-size: 28px; }
-  .open { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: none; cursor: pointer; }
-  .open:focus-visible { outline: 3px solid #2f6fed; outline-offset: -3px; }
-  .pick { position: absolute; z-index: 1; left: 0; top: 0; width: 46px; height: 46px; padding: 0; border: 0; background: none; cursor: pointer; }
-  .tk { position: absolute; left: 8px; top: 8px; width: 22px; height: 22px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 2px solid #fff; background: #2f6fed; box-shadow: 0 1px 3px rgba(0, 0, 0, .5); color: #fff; opacity: 0; }
-  .tk svg { width: 14px; height: 14px; }
-  /* Like the grid: the marker shows while the mouse is over the corner (here it takes the photo off, so it turns red). */
-  .pick:hover .tk, .pick:focus-visible .tk { opacity: 1; }
-  .pick:hover .tk { background: #b3261e; }
 </style>

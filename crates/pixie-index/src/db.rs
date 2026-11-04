@@ -5,6 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Ids as the JSON list `json_each` reads, so any number of them can be passed to one query.
+pub(crate) fn id_list(ids: &[PhotoId]) -> String {
+    format!("[{}]", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
+}
+
 /// A folder name inside the sync folder, as typed: `/` or `\` separate levels; empty parts are dropped. None when nothing is left. A name
 /// that could leave the sync folder (`..`, a drive or a leading separator) or that Windows cannot make is refused, with words for the person.
 pub fn clean_subfolder(text: &str) -> Result<Option<String>> {
@@ -1479,6 +1484,47 @@ impl Db {
         Ok(rows)
     }
 
+    /// The ids of the picked photos in the order `list_picked` gives them (newest first), without reading the photos: a long list of
+    /// picks is then shown a screenful at a time (see `photos_among`).
+    pub fn list_picked_ids(&self) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT id FROM photos WHERE missing = 0 AND id IN (SELECT photo_id FROM picks) ORDER BY {}",
+                order_sql(SortOrder::Newest)
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The photos among `ids` that are still there, newest first; only pictures when `photos_only`, at most `limit`. Any number of ids.
+    pub fn photos_among(&self, ids: &[PhotoId], photos_only: bool, limit: usize) -> Result<Vec<Photo>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare(&format!(
+                "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0{} AND id IN (SELECT value FROM json_each(?1)) ORDER BY {} LIMIT ?2",
+                if photos_only { " AND kind = 0" } else { "" },
+                order_sql(SortOrder::Newest)
+            ))
+            .map_err(db_err)?;
+        let rows = s.query_map(params![id_list(ids), limit as i64], row_to_photo).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// How many of `ids` are pictures and how many are videos (those still there).
+    pub fn kind_counts(&self, ids: &[PhotoId]) -> Result<(usize, usize)> {
+        let (pictures, videos): (i64, i64) = self
+            .conn()
+            .query_row(
+                "SELECT COALESCE(SUM(kind = 0), 0), COALESCE(SUM(kind = 1), 0) FROM photos WHERE missing = 0 AND id IN (SELECT value FROM json_each(?1))",
+                params![id_list(ids)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)?;
+        Ok((pictures as usize, videos as usize))
+    }
+
     /// Put every photo back: nothing is picked.
     pub fn clear_picks(&self) -> Result<()> {
         let mut c = self.conn();
@@ -1530,6 +1576,15 @@ impl Db {
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The ids of every photo `q` matches, in the order Browse lists them (for picking all that are shown).
+    pub fn photo_ids_in(&self, q: &PhotoQuery) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let filter = Filter::of(q);
+        let mut s = c.prepare(&format!("SELECT id FROM photos WHERE missing = 0{} ORDER BY {}", filter.sql(), order_sql(q.order))).map_err(db_err)?;
+        let rows = s.query_map(filter.params().as_slice(), |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
     }
 
@@ -3997,6 +4052,38 @@ mod tests {
 
     fn share_ask(share: Option<&'static str>) -> FacetAsk<'static> {
         FacetAsk { tag: None, person: None, camera: None, utag: None, trip_dates: false, tag_groups: &[], trip_windows: &[], recent_since: None, missing: None, share }
+    }
+
+    #[test]
+    fn every_photo_a_query_matches_can_be_picked_in_one_go() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let ids: Vec<PhotoId> = (0..2500).map(|i| db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &meta(Some(i))).unwrap()).collect();
+        let all = db.photo_ids_in(&PhotoQuery::default()).unwrap();
+        assert_eq!(all.len(), 2500);
+        assert_eq!(all[0], *ids.last().unwrap(), "newest first, as Browse lists them");
+        db.set_picks(&all).unwrap();
+        assert_eq!(db.pick_ids().unwrap().len(), 2500, "no limit");
+    }
+
+    #[test]
+    fn a_long_pick_list_is_read_as_ids_and_then_a_screenful_of_photos_at_a_time() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let ids: Vec<PhotoId> = (0..30).map(|i| db.upsert_photo(f, &format!("/p/{i}.jpg"), 1, 1, &meta(Some(100 + i))).unwrap()).collect();
+        let video = db.upsert_photo(f, "/p/v.mp4", 1, 1, &meta(Some(500))).unwrap();
+        db.conn().execute("UPDATE photos SET kind = 1 WHERE id = ?1", params![video]).unwrap();
+        db.set_picks(&ids).unwrap();
+        db.set_pick(video, true).unwrap();
+        let listed: Vec<PhotoId> = db.list_picked().unwrap().iter().map(|p| p.id).collect();
+        assert_eq!(db.list_picked_ids().unwrap(), listed, "the same order, without reading the photos");
+        assert_eq!(db.kind_counts(&listed).unwrap(), (30, 1));
+        let all = db.photos_among(&listed, false, 1000).unwrap();
+        assert_eq!(all.iter().map(|p| p.id).collect::<Vec<_>>(), listed);
+        let pictures = db.photos_among(&listed, true, 5).unwrap();
+        assert_eq!(pictures.len(), 5, "the limit");
+        assert!(pictures.iter().all(|p| p.id != video), "pictures only");
+        assert_eq!(db.photos_among(&[], false, 10).unwrap().len(), 0);
     }
 
     #[test]
