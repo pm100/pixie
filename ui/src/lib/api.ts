@@ -81,6 +81,11 @@ const userLang = () => (navigator.languages?.length ? navigator.languages.join('
 /** `background`: work nobody is watching (naming trips), which waits its turn without cancelling the lookup for the photo on screen. */
 export const placeFor = (lat: number, lon: number, background = false) => invoke<Place | null>('place_for', { lat, lon, lang: userLang(), background });
 
+/** Save a frame of a video (the JPEG bytes, `ms` milliseconds into it) as a photo next to the video; answers with the new file's name. */
+export const saveVideoFrame = (id: number, ms: number, bytes: Uint8Array) =>
+  untilReady(() => tauriInvoke<{ name: string }>('save_video_frame', bytes, { headers: { 'x-video-id': String(id), 'x-frame-ms': String(ms) } }));
+/** Show a saved frame (by its file name) in the video's folder. */
+export const showSavedFrame = (id: number, name: string) => invoke<void>('show_saved_frame', { id, name });
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
 /** Whether each watched folder can be reached right now. */

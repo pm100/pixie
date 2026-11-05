@@ -1,5 +1,6 @@
 pub mod collage;
 pub mod decode;
+pub mod frames;
 #[cfg(feature = "heic")]
 pub mod heic;
 pub mod media;

@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { listPhotos, openInDefaultPlayer, type Photo, type View } from './api';
+  import { listPhotos, openInDefaultPlayer, saveVideoFrame, showSavedFrame, type Photo, type View } from './api';
   import { filmRange } from './filmstrip';
   import { neighbors } from './neighbors';
   import PhotoCaption from './PhotoCaption.svelte';
   import { posterUrl, thumbUrl, videoUrl } from './url';
+  import { estimateFps, frameMs, frameNumber, jumpTo, stepTo, timecode } from './videoFrames';
 
   let { index, total, view, solo = null, page, onclose, onnav, onpopout, filmstrip = true }: {
     index: number; total: number; view: View; solo?: Photo | null; onclose: () => void; onnav: (i: number) => void;
@@ -23,6 +24,8 @@
   let current = $state<Photo | null>(null);
   let videoFailed = $state(false);
   let videoReady = false;
+  /** The player has its details (so its frames can be stepped and saved). */
+  let videoLoaded = $state(false);
   // Primitives, so the effects below re-run when the item changes, not when a refresh swaps in an equal object.
   const curId = $derived(current?.id ?? null);
   const curKind = $derived(current?.kind ?? null);
@@ -56,6 +59,8 @@
       if (current?.id !== solo.id) {
         videoFailed = false;
         videoReady = false;
+        videoLoaded = false;
+        note = null;
         current = solo;
       }
       if (solo.kind === 'photo') load(urlFor(solo), mine);
@@ -75,6 +80,8 @@
         // A new item. The same item seen again (a scan refreshed the list) keeps its player and state.
         videoFailed = false;
         videoReady = false;
+        videoLoaded = false;
+        note = null;
         current = here;
       }
       // Ask for neighbours first and the current photo last: the newest request is
@@ -96,6 +103,68 @@
     return () => clearTimeout(timer);
   });
 
+  // ---- Frame by frame, and saving the frame on screen (only while a video is paused)
+  let paused = $state(true);
+  let vtime = $state(0);
+  let fps = $state(30);
+  let saving = $state(false);
+  /** What the last Save frame did: the file written (with the video it belongs to), or why it could not be. */
+  let note = $state<{ text: string; id?: number; name?: string } | null>(null);
+  let noteTimer: ReturnType<typeof setTimeout> | undefined;
+  function say(n: { text: string; id?: number; name?: string }) {
+    note = n;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => (note = null), 8000);
+  }
+  // The time of the frame on screen, and the frame rate worked out from the gaps between the frames as they play.
+  $effect(() => {
+    const el = player;
+    if (!el || !('requestVideoFrameCallback' in el)) return;
+    const gaps: number[] = [];
+    let last: number | null = null;
+    let handle = 0;
+    const onframe = (_now: number, meta: { mediaTime: number }) => {
+      vtime = meta.mediaTime;
+      if (!el.paused && last !== null) {
+        gaps.push(meta.mediaTime - last);
+        if (gaps.length > 40) gaps.shift();
+        fps = estimateFps(gaps);
+      }
+      last = meta.mediaTime;
+      handle = el.requestVideoFrameCallback(onframe);
+    };
+    handle = el.requestVideoFrameCallback(onframe);
+    return () => el.cancelVideoFrameCallback(handle);
+  });
+  function seekTo(t: number) {
+    if (!player) return;
+    player.pause();
+    player.currentTime = t;
+    vtime = t;
+  }
+  const stepFrame = (delta: number) => player && seekTo(stepTo(player.currentTime, fps, delta, player.duration));
+  const stepSeconds = (s: number) => player && seekTo(jumpTo(player.currentTime, s, player.duration));
+  /** Save the frame on screen as a photo next to the video. */
+  async function saveFrame() {
+    const v = player, video = current;
+    if (!v || !video || video.kind !== 'video' || saving || !videoLoaded || !v.videoWidth || !v.videoHeight) return;
+    saving = true;
+    try {
+      const time = v.currentTime;
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
+      const blob = await new Promise<Blob | null>((done) => c.toBlob(done, 'image/jpeg', 0.95));
+      if (!blob) throw new Error('The frame could not be drawn.');
+      const saved = await saveVideoFrame(video.id, frameMs(time), new Uint8Array(await blob.arrayBuffer()));
+      say({ text: `Saved ${saved.name}`, id: video.id, name: saved.name });
+    } catch (e) {
+      say({ text: String(e).replace(/^Error: /, '') });
+    }
+    saving = false;
+  }
+
   // Leaving a video (or closing the viewer) must stop it at once.
   $effect(() => {
     const el = player;
@@ -116,8 +185,15 @@
   }
 
   function key(e: KeyboardEvent) {
+    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement | null)?.tagName ?? '');
     if (e.key === 'Escape') onclose();
-    else if (e.key === 'ArrowRight') step(1);
+    else if (current?.kind === 'video' && player && !typing && !e.ctrlKey && !e.metaKey && (e.key === ',' || e.key === '.')) {
+      e.preventDefault();
+      stepFrame(e.key === '.' ? 1 : -1);
+    } else if (current?.kind === 'video' && player && !typing && !e.ctrlKey && !e.metaKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      void saveFrame();
+    } else if (e.key === 'ArrowRight') step(1);
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === ' ' && current?.kind === 'video' && player && (e.target as HTMLElement | null)?.tagName !== 'BUTTON') {
       e.preventDefault();
@@ -133,9 +209,13 @@
   {#if current?.kind === 'video'}
     {#key current.id}
       <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={player} controls autoplay src={videoUrl(current.id, current.mtime, current.size)}
+      <video bind:this={player} controls autoplay crossorigin="anonymous" src={videoUrl(current.id, current.mtime, current.size)}
+             onplay={() => (paused = false)} onpause={() => (paused = true)}
+             onseeked={(e) => (vtime = e.currentTarget.currentTime)} ontimeupdate={(e) => { if (e.currentTarget.paused) vtime = e.currentTarget.currentTime; }}
              onloadedmetadata={(e) => {
                videoReady = true;
+               videoLoaded = true;
+               paused = e.currentTarget.paused;
                videoFailed = false;
                // Opening a video plays it. `autoplay` alone is not always honoured, so ask explicitly;
                // a refusal (autoplay policy) just leaves it paused with controls showing.
@@ -143,6 +223,22 @@
              }}
              onerror={() => (videoFailed = true)}></video>
     {/key}
+    {#if paused && videoLoaded && !videoFailed}
+      <div class="framebar" role="group" aria-label="Frame by frame">
+        <button onclick={() => stepSeconds(-1)} title="Go back one second">−1 s</button>
+        <button onclick={() => stepFrame(-1)} title="Go back one frame (,)" aria-label="Back one frame">◀ frame</button>
+        <span class="at" title="Where the frame on screen is in the video">{timecode(vtime)} · frame {frameNumber(vtime, fps).toLocaleString()}</span>
+        <button onclick={() => stepFrame(1)} title="Go forward one frame (.)" aria-label="Forward one frame">frame ▶</button>
+        <button onclick={() => stepSeconds(1)} title="Go forward one second">+1 s</button>
+        <button class="primary" disabled={saving} onclick={() => void saveFrame()} title="Save the frame on screen as a photo next to the video, with the video's date and place (S)">Save frame</button>
+      </div>
+    {/if}
+    {#if note}
+      <div class="note" role="status">
+        <span>{note.text}</span>
+        {#if note.name && note.id !== undefined}<button onclick={() => showSavedFrame(note!.id!, note!.name!).catch(() => {})} title="Show the saved picture in its folder">Show</button>{/if}
+      </div>
+    {/if}
     {#if videoFailed}
       <div class="msg">
         <p>This video can't be played here. If it is an iPhone video, Windows may need Microsoft's HEVC Video Extensions.</p>
@@ -189,6 +285,9 @@
   .msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; margin: 0; padding: 24px; text-align: center; background: #111; }
   .msg p { margin: 0; max-width: 40ch; }
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
+  .framebar { position: absolute; z-index: 1; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .7); color: #fff; font-size: 14px; white-space: nowrap; max-width: calc(100% - 300px); overflow: hidden; }
+  .framebar .at { font-variant-numeric: tabular-nums; min-width: 17ch; text-align: center; }
+  .note { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 130px; display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-radius: 8px; background: rgba(0, 0, 0, .8); color: #fff; font-size: 14px; max-width: calc(100% - 32px); }
   .popout { position: absolute; z-index: 1; top: 12px; right: 60px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 7px 10px; color: #fff; font-size: 14px; cursor: pointer; }
   .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 56px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
   .cell { width: 54px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #222; cursor: pointer; flex: none; overflow: hidden; }
