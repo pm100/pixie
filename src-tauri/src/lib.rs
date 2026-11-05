@@ -1,6 +1,7 @@
 mod activity_feed;
 mod ask;
 mod autoscan;
+mod clipboard;
 mod collage;
 mod drives;
 mod emailsize;
@@ -1687,6 +1688,49 @@ async fn email_photos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, 
     tauri::async_runtime::spawn_blocking(move || email_items(app, db, places, ids, lang, &mode, limit_mb, hold, extra)).await.map_err(|e| e.to_string())?
 }
 
+/// Puts photos on the system clipboard. `form` is "photo" (the files, and for one photo its picture too: what Copy does), "files" (only the files,
+/// to paste in Explorer, a mail or a chat), "image" (only the picture; one photo, not a video, and not one that is only in the cloud) or "paths"
+/// (the full paths as text, one per line).
+#[tauri::command]
+async fn copy_to_clipboard(state: tauri::State<'_, AppState>, ids: Vec<i64>, form: String) -> Result<(), String> {
+    let mut form = clipboard::Form::parse(&form).ok_or("That way of copying is not known.")?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut any_video = false;
+        for id in &ids {
+            match db.get_photo(*id) {
+                Ok(Some(p)) if !p.missing && std::path::Path::new(&p.path).is_file() => {
+                    if form == clipboard::Form::Image && p.meta.kind == MediaKind::Video {
+                        return Err("A video cannot be copied as a picture. Copy puts the video file on the clipboard.".to_string());
+                    }
+                    any_video |= p.meta.kind == MediaKind::Video;
+                    paths.push(PathBuf::from(p.path));
+                }
+                _ => {}
+            }
+        }
+        if paths.is_empty() {
+            return Err("Those files are not there any more.".to_string());
+        }
+        // A photo copies its picture too, unless there is no picture to copy: several photos, a video, or a file that is only in the cloud (reading it would download it).
+        if form == clipboard::Form::Photo && (paths.len() != 1 || any_video || pixie_index::cloud::is_online_only(&paths[0])) {
+            form = clipboard::Form::Files;
+        }
+        if form == clipboard::Form::Image {
+            if paths.len() != 1 {
+                return Err("Only one picture can be copied as an image at a time.".to_string());
+            }
+            if pixie_index::cloud::is_online_only(&paths[0]) {
+                return Err("This picture is online-only: it is in the cloud and not on this computer yet. Open it once to download it, then copy it again.".to_string());
+            }
+        }
+        clipboard::copy(form, &paths).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Quick pick: pick a photo, or take it off the picked ones.
 #[tauri::command]
 fn pick_photo(state: tauri::State<AppState>, id: i64, picked: bool) -> Result<(), PixieError> {
@@ -2199,7 +2243,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, get_sync_subfolder, set_sync_subfolder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, set_person_cover, hide_photos, unhide_photos, hidden_among, hidden_count, set_show_hidden, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster, collage::collage_templates, collage::get_collage, collage::set_collage, collage::save_collage, mosaic::get_mosaic, mosaic::set_mosaic, mosaic::mosaic_index, mosaic::mosaic_draft, mosaic::mosaic_build, mosaic::mosaic_cancel, mosaic::get_mosaic_built, mosaic::mosaic_clear, mosaic::mosaic_status, mosaic::mosaic_save,
-            open_in_default_player, save_video_frame, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, save_video_frame, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, copy_to_clipboard, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

@@ -84,6 +84,8 @@ export const placeFor = (lat: number, lon: number, background = false) => invoke
 /** Save a frame of a video (the JPEG bytes, `ms` milliseconds into it) as a photo next to the video, tagged "Video frame"; answers with the new photo's id and file name (it is in the library when this returns). */
 export const saveVideoFrame = (id: number, ms: number, bytes: Uint8Array) =>
   untilReady(() => tauriInvoke<{ id: number; name: string }>('save_video_frame', bytes, { headers: { 'x-video-id': String(id), 'x-frame-ms': String(ms) } }));
+/** Put photos on the system clipboard: `photo` (the files, and for one photo its picture too), `files` (only the files), `image` (only one photo's picture) or `paths` (as text, one per line). */
+export const copyToClipboard = (ids: number[], form: 'photo' | 'files' | 'image' | 'paths') => invoke<void>('copy_to_clipboard', { ids, form });
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
 /** Whether each watched folder can be reached right now. */

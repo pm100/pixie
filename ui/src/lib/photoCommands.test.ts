@@ -4,7 +4,7 @@ import { registerPhotoCommands, type PhotoCommandContext, type PhotoTarget } fro
 
 const target = (over: Partial<PhotoTarget> = {}): PhotoTarget => ({ ids: [7], index: 3, kind: 'photo', picked: false, private: null, hidden: false, ...over });
 function fake(): PhotoCommandContext {
-  return { open: vi.fn(), setPicked: vi.fn(), openPlayer: vi.fn(), showInFolder: vi.fn(), openTool: vi.fn(), setPrivate: vi.fn(), setHidden: vi.fn() };
+  return { canCopy: true, open: vi.fn(), setPicked: vi.fn(), openPlayer: vi.fn(), showInFolder: vi.fn(), openTool: vi.fn(), setPrivate: vi.fn(), setHidden: vi.fn(), copy: vi.fn() };
 }
 const labels = (t: PhotoTarget) => contextModel(allCommands(), 'photo', t).map((g) => g.map((i) => i.label));
 const find = (id: string) => allCommands().find((c) => c.id === id)!;
@@ -17,7 +17,7 @@ describe('photoCommands', () => {
     expect(labels(target())).toEqual([
       ['Open', 'Pick'],
       ['Email…', 'Print…'],
-      ['Show in folder', 'Hide'],
+      ['Copy', 'Copy image', 'Copy path', 'Show in folder', 'Hide'],
     ]);
   });
 
@@ -26,7 +26,7 @@ describe('photoCommands', () => {
     expect(labels(target({ picked: true, hidden: true }))).toEqual([
       ['Open', 'Take off Picked'],
       ['Email…', 'Print…'],
-      ['Show in folder', 'Unhide'],
+      ['Copy', 'Copy image', 'Copy path', 'Show in folder', 'Unhide'],
     ]);
     expect(labels(target({ private: false }))[2]).toContain('Make private');
     expect(labels(target({ private: true }))[2]).toContain('Make public');
@@ -44,7 +44,7 @@ describe('photoCommands', () => {
     expect(labels(target({ ids: [1, 2, 3], index: null, picked: true, private: null }))).toEqual([
       ['Take off Picked'],
       ['Email…', 'Print…'],
-      ['Hide'],
+      ['Copy', 'Copy path', 'Hide'],
     ]);
   });
 
@@ -75,6 +75,27 @@ describe('photoCommands', () => {
     expect(ctx.setHidden).toHaveBeenCalledWith([7], false);
     find('photo.private').run(target({ private: false }));
     expect(ctx.setPrivate).toHaveBeenCalledWith(7, true);
+  });
+
+  it('copies the files, the picture (one photo only) and the paths of what was clicked', () => {
+    const ctx = fake();
+    registerPhotoCommands(ctx);
+    find('photo.copy').run(target({ ids: [1, 2], index: null }));
+    expect(ctx.copy).toHaveBeenCalledWith([1, 2], 'photo');
+    find('photo.copyPath').run(target({ ids: [1, 2], index: null }));
+    expect(ctx.copy).toHaveBeenCalledWith([1, 2], 'paths');
+    find('photo.copyImage').run(target());
+    expect(ctx.copy).toHaveBeenCalledWith([7], 'image');
+  });
+
+  it('offers no picture copy for a video, and no copying where the system cannot', () => {
+    registerPhotoCommands({ ...fake(), canCopy: true });
+    expect(labels(target({ kind: 'video' })).flat()).not.toContain('Copy image');
+    expect(labels(target({ kind: 'video' })).flat()).toContain('Copy');
+    resetCommands();
+    registerPhotoCommands({ ...fake(), canCopy: false });
+    expect(labels(target()).flat()).not.toContain('Copy');
+    expect(labels(target()).flat()).not.toContain('Copy path');
   });
 
   it('removes its commands when unregistered', () => {

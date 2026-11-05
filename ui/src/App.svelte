@@ -6,7 +6,7 @@
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickAllMatching, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
-    hiddenCount, hidePhotos, setShowHidden, unhidePhotos, openDataFolder, openInDefaultPlayer, showInFolder, makePrivate, releasePrivate, photoShare, hiddenAmong,
+    hiddenCount, hidePhotos, setShowHidden, unhidePhotos, openDataFolder, openInDefaultPlayer, showInFolder, copyToClipboard, makePrivate, releasePrivate, photoShare, hiddenAmong,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -1249,6 +1249,8 @@
   // The menu bar and the app's own shortcuts are made from the command registry (lib/commands.ts); this is what the commands need from the app.
   const mac = navigator.userAgent.includes('Mac');
   const isPaused = () => { const av = activityView(activity); return av.pill === 'paused' || av.held || scanPaused || syncPaused; };
+  /** What Copy copies: the Picked photos, or else the photo chosen. */
+  const copyIds = (): number[] => (picked.size > 0 ? [...picked] : selectedPhoto ? [selectedPhoto.id] : []);
   const commandContext: CommandContext = {
     mac,
     tabs: () => tabs,
@@ -1274,6 +1276,9 @@
     showAbout: () => { settingsPage = 'about'; pickTab('settings'); },
     inTextField: () => isTextField(document.activeElement),
     editText: (op) => { document.execCommand(op); },
+    copyIds,
+    copyImageOk: () => { const ids = copyIds(); return ids.length === 1 && (picked.size === 1 || selectedPhoto?.kind === 'photo'); },
+    copyToClipboard: (form) => { const ids = copyIds(); if (ids.length > 0) copyToClipboard(ids, form).catch((e) => (message = String(e))); },
   };
   let commandsVersion = $state(0);
   let commandsChanges = 0; // a plain counter: `commandsVersion++` would read the state, and the effects that register commands would then depend on it and loop
@@ -1303,6 +1308,8 @@
     await hiddenChanged();
   }
   const photoCommandContext: PhotoCommandContext = {
+    canCopy: !mac, // (a Mac cannot put photos on the clipboard yet)
+    copy: (ids, form) => { copyToClipboard(ids, form).catch((e) => (message = String(e))); },
     open: openItem,
     setPicked: (ids, on) => void setPickedIds(ids, on),
     openPlayer: (id) => { openInDefaultPlayer(id).catch((e) => (message = String(e))); },

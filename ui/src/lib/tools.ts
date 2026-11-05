@@ -28,8 +28,6 @@ export const TOOLS: ToolDef[] = [
   { id: 'print', group: 'send', label: 'Print', built: true, blurb: '' },
   { id: 'share', group: 'send', label: 'Share by cloud drive', built: false, blurb: 'Copy photos, videos or folders into OneDrive, iCloud Drive or Google Drive so someone can get them by link.',
     mock: [{ label: 'Cloud drive', value: 'OneDrive' }, { label: 'Folder name', value: 'Rome, June 2019' }, { label: 'Size', value: 'As they are' }], action: 'Copy to the drive' },
-  { id: 'clipboard', group: 'send', label: 'Copy to clipboard', built: false, blurb: 'Copy the photos so they can be pasted into another program.',
-    mock: [{ label: 'Copy as', value: 'Files' }], action: 'Copy' },
   { id: 'open-with', group: 'send', label: 'Open with…', built: false, blurb: 'Open the photos or videos in another program, such as an editor.',
     mock: [{ label: 'Program', value: 'Paint' }], action: 'Open' },
   { id: 'slideshow', group: 'send', label: 'Slideshow', built: false, blurb: 'Show the photos full screen, one after another.',

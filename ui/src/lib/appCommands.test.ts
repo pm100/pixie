@@ -13,6 +13,7 @@ function fake(over: Partial<CommandContext> = {}): CommandContext {
     showProcessing: vi.fn(), toggleFullScreen: vi.fn(), toggleHelp: vi.fn(),
     showAbout: vi.fn(),
     inTextField: () => false, editText: vi.fn(),
+    copyIds: () => [1], copyImageOk: () => true, copyToClipboard: vi.fn(),
     ...over,
   };
 }
@@ -56,6 +57,39 @@ describe('appCommands', () => {
   it('greys Pause when nothing is running', () => {
     registerAppCommands(fake({ canTogglePause: () => false }));
     expect(menuModel(allCommands())[0].groups[1][0].enabled).toBe(false);
+  });
+
+  it('Edit has Copy with Ctrl+C: the text in a text box, the photos elsewhere, and Copy image and Copy path', () => {
+    const ctx = fake({ inTextField: () => true });
+    registerAppCommands(ctx);
+    expect(menuModel(allCommands()).find((m) => m.menu === 'Edit')!.groups[0].map((i) => [i.label, i.shortcut])).toEqual([['Copy', 'CmdOrCtrl+C'], ['Copy image', undefined], ['Copy path', undefined]]);
+    find('edit.copy').run(undefined);
+    expect(ctx.editText).toHaveBeenCalledWith('copy');
+    expect(ctx.copyToClipboard).not.toHaveBeenCalled();
+
+    resetCommands();
+    const ctx2 = fake();
+    registerAppCommands(ctx2);
+    find('edit.copy').run(undefined);
+    find('edit.copyImage').run(undefined);
+    find('edit.copyPath').run(undefined);
+    expect(ctx2.copyToClipboard).toHaveBeenNthCalledWith(1, 'photo');
+    expect(ctx2.copyToClipboard).toHaveBeenNthCalledWith(2, 'image');
+    expect(ctx2.copyToClipboard).toHaveBeenNthCalledWith(3, 'paths');
+  });
+
+  it('greys out Copy with nothing to copy (but not in a text box), and Copy image unless it is one photo', () => {
+    registerAppCommands(fake({ copyIds: () => [], copyImageOk: () => false }));
+    const items = () => menuModel(allCommands()).find((m) => m.menu === 'Edit')!.groups[0];
+    expect(items().map((i) => i.enabled)).toEqual([false, false, false]);
+    resetCommands();
+    registerAppCommands(fake({ copyIds: () => [], copyImageOk: () => false, inTextField: () => true }));
+    expect(items().map((i) => i.enabled)).toEqual([true, false, false]);
+  });
+
+  it('leaves Copy to the system on a Mac, which cannot copy photos yet', () => {
+    registerAppCommands(fake({ mac: true }));
+    expect(allCommands().some((c) => c.id.startsWith('edit.copy'))).toBe(false);
   });
 
   it('Select all selects the text in a text box, and picks all photos elsewhere', () => {
