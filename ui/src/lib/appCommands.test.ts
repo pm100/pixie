@@ -87,9 +87,9 @@ describe('appCommands', () => {
     expect(items().map((i) => i.enabled)).toEqual([true, false, false]);
   });
 
-  it('leaves Copy to the system on a Mac, which cannot copy photos yet', () => {
+  it('has the same Copy on a Mac', () => {
     registerAppCommands(fake({ mac: true }));
-    expect(allCommands().some((c) => c.id.startsWith('edit.copy'))).toBe(false);
+    expect(allCommands().filter((c) => c.id.startsWith('edit.copy')).map((c) => c.id)).toEqual(['edit.copy', 'edit.copyImage', 'edit.copyPath']);
   });
 
   it('Select all selects the text in a text box, and picks all photos elsewhere', () => {

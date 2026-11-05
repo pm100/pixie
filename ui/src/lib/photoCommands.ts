@@ -16,8 +16,6 @@ export interface PhotoTarget {
 }
 
 export interface PhotoCommandContext {
-  /** The system can put photos on the clipboard (Windows now; a Mac later). */
-  canCopy: boolean;
   open: (index: number) => void;
   setPicked: (ids: number[], on: boolean) => void;
   openPlayer: (id: number) => void;
@@ -43,9 +41,9 @@ export function registerPhotoCommands(ctx: PhotoCommandContext): () => void {
     { id: 'photo.pick', label: (t) => (t.picked ? 'Take off Picked' : 'Pick'), where: photo(1), run: (t) => ctx.setPicked(t.ids, !t.picked) },
     tool('photo.email', 'Email…', 'email'),
     tool('photo.print', 'Print…', 'print'),
-    { id: 'photo.copy', label: 'Copy', where: photo(3), visible: () => ctx.canCopy, run: (t) => ctx.copy(t.ids, 'photo') },
-    { id: 'photo.copyImage', label: 'Copy image', where: photo(3), visible: (t) => ctx.canCopy && one(t) && t.kind === 'photo', run: (t) => ctx.copy(t.ids, 'image') },
-    { id: 'photo.copyPath', label: 'Copy path', where: photo(3), visible: () => ctx.canCopy, run: (t) => ctx.copy(t.ids, 'paths') },
+    { id: 'photo.copy', label: 'Copy', where: photo(3), run: (t) => ctx.copy(t.ids, 'photo') },
+    { id: 'photo.copyImage', label: 'Copy image', where: photo(3), visible: (t) => one(t) && t.kind === 'photo', run: (t) => ctx.copy(t.ids, 'image') },
+    { id: 'photo.copyPath', label: 'Copy path', where: photo(3), run: (t) => ctx.copy(t.ids, 'paths') },
     { id: 'photo.showInFolder', label: 'Show in folder', where: photo(3), visible: one, run: (t) => ctx.showInFolder(t.ids[0]) },
     { id: 'photo.private', label: (t) => (t.private ? 'Make public' : 'Make private'), where: photo(3), visible: (t) => one(t) && t.private !== null, run: (t) => ctx.setPrivate(t.ids[0], !t.private) },
     { id: 'photo.hide', label: (t) => (t.hidden ? 'Unhide' : 'Hide'), where: photo(3), run: (t) => ctx.setHidden(t.ids, !t.hidden) },

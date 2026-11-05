@@ -4,7 +4,7 @@ import { registerPhotoCommands, type PhotoCommandContext, type PhotoTarget } fro
 
 const target = (over: Partial<PhotoTarget> = {}): PhotoTarget => ({ ids: [7], index: 3, kind: 'photo', picked: false, private: null, hidden: false, ...over });
 function fake(): PhotoCommandContext {
-  return { canCopy: true, open: vi.fn(), setPicked: vi.fn(), openPlayer: vi.fn(), showInFolder: vi.fn(), openTool: vi.fn(), setPrivate: vi.fn(), setHidden: vi.fn(), copy: vi.fn() };
+  return { open: vi.fn(), setPicked: vi.fn(), openPlayer: vi.fn(), showInFolder: vi.fn(), openTool: vi.fn(), setPrivate: vi.fn(), setHidden: vi.fn(), copy: vi.fn() };
 }
 const labels = (t: PhotoTarget) => contextModel(allCommands(), 'photo', t).map((g) => g.map((i) => i.label));
 const find = (id: string) => allCommands().find((c) => c.id === id)!;
@@ -88,14 +88,11 @@ describe('photoCommands', () => {
     expect(ctx.copy).toHaveBeenCalledWith([7], 'image');
   });
 
-  it('offers no picture copy for a video, and no copying where the system cannot', () => {
-    registerPhotoCommands({ ...fake(), canCopy: true });
+  it('offers a video the file and the path but no picture copy', () => {
+    registerPhotoCommands(fake());
     expect(labels(target({ kind: 'video' })).flat()).not.toContain('Copy image');
     expect(labels(target({ kind: 'video' })).flat()).toContain('Copy');
-    resetCommands();
-    registerPhotoCommands({ ...fake(), canCopy: false });
-    expect(labels(target()).flat()).not.toContain('Copy');
-    expect(labels(target()).flat()).not.toContain('Copy path');
+    expect(labels(target({ kind: 'video' })).flat()).toContain('Copy path');
   });
 
   it('removes its commands when unregistered', () => {

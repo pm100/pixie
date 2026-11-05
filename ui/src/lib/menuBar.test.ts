@@ -29,11 +29,10 @@ describe('toSpec', () => {
     expect(toSpec(model, false)[2].items[0]).toMatchObject({ checked: true });
   });
 
-  it('starts Edit with the systems Cut and Paste (Copy is the apps own where it can copy photos), then a separator, then the registry items', () => {
+  it('starts Edit with the systems Cut and Paste (Copy is the apps own, as it copies photos too), then a separator, then the registry items', () => {
     const edit = toSpec(model, false)[1];
     expect(edit.items.map((i) => (i.kind === 'predefined' ? i.item : i.kind))).toEqual(['Cut', 'Paste', 'separator', 'item']);
-    const mac = toSpec(model, true)[1];
-    expect(mac.items.map((i) => (i.kind === 'predefined' ? i.item : i.kind))).toEqual(['Cut', 'Copy', 'Paste', 'separator', 'item']);
+    expect(toSpec(model, true)[1].items).toEqual(edit.items);
   });
 
   it('still has an Edit menu when no command is placed in it, and gives nothing for an empty model but that', () => {

@@ -31,6 +31,7 @@ pub fn paths_text(paths: &[PathBuf], windows_lines: bool) -> String {
     lines.join(if windows_lines { "\r\n" } else { "\n" })
 }
 
+#[cfg(any(windows, test))]
 /// A file list as the clipboard's `CF_HDROP` holds it: a `DROPFILES` header (20 bytes, wide characters), then each path and a NUL, then a final NUL.
 pub fn drop_files(paths: &[String]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -48,6 +49,7 @@ pub fn drop_files(paths: &[String]) -> Vec<u8> {
     out
 }
 
+#[cfg(any(windows, test))]
 /// A picture as the clipboard's `CF_DIB` holds it: a `BITMAPINFOHEADER` (40 bytes), then 24-bit rows, bottom row first, each padded to 4 bytes.
 /// `rgb` is the picture as RGB bytes, top row first.
 pub fn dib_24(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
@@ -128,8 +130,11 @@ pub fn set_clipboard(items: &[(Format, Vec<u8>)]) -> Result<(), String> {
     result
 }
 
+#[cfg(windows)]
 const CF_UNICODETEXT: u32 = 13;
+#[cfg(windows)]
 const CF_DIB: u32 = 8;
+#[cfg(windows)]
 const CF_HDROP: u32 = 15;
 
 /// Copies the files (as a file list, marked to be copied, not moved), the paths (as text) or the picture of the first file. Returns how many files it covered.
@@ -171,8 +176,90 @@ pub fn copy(form: Form, paths: &[PathBuf]) -> Result<usize, String> {
     }
 }
 
+/// The system pasteboard of a Mac: the files as file URLs (Finder copies them on Paste, and mail and chat programs attach them), the picture as
+/// PNG, and text.
+#[cfg(target_os = "macos")]
+mod pasteboard {
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSData, NSString, NSURL};
+    use std::path::PathBuf;
+
+    /// Puts these on the pasteboard in place of what is there: file URLs for the files, then a PNG and a text on the same item if given.
+    pub fn write(files: &[PathBuf], png: Option<&[u8]>, text: Option<&str>) -> Result<(), String> {
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        if !files.is_empty() {
+            let urls: Vec<_> = files.iter().map(|p| ProtocolObject::<dyn NSPasteboardWriting>::from_retained(NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy())))).collect();
+            if !pb.writeObjects(&NSArray::from_retained_slice(&urls)) {
+                return Err("The clipboard did not take the files.".into());
+            }
+        }
+        if let Some(bytes) = png {
+            if !unsafe { pb.setData_forType(Some(&NSData::with_bytes(bytes)), NSPasteboardTypePNG) } {
+                return Err("The clipboard did not take the picture.".into());
+            }
+        }
+        if let Some(text) = text {
+            if !unsafe { pb.setString_forType(&NSString::from_str(text), NSPasteboardTypeString) } {
+                return Err("The clipboard did not take the text.".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use objc2_app_kit::NSPasteboardTypeFileURL;
+
+        /// Uses the real clipboard of the machine, so it only runs when asked for: `cargo test -p pixie-app --lib pasteboard -- --ignored`.
+        #[test]
+        #[ignore = "replaces what is on the clipboard"]
+        fn the_files_and_the_picture_are_on_the_pasteboard_together() {
+            write(&[PathBuf::from("/tmp/pixie-clipboard-test.jpg")], Some(&[137, 80, 78, 71]), None).unwrap();
+            let types: Vec<String> = NSPasteboard::generalPasteboard().types().map(|t| t.iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+            assert!(types.contains(&unsafe { NSPasteboardTypeFileURL }.to_string()), "{types:?}");
+            assert!(types.contains(&unsafe { NSPasteboardTypePNG }.to_string()), "{types:?}");
+            write(&[], None, Some("one
+two")).unwrap();
+            let text = unsafe { NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString) }.map(|s| s.to_string());
+            assert_eq!(text.as_deref(), Some("one
+two"));
+        }
+    }
+}
+
+/// The picture of a file as PNG bytes, upright.
+#[cfg(target_os = "macos")]
+fn png_of(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let img = pixie_image::decode::decode_oriented(path).map_err(|e| format!("The picture could not be read: {e}"))?;
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// Copies like the Windows version: `Photo` is the files and, for one photo that can be read, its picture too.
+#[cfg(target_os = "macos")]
+pub fn copy(form: Form, paths: &[PathBuf]) -> Result<usize, String> {
+    match form {
+        Form::Photo => {
+            // (a picture that cannot be read is still copied as a file)
+            let png = if let [path] = paths { png_of(path).ok() } else { None };
+            pasteboard::write(paths, png.as_deref(), None)?;
+        }
+        Form::Files => pasteboard::write(paths, None, None)?,
+        Form::Paths => pasteboard::write(&[], None, Some(&paths_text(paths, false)))?,
+        Form::Image => {
+            let [path] = paths else { return Err("Only one picture can be copied as an image at a time.".into()) };
+            pasteboard::write(&[], Some(&png_of(path)?), None)?;
+        }
+    }
+    Ok(paths.len())
+}
+
 /// Not built for this system yet.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn copy(_form: Form, _paths: &[PathBuf]) -> Result<usize, String> {
     Err("Copying to the clipboard is not available on this system yet.".into())
 }

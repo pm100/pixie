@@ -63,16 +63,14 @@ export function registerAppCommands(ctx: CommandContext): () => void {
     registerCommand({ id: 'help.ask', label: 'Ask Pixie', shortcut: 'F1', where: [{ menu: 'Help', group: 1 }], run: ctx.toggleHelp }),
     registerCommand({ id: 'help.about', label: 'About Pixie and licences', where: [{ menu: 'Help', group: 2 }], run: ctx.showAbout }),
   ];
-  // Copy: the system's own copies text; this one also copies photos. A Mac keeps the system's until its clipboard code is written.
-  if (!ctx.mac) {
-    offs.push(registerCommand({
-      id: 'edit.copy', label: 'Copy', shortcut: 'CmdOrCtrl+C', where: [{ menu: 'Edit', group: 1 }],
-      enabled: () => ctx.inTextField() || ctx.copyIds().length > 0,
-      run: () => { if (ctx.inTextField()) ctx.editText('copy'); else ctx.copyToClipboard('photo'); },
-    }));
-    offs.push(registerCommand({ id: 'edit.copyImage', label: 'Copy image', where: [{ menu: 'Edit', group: 1 }], enabled: ctx.copyImageOk, run: () => ctx.copyToClipboard('image') }));
-    offs.push(registerCommand({ id: 'edit.copyPath', label: 'Copy path', where: [{ menu: 'Edit', group: 1 }], enabled: () => ctx.copyIds().length > 0, run: () => ctx.copyToClipboard('paths') }));
-  }
+  // Copy: the system's own copies text; this one does too (in a text box) and also copies photos.
+  offs.push(registerCommand({
+    id: 'edit.copy', label: 'Copy', shortcut: 'CmdOrCtrl+C', where: [{ menu: 'Edit', group: 1 }],
+    enabled: () => ctx.inTextField() || ctx.copyIds().length > 0,
+    run: () => { if (ctx.inTextField()) ctx.editText('copy'); else ctx.copyToClipboard('photo'); },
+  }));
+  offs.push(registerCommand({ id: 'edit.copyImage', label: 'Copy image', where: [{ menu: 'Edit', group: 1 }], enabled: ctx.copyImageOk, run: () => ctx.copyToClipboard('image') }));
+  offs.push(registerCommand({ id: 'edit.copyPath', label: 'Copy path', where: [{ menu: 'Edit', group: 1 }], enabled: () => ctx.copyIds().length > 0, run: () => ctx.copyToClipboard('paths') }));
   // On a Mac, Quit is in the app menu.
   if (!ctx.mac) offs.push(registerCommand({ id: 'file.exit', label: 'Exit', where: [{ menu: 'File', group: 4 }], run: ctx.exit }));
   return () => offs.forEach((off) => off());

@@ -6,10 +6,9 @@ export type SpecItem =
   | { kind: 'predefined'; item: 'Cut' | 'Copy' | 'Paste' };
 export interface SpecMenu { text: string; items: SpecItem[] }
 
-/** The system's own text editing items. Copy is left out where the app has its own (it copies photos too); a Mac keeps the system's until then. */
-const editBasics = (mac: boolean): SpecItem[] => [
+/** The system's own text editing items. Copy is not one of them: the app has its own, which copies photos too (and the text in a text box). */
+const EDIT_BASICS: SpecItem[] = [
   { kind: 'predefined', item: 'Cut' },
-  ...(mac ? [{ kind: 'predefined', item: 'Copy' } as SpecItem] : []),
   { kind: 'predefined', item: 'Paste' },
 ];
 
@@ -23,14 +22,14 @@ export function groupItems(groups: ItemModel[][]): SpecItem[] {
   return items;
 }
 
-/** The menu model as plain data for the native menu. Edit always starts with the system's Cut and Paste (and Copy on a Mac), so text boxes keep their own behaviour. Windows menus get a mnemonic (Alt+F). */
+/** The menu model as plain data for the native menu. Edit always starts with the system's Cut and Paste, so text boxes keep their own behaviour. Windows menus get a mnemonic (Alt+F). */
 export function toSpec(model: MenuModel[], mac: boolean): SpecMenu[] {
   const byName = new Map(model.map((m) => [m.menu, m]));
   const out: SpecMenu[] = [];
   for (const name of MENU_ORDER) {
     const m = byName.get(name);
     if (!m && name !== 'Edit') continue;
-    const basics: SpecItem[] = name === 'Edit' ? editBasics(mac) : [];
+    const basics: SpecItem[] = name === 'Edit' ? [...EDIT_BASICS] : [];
     const rest = groupItems(m?.groups ?? []);
     const items = basics.length > 0 && rest.length > 0 ? [...basics, { kind: 'separator' } as SpecItem, ...rest] : [...basics, ...rest];
     out.push({ text: mac ? name : `&${name}`, items });

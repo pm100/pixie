@@ -1308,7 +1308,6 @@
     await hiddenChanged();
   }
   const photoCommandContext: PhotoCommandContext = {
-    canCopy: !mac, // (a Mac cannot put photos on the clipboard yet)
     copy: (ids, form) => { copyToClipboard(ids, form).catch((e) => (message = String(e))); },
     open: openItem,
     setPicked: (ids, on) => void setPickedIds(ids, on),
