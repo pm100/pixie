@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { facesFor, makePrivate, photoShare, placeFor, releasePrivate, showInFolder, tagsFor, tagUsage, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
+  import { facesFor, hiddenAmong, hidePhotos, makePrivate, photoShare, placeFor, releasePrivate, showInFolder, tagsFor, tagUsage, unhidePhotos, untagPhotos, type Photo, type PhotoTag, type Place, type TagUse } from './api';
   import { personLabel, type FaceInfo } from './people';
   import { faceUrl } from './url';
   import { tagLabel } from './tagNav';
@@ -12,12 +12,14 @@
   import LocationMap from './LocationMap.svelte';
   import PhotoActions from './PhotoActions.svelte';
 
-  let { photo, ontagschange, onopen, chosen, master = null, onsharechange = () => {} }: {
+  let { photo, ontagschange, onopen, chosen, master = null, onsharechange = () => {}, onhiddenchange = () => {} }: {
     photo: Photo | null;
     /** The sync folder, or null while there is none: then nothing about sharing is shown. */
     master?: string | null;
     /** The photo was made private or taken out of private: the tree's counts and the listing need reading again. */
     onsharechange?: () => void;
+    /** The photo was hidden or shown again: the tree's counts and the listing need reading again. */
+    onhiddenchange?: () => void;
     /** The actions chosen for the action bars (Settings, Browsing). */
     chosen: string[];
     /** Open a tool in its tab, working on this photo. */
@@ -81,6 +83,23 @@
     onsharechange();
   }
 
+  // Whether the photo is hidden (it can only be selected while hidden photos are shown). Re-read when the selection changes.
+  let isHidden = $state(false);
+  const hiddenLatest = createLatest();
+  $effect(() => {
+    const id = photoId;
+    const token = hiddenLatest.next();
+    isHidden = false;
+    if (id === null) return;
+    hiddenAmong([id]).then((h) => { if (hiddenLatest.isCurrent(token)) isHidden = h.length > 0; }).catch(() => {});
+  });
+  async function setHidden(on: boolean) {
+    if (photoId === null) return;
+    isHidden = on;
+    try { await (on ? hidePhotos([photoId]) : unhidePhotos([photoId])); } catch { isHidden = !on; return; }
+    onhiddenchange();
+  }
+
   // The people in the photo. Re-read when the selection changes; a slow answer for an old selection is dropped.
   let faces = $state<FaceInfo[]>([]);
   const facesLatest = createLatest();
@@ -119,6 +138,11 @@
       <dt>Tags</dt><dd class="chips">
         {#each onPhoto as t (t)}<span class="chip utag">{t}<button class="x" aria-label="Take {t} off this photo" onclick={() => removeTag(t)}>×</button></span>{/each}
         <TagAs ids={photoId === null ? [] : [photoId]} onchange={tagsChanged} />
+      </dd>
+      <dt>Hidden</dt><dd>
+        <label class="opt" title={isHidden ? 'Show this photo in Browse again' : 'Hide this photo from Browse, People, Trips and the tools. The file is never touched; Show hidden brings it back'}>
+          <input type="checkbox" checked={isHidden} aria-label="Hidden" onchange={(e) => setHidden(e.currentTarget.checked)} /> Hidden
+        </label>
       </dd>
       {#if master !== null}
         <dt>Sync</dt><dd>

@@ -3,6 +3,7 @@ use pixie_core::{SHARE_COPIED, SHARE_NONE, SHARE_PRIVATE, DateRules, DateSummary
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Ids as the JSON list `json_each` reads, so any number of them can be passed to one query.
@@ -250,6 +251,23 @@ const MIGRATIONS: &[&str] = &[
         avg      BLOB NOT NULL,
         tiny     BLOB NOT NULL
      );",
+    // V30: `hidden` marks an item the user hid: Browse and everything built on it leave it out (the file is never touched) unless
+    // "Show hidden" is on. The listing indexes include it, after `dup`, so counting and paging stay answered from the index.
+    "ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+     DROP INDEX idx_photos_newest;
+     DROP INDEX idx_photos_oldest;
+     DROP INDEX idx_photos_folder_newest;
+     DROP INDEX idx_photos_folder_oldest;
+     DROP INDEX idx_photos_kind_newest;
+     DROP INDEX idx_photos_kind_oldest;
+     CREATE INDEX idx_photos_newest ON photos(missing, dup, hidden, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_oldest ON photos(missing, dup, hidden, (taken_at IS NULL), taken_at ASC, id ASC);
+     CREATE INDEX idx_photos_folder_newest ON photos(folder_id, missing, dup, hidden, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_folder_oldest ON photos(folder_id, missing, dup, hidden, (taken_at IS NULL), taken_at ASC, id ASC);
+     CREATE INDEX idx_photos_kind_newest ON photos(kind, missing, dup, hidden, (taken_at IS NULL), taken_at DESC, id DESC);
+     CREATE INDEX idx_photos_kind_oldest ON photos(kind, missing, dup, hidden, (taken_at IS NULL), taken_at ASC, id ASC);",
+    // V31: the face the user chose to show a person by (NULL: Pixie picks, see `people::cover_face`).
+    "ALTER TABLE people ADD COLUMN cover_face INTEGER;",
 ];
 
 /// An item the copier has yet to copy.
@@ -325,7 +343,7 @@ fn share_cond(kind: &str) -> Option<String> {
 impl FacetBase {
     /// `q` without its folder / kind / date window as asked, with the chosen tag / person as asked. (The view's own
     /// tag and person hits are never used here: they are passed in.)
-    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>, missing: Option<&str>, share: Option<&str>) -> FacetBase {
+    fn new(q: &PhotoQuery, no_folder: bool, no_kind: bool, no_dates: bool, tag: Option<&str>, person: Option<i64>, camera: Option<&str>, utag: Option<&UserTagFilter>, missing: Option<&str>, share: Option<&str>, show_hidden: bool) -> FacetBase {
         let mut q = *q;
         q.search = false;
         if no_folder {
@@ -338,7 +356,7 @@ impl FacetBase {
             q.since = None;
             q.until = None;
         }
-        let filter = Filter::of(&q);
+        let filter = Filter::of(&q).with_hidden(show_hidden);
         let mut sql = format!("SELECT id FROM photos WHERE missing = 0{}", filter.sql());
         if tag.is_some() {
             sql.push_str(" AND id IN (SELECT photo_id FROM photo_tags WHERE tag = :tag)");
@@ -396,6 +414,8 @@ pub struct WorkItem {
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// Whether Browse lists the items the user hid too ("Show hidden"). Shared by every copy of the `Db`.
+    show_hidden: Arc<AtomicBool>,
 }
 
 pub(crate) const PHOTO_COLS: &str =
@@ -445,11 +465,14 @@ struct Filter {
     /// Only items with no date (`since` was `UNDATED`).
     undated: bool,
     search: bool,
+    /// Include the items the user hid.
+    show_hidden: bool,
 }
 
 impl Filter {
     fn of(q: &PhotoQuery) -> Filter {
         Filter {
+            show_hidden: false,
             folder: q.folder_id,
             kind: q.kind.map(|k| if k == MediaKind::Video { 1 } else { 0 }),
             bounds: q.bounds.map(|b| b.normalized()),
@@ -460,9 +483,18 @@ impl Filter {
             search: q.search,
         }
     }
+    /// The same, listing the hidden items too when `on`.
+    fn with_hidden(mut self, on: bool) -> Filter {
+        self.show_hidden = on;
+        self
+    }
     fn sql(&self) -> String {
         // Extra copies of a duplicate are not listed: one item stands for each set of identical files.
         let mut s = String::from(" AND dup = 0");
+        // Nor are the items the user hid, unless asked for.
+        if !self.show_hidden {
+            s.push_str(" AND hidden = 0");
+        }
         if self.folder.is_some() {
             s.push_str(" AND folder_id = :folder");
         }
@@ -673,7 +705,7 @@ impl Db {
              CREATE TEMP TABLE IF NOT EXISTS filter_state (name TEXT PRIMARY KEY, value TEXT);",
         )
         .map_err(db_err)?;
-        let db = Db { conn: Arc::new(Mutex::new(conn)) };
+        let db = Db { conn: Arc::new(Mutex::new(conn)), show_hidden: Arc::new(AtomicBool::new(false)) };
         // Dates kept before the person's rules (or under older rules) are brought into line with them, from the dates remembered.
         db.apply_date_rules(&db.date_rules())?;
         // Picks and tags left on copies that are hidden as duplicates move to the copy that is shown, before the window reads them.
@@ -1015,6 +1047,7 @@ impl Db {
     /// section is counted with every filter except its own. Short statements, so the database is free in between.
     pub fn facet_counts(&self, q: &PhotoQuery, ask: &FacetAsk) -> Result<FacetCounts> {
         let mut out = FacetCounts::default();
+        let hid = self.shows_hidden();
         sync_camera_names(&self.conn())?;
         let pairs = |sql: String, base: &FacetBase| -> Result<Vec<(i64, i64)>> {
             let c = self.conn();
@@ -1024,7 +1057,7 @@ impl Db {
         };
 
         // Media types: everything but the media type.
-        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
+        let base = FacetBase::new(q, false, true, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share, hid);
         for (kind, n) in pairs(format!("SELECT kind, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY kind", base.sql), &base)? {
             if kind == 1 {
                 out.videos = n;
@@ -1033,16 +1066,16 @@ impl Db {
             }
         }
         // Folders: everything but the folder.
-        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
+        let base = FacetBase::new(q, true, false, false, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share, hid);
         out.folders = pairs(format!("SELECT folder_id, COUNT(*) FROM photos WHERE id IN ({}) GROUP BY folder_id", base.sql), &base)?;
         // People: everything but the person.
-        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag, ask.missing, ask.share);
+        let base = FacetBase::new(q, false, false, false, ask.tag, None, ask.camera, ask.utag, ask.missing, ask.share, hid);
         out.people = pairs(
             format!("SELECT person_id, COUNT(DISTINCT photo_id) FROM faces WHERE person_id IS NOT NULL AND photo_id IN ({}) GROUP BY person_id", base.sql),
             &base,
         )?;
         // Auto tags: everything but the tag; then the different photos in each group of tags.
-        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
+        let base = FacetBase::new(q, false, false, false, None, ask.person, ask.camera, ask.utag, ask.missing, ask.share, hid);
         {
             let c = self.conn();
             let mut s = c.prepare(&format!("SELECT tag, COUNT(DISTINCT photo_id) FROM photo_tags WHERE photo_id IN ({}) GROUP BY tag", base.sql)).map_err(db_err)?;
@@ -1068,7 +1101,7 @@ impl Db {
         }
         // Trips: everything but the date window when that came from a trip.
         if !ask.trip_windows.is_empty() {
-            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
+            let base = FacetBase::new(q, false, false, ask.trip_dates, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share, hid);
             let mut times: Vec<i64> = {
                 let c = self.conn();
                 let mut s = c.prepare(&format!("SELECT taken_at FROM photos WHERE taken_at IS NOT NULL AND id IN ({})", base.sql)).map_err(db_err)?;
@@ -1084,7 +1117,7 @@ impl Db {
         }
         // Last 30 days is a date choice like the others: everything but the date window.
         if let Some(since) = ask.recent_since {
-            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share);
+            let base = FacetBase::new(q, false, false, true, ask.tag, ask.person, ask.camera, ask.utag, ask.missing, ask.share, hid);
             let mut params = base.params();
             params.push((":recent_since", &since));
             let c = self.conn();
@@ -1094,7 +1127,7 @@ impl Db {
         }
         // Cameras: everything but the camera, grouped by the tidied name. Every camera of the library is listed, with 0 when the
         // filters leave it nothing (the tree dims such an entry rather than dropping it).
-        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag, ask.missing, ask.share);
+        let base = FacetBase::new(q, false, false, false, ask.tag, ask.person, None, ask.utag, ask.missing, ask.share, hid);
         {
             let c = self.conn();
             let mut s = c
@@ -1108,7 +1141,7 @@ impl Db {
         // Missing data, no location: everything but that choice, and not the map area (an area holds only located items).
         let mut whole = *q;
         whole.bounds = None;
-        let base = FacetBase::new(&whole, false, false, false, ask.tag, ask.person, ask.camera, ask.utag, None, ask.share);
+        let base = FacetBase::new(&whole, false, false, false, ask.tag, ask.person, ask.camera, ask.utag, None, ask.share, hid);
         out.no_location = self
             .conn()
             .query_row(&format!("SELECT COUNT(*) FROM photos WHERE (gps_lat IS NULL OR gps_lon IS NULL) AND id IN ({})", base.sql), base.params().as_slice(), |r| r.get(0))
@@ -1575,7 +1608,7 @@ impl Db {
 
     pub fn list_photos_in(&self, q: &PhotoQuery, offset: i64, limit: i64) -> Result<Vec<Photo>> {
         let c = self.conn();
-        let filter = Filter::of(q);
+        let filter = Filter::of(q).with_hidden(self.shows_hidden());
         let mut s = c.prepare(&list_sql(q, &filter)).map_err(db_err)?;
         let mut params = filter.params();
         params.push((":limit", &limit as &dyn rusqlite::ToSql));
@@ -1591,7 +1624,7 @@ impl Db {
     /// The ids of every photo `q` matches, in the order Browse lists them (for picking all that are shown).
     pub fn photo_ids_in(&self, q: &PhotoQuery) -> Result<Vec<PhotoId>> {
         let c = self.conn();
-        let filter = Filter::of(q);
+        let filter = Filter::of(q).with_hidden(self.shows_hidden());
         let mut s = c.prepare(&format!("SELECT id FROM photos WHERE missing = 0{} ORDER BY {}", filter.sql(), order_sql(q.order))).map_err(db_err)?;
         let rows = s.query_map(filter.params().as_slice(), |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
@@ -1602,7 +1635,7 @@ impl Db {
     }
 
     pub fn count_photos_in(&self, q: &PhotoQuery) -> Result<i64> {
-        let filter = Filter::of(q);
+        let filter = Filter::of(q).with_hidden(self.shows_hidden());
         let sql = format!("SELECT COUNT(*) FROM photos WHERE missing = 0{}", filter.sql());
         self.conn()
             .query_row(&sql, filter.params().as_slice(), |r| r.get(0))
@@ -1740,7 +1773,7 @@ impl Db {
     /// Where this photo sits in the listing (the position the grid shows it at), or `None` when the listing does not hold it.
     pub fn position_of(&self, q: &PhotoQuery, id: PhotoId) -> Result<Option<i64>> {
         let c = self.conn();
-        let filter = Filter::of(q);
+        let filter = Filter::of(q).with_hidden(self.shows_hidden());
         let sql = format!("SELECT id FROM photos WHERE missing = 0{} ORDER BY {}", filter.sql(), order_sql(q.order));
         let mut s = c.prepare(&sql).map_err(db_err)?;
         let mut rows = s.query(filter.params().as_slice()).map_err(db_err)?;
@@ -2094,6 +2127,56 @@ impl Db {
         Ok(n)
     }
 
+    /// Whether Browse lists the hidden items too ("Show hidden").
+    pub fn shows_hidden(&self) -> bool {
+        self.show_hidden.load(Ordering::Relaxed)
+    }
+
+    /// Turn "Show hidden" on or off.
+    pub fn set_show_hidden(&self, on: bool) {
+        self.show_hidden.store(on, Ordering::Relaxed);
+    }
+
+    /// Hide the items among `ids`: Browse and everything built on it leave them out until they are shown again. The files are never
+    /// touched. A hidden item also leaves Quick pick, so no tool acts on it by accident. Returns how many were newly hidden.
+    pub fn hide(&self, ids: &[PhotoId]) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute("UPDATE photos SET hidden = 1 WHERE id = ?1 AND hidden = 0", params![id]).map_err(db_err)?;
+            tx.execute("DELETE FROM picks WHERE photo_id = ?1", params![id]).map_err(db_err)?;
+        }
+        crate::utags::refresh_utag(&tx)?;
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// Show the hidden items among `ids` again. Returns how many were hidden.
+    pub fn unhide(&self, ids: &[PhotoId]) -> Result<usize> {
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute("UPDATE photos SET hidden = 0 WHERE id = ?1 AND hidden = 1", params![id]).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(n)
+    }
+
+    /// How many items are hidden (not counting files that went missing).
+    pub fn hidden_count(&self) -> Result<i64> {
+        self.conn().query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND hidden = 1", [], |r| r.get(0)).map_err(db_err)
+    }
+
+    /// Which of these items are hidden.
+    pub fn hidden_among(&self, ids: &[PhotoId]) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let mut s = c.prepare("SELECT id FROM photos WHERE hidden = 1 AND id IN (SELECT value FROM json_each(?1)) ORDER BY id").map_err(db_err)?;
+        let rows = s.query_map(params![id_list(ids)], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
     /// The items still to be copied into the sync folder, oldest first (the copier's work list).
     pub fn pending_items(&self) -> Result<Vec<PendingItem>> {
         let c = self.conn();
@@ -2152,7 +2235,7 @@ impl Db {
     pub fn location_counts(&self) -> Result<(i64, i64, i64)> {
         self.conn()
             .query_row(
-                "SELECT COALESCE(SUM(gps_lat IS NULL OR gps_lon IS NULL), 0), COALESCE(SUM(taken_at IS NULL), 0), COUNT(*) FROM photos WHERE missing = 0 AND dup = 0",
+                "SELECT COALESCE(SUM(gps_lat IS NULL OR gps_lon IS NULL), 0), COALESCE(SUM(taken_at IS NULL), 0), COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND hidden = 0",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -2269,19 +2352,21 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(
-                "SELECT p.id, p.name, COUNT(DISTINCT f.photo_id) AS cnt,
-                        (SELECT f2.id FROM faces f2 JOIN photos h2 ON h2.id = f2.photo_id
-                          WHERE f2.person_id = p.id AND h2.missing = 0 AND h2.dup = 0
-                          ORDER BY f2.score * f2.w * f2.h DESC, f2.id LIMIT 1)
-                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0
+                "SELECT p.id, p.name, COUNT(DISTINCT f.photo_id) AS cnt
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND h.missing = 0 AND h.dup = 0 AND h.hidden = 0
                   WHERE p.hidden = 0
                   GROUP BY p.id
                  HAVING p.name IS NOT NULL
                   ORDER BY cnt DESC, p.id",
             )
             .map_err(db_err)?;
-        let rows = s.query_map([], |r| Ok(PersonInfo { id: r.get(0)?, name: r.get(1)?, count: r.get(2)?, face_id: r.get(3)? })).map_err(db_err)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
+        let rows = s.query_map([], |r| Ok(PersonInfo { id: r.get(0)?, name: r.get(1)?, count: r.get(2)?, face_id: None })).map_err(db_err)?;
+        let mut people = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)?;
+        // Each person is shown by the face the People tab leads their card with, so the two places never disagree.
+        for p in &mut people {
+            p.face_id = crate::people::cover_face(&c, p.id)?;
+        }
+        Ok(people)
     }
 
     /// The faces in one photo.
@@ -2407,7 +2492,7 @@ impl Db {
         c.query_row(
             &format!(
                 "SELECT COUNT(DISTINCT t.photo_id) FROM photo_tags t JOIN photos p ON p.id = t.photo_id
-                  WHERE p.missing = 0 AND p.dup = 0 AND t.tag IN ({marks})"
+                  WHERE p.missing = 0 AND p.dup = 0 AND p.hidden = 0 AND t.tag IN ({marks})"
             ),
             rusqlite::params_from_iter(tags.iter()),
             |r| r.get(0),
@@ -2421,7 +2506,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT t.tag, COUNT(*) AS n FROM photo_tags t JOIN photos p ON p.id = t.photo_id
-                  WHERE p.missing = 0 AND p.dup = 0 GROUP BY t.tag ORDER BY n DESC, t.tag",
+                  WHERE p.missing = 0 AND p.dup = 0 AND p.hidden = 0 GROUP BY t.tag ORDER BY n DESC, t.tag",
             )
             .map_err(db_err)?;
         let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
@@ -2460,7 +2545,7 @@ impl Db {
     pub fn trip_items(&self, now: i64) -> Result<Vec<DayItem>> {
         let c = self.conn();
         let mut s = c
-            .prepare("SELECT taken_at, gps_lat, gps_lon, kind FROM photos WHERE missing = 0 AND dup = 0 AND taken_at >= ?1 AND taken_at < ?2")
+            .prepare("SELECT taken_at, gps_lat, gps_lon, kind FROM photos WHERE missing = 0 AND dup = 0 AND hidden = 0 AND taken_at >= ?1 AND taken_at < ?2")
             .map_err(db_err)?;
         let rows = s
             .query_map(params![EARLIEST_REAL, now + 86_400], |r| {
@@ -2501,7 +2586,7 @@ impl Db {
             let mut s = c
                 .prepare(
                     "SELECT taken_at, gps_lat, gps_lon FROM photos
-                      WHERE missing = 0 AND dup = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+                      WHERE missing = 0 AND dup = 0 AND hidden = 0 AND taken_at >= ?1 AND taken_at < ?2 AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
                       ORDER BY taken_at, id",
                 )
                 .map_err(db_err)?;
@@ -2541,7 +2626,7 @@ impl Db {
             SortOrder::Newest => "DESC",
             SortOrder::Oldest => "ASC",
         };
-        let filter = Filter::of(q);
+        let filter = Filter::of(q).with_hidden(self.shows_hidden());
         let sql = format!(
             "SELECT CASE WHEN taken_at IS NULL THEN NULL ELSE date(taken_at, 'unixepoch') END AS day, COUNT(*)
              FROM photos WHERE missing = 0{} GROUP BY day ORDER BY day IS NULL, day {dir}",
@@ -3546,6 +3631,32 @@ mod tests {
         let pts = db.list_geo_points_in(&q).unwrap();
         assert_eq!(pts.iter().map(|p| p.id).collect::<Vec<_>>(), vec![a]);
         assert_eq!(db.list_geo_points_in(&PhotoQuery::default()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn hidden_items_leave_the_listing_until_show_hidden_is_on() {
+        let db = Db::open_in_memory().unwrap();
+        let f = db.add_folder("/p").unwrap();
+        let a = db.upsert_photo(f, "/p/a.jpg", 1, 1, &meta(None)).unwrap();
+        let b = db.upsert_photo(f, "/p/b.jpg", 1, 1, &meta(None)).unwrap();
+        db.set_picks(&[a, b]).unwrap();
+        assert_eq!(db.hide(&[a, a]).unwrap(), 1, "hiding twice hides once");
+        let q = PhotoQuery::default();
+        assert_eq!(db.count_photos_in(&q).unwrap(), 1);
+        assert_eq!(db.list_photos_in(&q, 0, 10).unwrap()[0].id, b);
+        assert_eq!(db.hidden_count().unwrap(), 1);
+        assert_eq!(db.hidden_among(&[a, b]).unwrap(), vec![a]);
+        assert_eq!(db.location_counts().unwrap().2, 1, "the tree counts leave it out too");
+        assert_eq!(db.pick_ids().unwrap(), vec![b], "a hidden item leaves Quick pick");
+
+        db.set_show_hidden(true);
+        assert_eq!(db.count_photos_in(&q).unwrap(), 2);
+        assert_eq!(db.list_photos_in(&q, 0, 10).unwrap().len(), 2);
+        assert_eq!(db.day_groups(&q).unwrap().iter().map(|g| g.count).sum::<i64>(), 2);
+
+        db.set_show_hidden(false);
+        assert_eq!(db.unhide(&[a, b]).unwrap(), 1, "only the hidden one is shown again");
+        assert_eq!(db.count_photos_in(&q).unwrap(), 2);
     }
 
     #[test]

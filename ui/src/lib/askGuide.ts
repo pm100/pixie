@@ -22,7 +22,9 @@ BROWSE
 - Click a photo to choose it (its details show on the right). Double-click or Enter opens it in the viewer.
 - Picking marks photos to work on together (email, print, tag, collage). To pick a photo, move the mouse over its top-left corner: a small circle appears; click it. A picked photo shows a blue star in that corner; click the star to unpick it. Ctrl-click (Cmd-click on a Mac) anywhere on a photo also picks or unpicks it; Shift-click picks everything from the photo you chose last. Pick all picks every photo that is shown.
 - The Picked button (a star and the count) shows only the picked photos; press it again to show everything. Clear takes everything off Picked (the photos stay in the library). Picked photos stay picked until cleared, even after Pixie is closed. Picking is not the same as choosing: only one photo is chosen at a time (outlined, details on the right), while any number can be picked.
-- Details (right pane) show the date, place, the photo's tags and people, Auto tags, a map, a Private box, and action buttons.
+- Details (right pane) show the date, place, the photo's tags and people, Auto tags, a map, a Hidden box, a Private box, and action buttons.
+- Group by date (above the grid, remembered) puts a heading for each day; turn it off to see one continuous grid.
+- Hide keeps photos out of Browse, People, Trips and the tools without touching the files: tick Hidden in a photo's details, or use Hide on the Picked section. Show hidden (above the grid) lists them again, marked, and Unhide (Picked section) or the Hidden box brings them back. It is off each time Pixie starts.
 
 WORKING ON SEVERAL PHOTOS
 - Send, Create and Organize work on a set of photos, chosen at the top in Working on: Picked, Current (the photo chosen in Browse), or one of your tags. Clean up and Import/Export work on the whole library and have no Working on.
@@ -63,6 +65,7 @@ IMPORT/EXPORT AND THE SYNC FOLDER
 - In Browse, Sync, New lists photos not yet copied and Private lists photos marked private. A photo marked Private (the box in its details) is never copied into the sync folder.
 
 PEOPLE
+- To choose the icon a named person is shown by (in the People tab and the Browse list): open their card in People, tick one face, and press Use as icon. Use the automatic icon on their page goes back to the one Pixie picked.
 - Face finding works on the user's computer; no picture or face is sent anywhere. Pixie looks for faces in each photo and groups similar faces into people. The user names each group in the People tab, and named people appear in Browse under People. It works through the library in the background (the Processing pill shows how far it has got).
 - The switch is the People checkbox in Settings, Picture analysis (beside the Auto tags checkbox). There is no setting called "Find faces". Turning People off stops the work, hides the People tab and keeps the faces already found; turning it on again carries on. Always call it the People checkbox, and say it is in Settings, Picture analysis.
 

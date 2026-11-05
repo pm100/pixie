@@ -2,7 +2,7 @@
   import { tick, untrack } from 'svelte';
   import {
     assignGroup, facesOfPerson, faceOverview, listFacePeople, moveFaces, newPersonFromFaces, rejectFaces, renamePerson,
-    hidePerson, ignoredFaces, ignoreFaces, unignoreFaces, suggestForFaces, suggestForGroup, unhidePerson, unsortedFaces,
+    hidePerson, ignoredFaces, ignoreFaces, unignoreFaces, suggestForFaces, suggestForGroup, unhidePerson, unsortedFaces, setPersonCover,
   } from './api';
   import { createLatest } from './latest';
   import {
@@ -205,6 +205,8 @@
   /** Who the faces on screen look like (for the top of "This is…"): the selection, else the whole group. */
   const candidatesFor = () => (picked.size > 0 ? suggestForFaces(ids()).then(toCandidates) : current ? suggestForGroup(current.id).then(toCandidates) : Promise.resolve([]));
   const hide = (p: FacePerson) => act(() => hidePerson(p.id));
+  /** Show this person by the one face selected (named people only), or, with no face, let Pixie pick again. */
+  const useAsPicture = (p: FacePerson, face: number | null) => act(() => setPersonCover(p.id, face));
   const unhide = (p: FacePerson) => act(() => unhidePerson(p.id));
 
   // ---- faces
@@ -282,6 +284,7 @@
       <div class="detail-head">
         {#if current.name !== null}<strong class="title">{current.name}</strong>{/if}
         <span class="line">{faceCardLine(current)}</span>
+        {#if current.name !== null && current.custom_cover}<button onclick={() => useAsPicture(current, null)} title="Go back to the icon Pixie picked for this person">Use the automatic icon</button>{/if}
         {#if !current.hidden && current.name !== null}<button onclick={() => hide(current)} title="Leave this out of the lists">Ignore</button>{/if}
       </div>
       <div class="listbar">
@@ -316,6 +319,7 @@
           {#if inIgnored}
             <button onclick={unignoreSelected} title="Stop ignoring the selected faces, so they are offered for naming again">Unignore</button>
           {:else}
+            {#if current && current.name !== null && picked.size === 1}<button onclick={() => useAsPicture(current, ids()[0])} title="Use the selected face as this person's icon, in the People tab and in the Browse list">Use as icon</button>{/if}
             {#if selected !== null}<button onclick={() => notThem(ids())} title="Say the selected faces are not this person, and take them out of the group">Move out of group</button>{/if}
           {/if}
           <button onclick={() => (picked = new Set())} title="Clear the selection">Clear</button>

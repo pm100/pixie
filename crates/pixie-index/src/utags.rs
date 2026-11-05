@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 /// Does any photo that Browse lists (not missing, not a hidden duplicate) have this tag?
 fn tag_is_listed(c: &Connection, name: &str) -> Result<bool> {
     c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM user_tags t JOIN photos p ON p.id = t.photo_id WHERE t.tag = ?1 AND p.missing = 0 AND p.dup = 0)",
+        "SELECT EXISTS(SELECT 1 FROM user_tags t JOIN photos p ON p.id = t.photo_id WHERE t.tag = ?1 AND p.missing = 0 AND p.dup = 0 AND p.hidden = 0)",
         params![name],
         |r| r.get(0),
     )
@@ -119,7 +119,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT t.tag, COUNT(*) FROM user_tags t JOIN photos p ON p.id = t.photo_id
-                 WHERE p.missing = 0 AND p.dup = 0 GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE",
+                 WHERE p.missing = 0 AND p.dup = 0 AND p.hidden = 0 GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE",
             )
             .map_err(db_err)?;
         let rows = s.query_map([], |r| Ok(UserTagCount { name: r.get(0)?, count: r.get(1)? })).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
@@ -145,7 +145,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT id FROM photos WHERE missing = 0 AND dup = 0 AND id IN (SELECT photo_id FROM user_tags WHERE tag = ?1) ORDER BY {}",
+                "SELECT id FROM photos WHERE missing = 0 AND dup = 0 AND hidden = 0 AND id IN (SELECT photo_id FROM user_tags WHERE tag = ?1) ORDER BY {}",
                 order_sql(SortOrder::Newest)
             ))
             .map_err(db_err)?;
@@ -158,7 +158,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0 AND dup = 0 AND id IN (SELECT photo_id FROM user_tags WHERE tag = ?1) ORDER BY {}",
+                "SELECT {PHOTO_COLS} FROM photos WHERE missing = 0 AND dup = 0 AND hidden = 0 AND id IN (SELECT photo_id FROM user_tags WHERE tag = ?1) ORDER BY {}",
                 order_sql(SortOrder::Newest)
             ))
             .map_err(db_err)?;

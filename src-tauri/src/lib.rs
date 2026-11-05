@@ -621,6 +621,12 @@ fn hide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError>
     state.db.hide_person(id)
 }
 
+/// Show a person by one of their own faces, or (no face) let Pixie pick.
+#[tauri::command]
+fn set_person_cover(state: tauri::State<AppState>, person: i64, face: Option<i64>) -> Result<(), PixieError> {
+    state.db.set_person_cover(person, face)
+}
+
 #[tauri::command]
 fn unhide_person(state: tauri::State<AppState>, id: i64) -> Result<(), PixieError> {
     state.db.unhide_person(id)
@@ -874,6 +880,36 @@ fn set_share_filter(state: tauri::State<AppState>, kind: Option<String>) -> Resu
 #[tauri::command]
 fn make_private(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
     state.db.make_private(&ids)
+}
+
+/// Hide these items: Browse and everything built on it leave them out (the files are never touched). Returns how many.
+#[tauri::command]
+fn hide_photos(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
+    state.db.hide(&ids)
+}
+
+/// Show these hidden items again. Returns how many were hidden.
+#[tauri::command]
+fn unhide_photos(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<usize, PixieError> {
+    state.db.unhide(&ids)
+}
+
+/// Which of these items are hidden.
+#[tauri::command]
+fn hidden_among(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<Vec<i64>, PixieError> {
+    state.db.hidden_among(&ids)
+}
+
+/// How many items are hidden.
+#[tauri::command]
+fn hidden_count(state: tauri::State<AppState>) -> Result<i64, PixieError> {
+    state.db.hidden_count()
+}
+
+/// Turn "Show hidden" on or off: whether Browse lists the hidden items too.
+#[tauri::command]
+fn set_show_hidden(state: tauri::State<AppState>, on: bool) {
+    state.db.set_show_hidden(on);
 }
 
 /// Copy the items not yet synced into the sync folder, in the background ("Sync now"). Refused while a sync is already running.
@@ -2107,7 +2143,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, get_sync_subfolder, set_sync_subfolder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster, collage::collage_templates, collage::get_collage, collage::set_collage, collage::save_collage, mosaic::get_mosaic, mosaic::set_mosaic, mosaic::mosaic_index, mosaic::mosaic_draft, mosaic::mosaic_build, mosaic::mosaic_cancel, mosaic::get_mosaic_built, mosaic::mosaic_clear, mosaic::mosaic_status, mosaic::mosaic_save,
+            add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, get_sync_subfolder, set_sync_subfolder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, set_person_cover, hide_photos, unhide_photos, hidden_among, hidden_count, set_show_hidden, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster, collage::collage_templates, collage::get_collage, collage::set_collage, collage::save_collage, mosaic::get_mosaic, mosaic::set_mosaic, mosaic::mosaic_index, mosaic::mosaic_draft, mosaic::mosaic_build, mosaic::mosaic_cancel, mosaic::get_mosaic_built, mosaic::mosaic_clear, mosaic::mosaic_status, mosaic::mosaic_save,
             open_in_default_player, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])

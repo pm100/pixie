@@ -12,12 +12,22 @@ export interface Layout {
   groupTops: number[];
 }
 
-/** Lay out day groups: a heading row, then the group's photos wrapped to `cols` per row. */
-export function buildLayout(groups: DayGroup[], cols: number, cellH: number, headH: number): Layout {
+/** Lay out day groups: a heading row, then the group's photos wrapped to `cols` per row. Without headings (`headed` false) the photos
+ *  run on as one continuous grid, and a group's top is the row its first photo sits in. */
+export function buildLayout(groups: DayGroup[], cols: number, cellH: number, headH: number, headed = true): Layout {
   const per = Math.max(1, cols);
   const rows: Row[] = [];
   const groupTops: number[] = [];
   let top = 0;
+  if (!headed) {
+    const total = groups.reduce((n, g) => n + g.count, 0);
+    for (const g of groups) groupTops.push(Math.floor(g.first_index / per) * cellH);
+    for (let k = 0; k < total; k += per) {
+      rows.push({ kind: 'cells', group: 0, top, h: cellH, first: k, n: Math.min(per, total - k) });
+      top += cellH;
+    }
+    return { rows, height: top, groupTops };
+  }
   groups.forEach((g, group) => {
     groupTops.push(top);
     rows.push({ kind: 'heading', group, top, h: headH });

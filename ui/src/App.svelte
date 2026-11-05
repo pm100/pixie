@@ -6,6 +6,7 @@
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickAllMatching, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
+    hiddenCount, hidePhotos, setShowHidden, unhidePhotos,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -444,6 +445,34 @@
   let folderInfos = $state<FolderInfo[]>([]);
   // Quick pick: the photos picked with the marker on the grid (by id, kept in the library); the Send, Create and Organize tabs work on them.
   let picked = $state<ReadonlySet<number>>(new Set());
+  // Hidden photos: left out of Browse (and People, Trips, the tools) until Show hidden is on. Group by date is remembered.
+  let groupByDate = $state(loadPref<unknown>('groupByDate', true) !== false);
+  function setGroupByDate(on: boolean) { groupByDate = on; savePref('groupByDate', on); }
+  let showHidden = $state(false);
+  let hiddenTotal = $state(0);
+  async function loadHiddenTotal() {
+    try { hiddenTotal = await hiddenCount(); } catch { /* the next time */ }
+  }
+  async function setShowHiddenOn(on: boolean) {
+    try { await setShowHidden(on); } catch (e) { message = String(e); return; }
+    showHidden = on;
+    selected = null;
+    refresh().catch((e) => (message = String(e)));
+  }
+  /** Photos were hidden or shown again: the counts, Picked and the listing are read again. */
+  async function hiddenChanged() {
+    await Promise.all([loadHiddenTotal(), loadPicks()]);
+    if (activeUtag === 'picked') void utagChanged(); else void loadUserTags();
+    refresh().catch((e) => (message = String(e)));
+  }
+  async function hidePicked() {
+    try { await hidePhotos([...picked]); } catch (e) { message = String(e); }
+    await hiddenChanged();
+  }
+  async function unhidePicked() {
+    try { await unhidePhotos([...picked]); } catch (e) { message = String(e); }
+    await hiddenChanged();
+  }
   async function loadPicks() {
     try { picked = new Set(await pickIds()); } catch { /* the next time */ }
   }
@@ -1309,6 +1338,7 @@
     if (mode === 'map') loadPoints(); // the map was left on
     loadFolderInfos();
     void loadPicks();
+    void loadHiddenTotal();
     getAnalysisOptions().then((o) => { analysisOptions = parseOptions(o); welcomeOptions = { ...analysisOptions }; }).catch(() => {});
     void loadTrips();
     analysisStatus().then((s) => (analysis = s)).catch(() => {});
@@ -1398,6 +1428,12 @@
       <div class="tools">
         <span class="count">{kindWord(view.kind, total)}{areaOnly ? ' in the map area' : ''}</span>
         <button class="linkbtn" onclick={() => void pickAllShown()} disabled={!pickAll.enabled} title={pickAll.title}>Pick all</button>
+        <label class="check" title={groupByDate ? 'Show the photos as one grid, without a heading for each day' : 'Put the photos under a heading for each day'}>
+          <input type="checkbox" checked={groupByDate} onchange={(e) => setGroupByDate(e.currentTarget.checked)} /> Group by date
+        </label>
+        <label class="check" title={showHidden ? 'Leave the hidden photos out of Browse again' : hiddenTotal > 0 ? `Also list the ${plural(hiddenTotal, 'hidden item')}, marked, so they can be unhidden` : 'Also list the photos you hid, marked, so they can be unhidden (none are hidden now)'}>
+          <input type="checkbox" checked={showHidden} onchange={(e) => void setShowHiddenOn(e.currentTarget.checked)} /> Show hidden
+        </label>
         {#if activeTag !== null}
           <span class="filter">Auto tagged “{tagLabel(activeTag)}”
             <button onclick={() => setTag(null)} aria-label="Clear tag" title="Clear tag">✕</button></span>
@@ -1462,6 +1498,10 @@
             <input type="checkbox" checked={activeUtag === 'picked'} onchange={(e) => setUtag(e.currentTarget.checked ? 'picked' : null)} /> Filter
           </label>
           <button class="linkbtn" onclick={clearAllPicks} title="Take everything off Picked (the photos stay in the library)">Clear</button>
+          <button class="linkbtn" onclick={() => void hidePicked()} title="Hide the picked photos from Browse, People, Trips and the tools. The files are never touched; Show hidden brings them back">Hide</button>
+          {#if showHidden}
+            <button class="linkbtn" onclick={() => void unhidePicked()} title="Show the hidden photos among the picked ones in Browse again">Unhide</button>
+          {/if}
           <PhotoActions source="picked" ids={pickedIds} chosen={barActions} limit={barLimit} showTag onopen={openTool} ontagchange={(t) => void utagChanged(t)} />
         </div>
         {/if}
@@ -1517,7 +1557,7 @@
                 {#if total === 0 && !scanning}
                   <p class="empty small">{areaOnly ? 'No photos or videos in this part of the map.' : emptyMessage}</p>
                 {:else}
-                  <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick}
+                  <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick} grouped={groupByDate} {showHidden}
                         onopen={openItem}
                         onselect={selectItem} />
                 {/if}
@@ -1526,13 +1566,13 @@
           {:else if total === 0 && !scanning}
             <p class="empty">{emptyMessage}</p>
           {:else}
-            <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick}
+            <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick} grouped={groupByDate} {showHidden}
                   onopen={openItem}
                   onselect={selectItem} />
           {/if}
         {/snippet}
         {#snippet right()}
-          <Details photo={selectedPhoto} chosen={barActions} {master} onsharechange={sharePhotoChanged} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
+          <Details photo={selectedPhoto} chosen={barActions} {master} onsharechange={sharePhotoChanged} onhiddenchange={() => void hiddenChanged()} onopen={openTool} ontagschange={(t) => void utagChanged(t)} />
         {/snippet}
       </Shell>
         {/if}

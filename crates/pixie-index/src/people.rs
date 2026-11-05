@@ -54,6 +54,40 @@ const TIDY_TRIES: usize = 3;
 
 const VISIBLE: &str = "h.missing = 0 AND h.dup = 0";
 
+/// The photos whose faces the People tab and the tree show: those Browse lists, so a hidden photo shows no faces. (Grouping the faces
+/// still looks at them all, `VISIBLE`, so who is who does not change when a photo is hidden.)
+const SHOWN: &str = "h.missing = 0 AND h.dup = 0 AND h.hidden = 0";
+
+/// The face the user chose to show this person by, when it is still one of their faces in a photo that is shown.
+fn chosen_cover(c: &Connection, person: i64) -> Result<Option<i64>> {
+    c.query_row(
+        &format!("SELECT f.id FROM people p JOIN faces f ON f.id = p.cover_face AND f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND {SHOWN} WHERE p.id = ?1"),
+        params![person],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+/// The face a person is shown by: the one the user chose, else the one their card in the People tab leads with (the most typical of
+/// their clearest faces). The tree uses it for the person's icon too, so the two never differ.
+pub(crate) fn cover_face(c: &Connection, person: i64) -> Result<Option<i64>> {
+    if let Some(chosen) = chosen_cover(c, person)? {
+        return Ok(Some(chosen));
+    }
+    let mut st = c
+        .prepare(&format!("SELECT f.id, f.embedding, f.score * f.w * f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND {SHOWN} WHERE f.person_id = ?1 ORDER BY f.id"))
+        .map_err(db_err)?;
+    let rows: Vec<(i64, Vec<f32>, f32)> = st
+        .query_map(params![person], |r| Ok((r.get(0)?, vector_of(&r.get::<_, Vec<u8>>(1)?), r.get(2)?)))
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    let vectors: Vec<&[f32]> = rows.iter().map(|(_, v, _)| v.as_slice()).collect();
+    let quality: Vec<f32> = rows.iter().map(|(_, _, q)| *q).collect();
+    Ok(regroup::spread(&vectors, &quality, 1, SAMPLE_POOL).first().map(|&i| rows[i].0))
+}
+
 /// A condition on a face `f`: it is a candidate to be someone. Not artwork (a painting, drawing or statue is not a person
 /// to name), and not ignored by the user.
 const NOT_ART: &str = "f.art IS NOT 1 AND f.ignored = 0";
@@ -725,6 +759,21 @@ impl Db {
         Ok(())
     }
 
+    /// Show this person by one of their own faces (`Some`), or let Pixie pick again (`None`).
+    pub fn set_person_cover(&self, person: i64, face: Option<i64>) -> Result<()> {
+        let c = self.conn();
+        if let Some(face) = face {
+            let mine: bool = c
+                .query_row("SELECT EXISTS(SELECT 1 FROM faces WHERE id = ?1 AND person_id = ?2)", params![face, person], |r| r.get(0))
+                .map_err(db_err)?;
+            if !mine {
+                return Err(PixieError::Invalid("That face is not one of this person's.".into()));
+            }
+        }
+        c.execute("UPDATE people SET cover_face = ?2 WHERE id = ?1", params![person, face]).map_err(db_err)?;
+        Ok(())
+    }
+
     /// Bring a hidden person back. One nobody named goes back to being a group to look at.
     pub fn unhide_person(&self, id: i64) -> Result<()> {
         let mut c = self.conn();
@@ -792,7 +841,7 @@ impl Db {
             .prepare(&format!(
                 "SELECT p.id, p.name, p.hidden, p.confirmed, p.mixed, p.centroid, COUNT(DISTINCT f.photo_id), COUNT(f.id),
                         COALESCE(SUM(p.confirmed = 1 AND f.confirmed = 0), 0)
-                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
+                   FROM people p JOIN faces f ON f.person_id = p.id JOIN photos h ON h.id = f.photo_id AND {SHOWN}
                   WHERE {cond} GROUP BY p.id"
             ))
             .map_err(db_err)?;
@@ -815,6 +864,7 @@ impl Db {
                         mixed,
                         looks_mixed: mixed.is_some_and(|m| m >= MIXED_ABOVE),
                         samples: Vec::new(),
+                        custom_cover: false,
                         suggestion: None,
                     },
                     centroid: vector_of(&r.get::<_, Vec<u8>>(5)?),
@@ -842,7 +892,7 @@ impl Db {
 
         let mut faces = c
             .prepare(&format!(
-                "SELECT f.id, f.embedding, f.score * f.w * f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE} WHERE f.person_id = ?1 ORDER BY f.id"
+                "SELECT f.id, f.embedding, f.score * f.w * f.h FROM faces f JOIN photos h ON h.id = f.photo_id AND {SHOWN} WHERE f.person_id = ?1 ORDER BY f.id"
             ))
             .map_err(db_err)?;
         let mut out = Vec::with_capacity(cards.len());
@@ -855,6 +905,11 @@ impl Db {
             let vectors: Vec<&[f32]> = rows.iter().map(|(_, v, _)| v.as_slice()).collect();
             let quality: Vec<f32> = rows.iter().map(|(_, _, q)| *q).collect();
             card.samples = regroup::spread(&vectors, &quality, SAMPLES, SAMPLE_POOL).into_iter().map(|i| rows[i].0).collect();
+            if let Some(chosen) = chosen_cover(&c, card.id)? {
+                card.samples.retain(|s| *s != chosen);
+                card.samples.insert(0, chosen);
+                card.custom_cover = true;
+            }
             if !refs.is_empty() {
                 card.suggestion = regroup::best_person(&centroid, &refs, &[card.id], ANCHOR_TOP)
                     .filter(|(_, score, _)| *score >= SUGGEST_SCORE)
@@ -872,7 +927,7 @@ impl Db {
         if order == FaceOrder::Best {
             let mut st = c
                 .prepare(&format!(
-                    "SELECT {cols} FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE}
+                    "SELECT {cols} FROM faces f JOIN photos h ON h.id = f.photo_id AND {SHOWN}
                       WHERE f.person_id = ?1 ORDER BY f.score * f.w * f.h DESC, f.id LIMIT ?2 OFFSET ?3"
                 ))
                 .map_err(db_err)?;
@@ -888,7 +943,7 @@ impl Db {
         let only_unchecked = if order == FaceOrder::Unchecked { "AND f.confirmed = 0" } else { "" };
         let mut st = c
             .prepare(&format!(
-                "SELECT {cols}, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND {VISIBLE} WHERE f.person_id = ?1 {only_unchecked}"
+                "SELECT {cols}, f.embedding FROM faces f JOIN photos h ON h.id = f.photo_id AND {SHOWN} WHERE f.person_id = ?1 {only_unchecked}"
             ))
             .map_err(db_err)?;
         let mut rows = st
@@ -1188,6 +1243,58 @@ mod tests {
         assert!(cards.iter().all(|c| !c.looks_mixed && !c.confirmed));
         assert_eq!(cards[0].faces, 8);
         assert!(cards[0].samples.iter().all(|s| ids.contains(s)));
+    }
+
+    #[test]
+    fn the_tree_shows_a_person_by_the_face_their_card_leads_with_and_a_hidden_photo_shows_no_face() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &ANGLES);
+        db.tidy().unwrap();
+        let person = person_of(&db, ids[0]).unwrap();
+        db.name_person(person, Some("Joe")).unwrap();
+        let card = || db.list_face_people(FaceView::People).unwrap().into_iter().find(|c| c.id == person).unwrap();
+        let nav = || db.list_people().unwrap().into_iter().find(|p| p.id == person).unwrap();
+        let lead = card().samples[0];
+        assert_eq!(nav().face_id, Some(lead), "the same face in both places");
+
+        let photo: i64 = db.conn().query_row("SELECT photo_id FROM faces WHERE id = ?1", params![lead], |r| r.get(0)).unwrap();
+        let before = card().photos;
+        db.hide(&[photo]).unwrap();
+        assert_eq!(card().photos, before - 1, "the hidden photo is not counted");
+        assert!(!card().samples.contains(&lead), "and its face is not shown");
+        assert_eq!(nav().face_id, Some(card().samples[0]), "the two still agree");
+        assert_ne!(nav().face_id, Some(lead));
+    }
+
+    #[test]
+    fn the_user_can_choose_the_face_a_person_is_shown_by_and_go_back_to_the_automatic_one() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = library(&db, &ANGLES);
+        db.tidy().unwrap();
+        let person = person_of(&db, ids[0]).unwrap();
+        db.name_person(person, Some("Joe")).unwrap();
+        let card = || db.list_face_people(FaceView::People).unwrap().into_iter().find(|c| c.id == person).unwrap();
+        let nav = || db.list_people().unwrap().into_iter().find(|p| p.id == person).unwrap().face_id;
+        let auto = card().samples[0];
+        assert!(!card().custom_cover);
+        let mine: Vec<i64> = ids.iter().copied().filter(|f| person_of(&db, *f) == Some(person)).collect();
+        let other = *mine.iter().find(|f| **f != auto).unwrap();
+
+        db.set_person_cover(person, Some(other)).unwrap();
+        assert_eq!((card().samples[0], card().custom_cover, nav()), (other, true, Some(other)), "the card and the tree both use it");
+        assert_eq!(card().samples.iter().filter(|s| **s == other).count(), 1, "and it is not shown twice");
+
+        let stranger = ids.iter().copied().find(|f| person_of(&db, *f) != Some(person)).unwrap();
+        assert!(db.set_person_cover(person, Some(stranger)).is_err(), "only their own faces");
+
+        let photo: i64 = db.conn().query_row("SELECT photo_id FROM faces WHERE id = ?1", params![other], |r| r.get(0)).unwrap();
+        db.hide(&[photo]).unwrap();
+        assert!(!card().custom_cover, "a face in a hidden photo is not used");
+        db.unhide(&[photo]).unwrap();
+        assert!(card().custom_cover);
+
+        db.set_person_cover(person, None).unwrap();
+        assert_eq!((card().samples[0], card().custom_cover, nav()), (auto, false, Some(auto)));
     }
 
     #[test]

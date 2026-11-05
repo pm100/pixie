@@ -275,6 +275,16 @@ export const setShareFilter = (kind: string | null) => invoke<void>('set_share_f
 export const makePrivate = (ids: number[]) => invoke<number>('make_private', { ids });
 /** Take these items out of private. */
 export const releasePrivate = (ids: number[]) => invoke<number>('release_private', { ids });
+/** Hide these items from Browse and everything built on it (the files are never touched); returns how many changed. */
+export const hidePhotos = (ids: number[]) => invoke<number>('hide_photos', { ids });
+/** Show these hidden items again; returns how many changed. */
+export const unhidePhotos = (ids: number[]) => invoke<number>('unhide_photos', { ids });
+/** Which of these items are hidden. */
+export const hiddenAmong = (ids: number[]) => invoke<number[]>('hidden_among', { ids });
+/** How many items are hidden. */
+export const hiddenCount = () => invoke<number>('hidden_count');
+/** Whether Browse lists the hidden items too ("Show hidden"). */
+export const setShowHidden = (on: boolean) => invoke<void>('set_show_hidden', { on });
 /** The person's date rules, and saving them (this applies them to the whole library at once; the number is how many items changed date). */
 import type { DateRules } from './dateRules';
 export const getDateRules = () => invoke<DateRules>('get_date_rules');
@@ -305,6 +315,8 @@ export const rejectFaces = (faceIds: number[]) => invoke<void>('reject_faces', {
 /** Start a new person from faces (optionally named); returns their id. */
 export const newPersonFromFaces = (faceIds: number[], name: string | null) => invoke<number>('new_person_from_faces', { faceIds, name });
 export const unhidePerson = (id: number) => invoke<void>('unhide_person', { id });
+/** Show a person by one of their own faces, or (null) let Pixie pick. */
+export const setPersonCover = (person: number, face: number | null) => invoke<void>('set_person_cover', { person, face });
 /** Cut a group that looks like several people into pieces; returns how many (0: it does not come apart). */
 export const splitGroup = (id: number) => invoke<number>('split_group', { id });
 /** Ignore faces, each on its own: out of every group and list but "Ignored". */

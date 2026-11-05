@@ -39,7 +39,7 @@ impl Db {
             TileSource::Library => ("", String::new()),
             TileSource::Ids(ids) => (" AND id IN (SELECT value FROM json_each(?2))", id_list(ids)),
         };
-        let sql = format!("SELECT id, path, mtime, size FROM photos WHERE missing = 0 AND dup = 0 AND kind = 0 AND share != ?1{filter} ORDER BY id");
+        let sql = format!("SELECT id, path, mtime, size FROM photos WHERE missing = 0 AND dup = 0 AND hidden = 0 AND kind = 0 AND share != ?1{filter} ORDER BY id");
         let mut s = c.prepare(&sql).map_err(db_err)?;
         let map = |r: &rusqlite::Row| Ok(TileCandidate { id: r.get(0)?, path: r.get(1)?, mtime: r.get(2)?, size: r.get(3)? });
         let rows = match src {

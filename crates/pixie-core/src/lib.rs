@@ -391,8 +391,11 @@ pub struct FacePerson {
     pub mixed: Option<f32>,
     /// It looks like more than one person (see `MIXED_ABOVE`): the card says so and offers to sort it out.
     pub looks_mixed: bool,
-    /// Faces that show how it looks (the most typical first, then ones unlike those), not just its best faces.
+    /// Faces that show how it looks (the most typical first, then ones unlike those), not just its best faces. When the user chose
+    /// a face to show it by, that one is first.
     pub samples: Vec<i64>,
+    /// The first sample is the face the user chose, not the one Pixie picked.
+    pub custom_cover: bool,
     /// For a group that is not confirmed yet: the confirmed person it looks most like, if any.
     pub suggestion: Option<Suggestion>,
 }

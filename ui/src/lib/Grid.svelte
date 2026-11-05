@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { listPhotos, type DayGroup, type Photo, type View } from './api';
+  import { hiddenAmong, listPhotos, type DayGroup, type Photo, type View } from './api';
   import { formatDay, formatDuration } from './format';
   import { columnsFor } from './gridMath';
   import { buildLayout, groupTop, revealOffset, visibleRows } from './layout';
@@ -10,7 +10,7 @@
   import { retryDelay } from './retry';
   import { posterUrl, thumbUrl } from './url';
 
-  let { groups, version, view, selected, scrollTo, reveal = null, onopen, onselect, picks = new Set<number>(), onpick = () => {} }: {
+  let { groups, version, view, selected, scrollTo, reveal = null, onopen, onselect, picks = new Set<number>(), onpick = () => {}, grouped = true, showHidden = false }: {
     groups: DayGroup[];
     version: number;
     view: View;
@@ -24,6 +24,10 @@
     /** Quick pick: the picked photos (by id), and a click on the marker in a photo's top-left corner. */
     picks?: ReadonlySet<number>;
     onpick?: (id: number) => void;
+    /** Photos under a heading for each day; off, they run on as one grid. */
+    grouped?: boolean;
+    /** Hidden photos are listed too: the ones that are get a mark. */
+    showHidden?: boolean;
   } = $props();
 
   const CELL = 180, GAP = 6, PAGE = 200, ROW_H = CELL + GAP, HEAD_H = 40;
@@ -66,7 +70,7 @@
   const item = (i: number, _: number) => cache.items[i];
 
   const cols = $derived(columnsFor(width, CELL, GAP));
-  const layout = $derived(buildLayout(groups, cols, ROW_H, HEAD_H));
+  const layout = $derived(buildLayout(groups, cols, ROW_H, HEAD_H, grouped));
   const span = $derived(visibleRows(layout, scrollTop, height));
   const shown = $derived(layout.rows.slice(span[0], span[1]));
 
@@ -98,6 +102,28 @@
       hi = Math.max(hi, r.first + r.n);
     }
     if (hi > lo) cache.ensure(lo, hi);
+  });
+
+  // Which of the photos in view are hidden (asked only while hidden photos are listed), so they can be marked.
+  let hiddenIds = $state<ReadonlySet<number>>(new Set());
+  const asked = new Set<number>();
+  $effect(() => {
+    version;
+    untrack(() => { hiddenIds = new Set(); asked.clear(); });
+  });
+  $effect(() => {
+    tick;
+    if (!showHidden) return;
+    const ids: number[] = [];
+    for (const r of shown) {
+      if (r.kind !== 'cells') continue;
+      for (let k = 0; k < r.n; k++) {
+        const p = cache.items[r.first + k];
+        if (p && !asked.has(p.id)) { asked.add(p.id); ids.push(p.id); }
+      }
+    }
+    if (ids.length === 0) return;
+    hiddenAmong(ids).then((h) => { if (h.length > 0) hiddenIds = new Set([...hiddenIds, ...h]); }).catch(() => {});
   });
 
   // Ask to jump to a group's heading (the list is taken back to the top after a new filter).
@@ -140,11 +166,11 @@
         {#each { length: row.n } as _, k (row.first + k)}
           {@const i = row.first + k}
           {@const p = item(i, tick)}
-          <button class="cell" class:sel={selected === i}
+          <button class="cell" class:sel={selected === i} class:hid={p !== undefined && hiddenIds.has(p.id)}
                   style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
                   onclick={(e) => onselect(i, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                   ondblclick={() => onopen(i)} onkeydown={(e) => key(e, i)}
-                  aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) : 'photo'} aria-pressed={selected === i}>
+                  aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) + (hiddenIds.has(p.id) ? ' (hidden)' : '') : 'photo'} aria-pressed={selected === i}>
             {#if p && p.kind === 'video'}
               {#if noPoster[p.id]}
                 <span class="ph dark cam"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h9A1.5 1.5 0 0 1 15 6.5v2.6l5.2-3a.5.5 0 0 1 .8.4v11a.5.5 0 0 1-.8.4l-5.2-3v2.6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 17.5z"/></svg></span>
@@ -157,6 +183,9 @@
               <img loading="lazy" alt="" src={thumbUrl('grid', p.id, p.mtime, p.size, undefined, nonce[i] ?? 0)} onerror={() => onImgError(i)} />
             {:else if broken[i]}
               <span class="ph">⚠︎</span>
+            {/if}
+            {#if p && hiddenIds.has(p.id)}
+              <span class="hidmark" title="Hidden: left out of Browse unless Show hidden is on" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg></span>
             {/if}
           </button>
           <!-- The pick marker is its own button beside the photo (a button cannot hold another), over its top-left corner. -->
@@ -180,6 +209,9 @@
   .head span { color: #777; font-size: 13px; }
   .cell { position: absolute; width: 180px; height: 180px; padding: 0; border: 0; background: #e8e8ec; border-radius: 6px; overflow: hidden; cursor: pointer; outline-offset: 0; }
   .cell.sel { outline: 3px solid #2f6fed; }
+  .cell.hid img { opacity: .4; }
+  .hidmark { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgba(0, 0, 0, .6); color: #fff; }
+  .hidmark svg { width: 16px; height: 16px; }
   /* A square over the photo's top-left corner: the marker shows while the mouse is over it, and stays on a picked photo. */
   .pick { position: absolute; z-index: 2; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 6px 0 0 0; background: none; cursor: pointer; }
   .tk { position: absolute; left: 8px; top: 8px; width: 22px; height: 22px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .4);

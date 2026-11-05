@@ -9,6 +9,19 @@ const g = (count: number, first_index: number, day: string | null = '2024-06-01'
 //   heading 230..260, cells(5,2) 260..360
 const layout = () => buildLayout([g(5, 0), g(2, 5, '2024-05-31')], 4, 100, 30);
 
+describe('buildLayout without headings', () => {
+  it('runs the photos of every group on as one grid, and a group starts at the row of its first photo', () => {
+    const l = buildLayout([g(5, 0), g(2, 5, '2024-05-31')], 4, 100, 30, false);
+    expect(l.rows.map((r) => [r.kind, r.top, r.h])).toEqual([['cells', 0, 100], ['cells', 100, 100]]);
+    expect(l.rows.map((r) => r.kind === 'cells' ? [r.first, r.n] : null)).toEqual([[0, 4], [4, 3]]);
+    expect(l.height).toBe(200);
+    expect(l.groupTops).toEqual([0, 100]);
+  });
+  it('is empty with no groups', () => {
+    expect(buildLayout([], 4, 100, 30, false)).toEqual({ rows: [], height: 0, groupTops: [] });
+  });
+});
+
 describe('buildLayout', () => {
   it('puts a heading before each group and wraps its photos into rows', () => {
     const l = layout();

@@ -52,6 +52,8 @@ export type FacePerson = {
   mixed: number | null; looks_mixed: boolean;
   /** Faces that show how the person looks (not just the best ones). */
   samples: number[];
+  /** The first sample is the face the person chose, not the one Pixie picked. */
+  custom_cover: boolean;
   suggestion: Suggestion | null;
 };
 export type UnsortedFace = { tile: FaceTile; suggestion: Suggestion | null };
