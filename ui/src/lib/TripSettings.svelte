@@ -35,13 +35,13 @@
 <p>A trip is a run of days spent away from home. A day at home ends a trip. Photos and videos without a position are included when their date falls inside a trip.</p>
 
 <h3>Where is home?</h3>
-{#if guessed}<p>Pixie guesses home is where most of your photos were taken, shown on the map. Click the map to move it, then confirm.</p>
-{:else if guessFailed}<p>Pixie could not guess, because none of your photos has a position yet. Click the map to set home.</p>
-{:else}<p>Click the map to move home.</p>{/if}
+{#if prefs.confirmed}<p>The map shows where home is. To change it, click the map where home should be, then press Use this as home.</p>
+{:else if guessed}<p>Pixie guesses home is where most of your photos were taken, shown on the map. Click the map to move it if the guess is wrong, then press This is home to confirm. Trips appear only after you confirm.</p>
+{:else if guessFailed}<p>Pixie could not guess, because none of your photos has a position yet. Click the map where home is, then press This is home.</p>
+{:else}<p>Click the map where home is, then press This is home.</p>{/if}
+{#if changed}<p class="status"><button class="primary" onclick={confirm} title={prefs.confirmed ? 'Change home to the place on the map' : 'Confirm the place on the map as home'}>{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>{#if draft} <span class="where">{formatGps(draft.lat, draft.lon)}</span>{/if}</p>
+{:else if prefs.confirmed}<p class="status"><span class="ok">Home is set.</span>{#if draft} <span class="where">{formatGps(draft.lat, draft.lon)}</span>{/if}</p>{/if}
 <HomePicker home={draft} radiusKm={prefs.radiusKm} onpick={pick} />
-{#if draft}<p class="where">{formatGps(draft.lat, draft.lon)}</p>{/if}
-{#if changed}<button class="primary" onclick={confirm} title="Use the place on the map as home">{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>
-{:else if prefs.confirmed}<p class="ok">Home is set.</p>{/if}
 {#if error}<p class="err">{error}</p>{/if}
 
 <h3>What counts as a trip</h3>
@@ -67,7 +67,8 @@
   .note { color: #666; font-size: 12px; margin: 0 0 8px; }
   h3 { margin: 16px 0 6px; font-size: 14px; }
   .num { width: 5em; font: inherit; padding: 2px 4px; }
-  .where { color: #555; font-size: 12px; margin: 0 0 8px; }
+  .status { margin: 0 0 8px; }
+  .where { color: #555; font-size: 12px; }
   .ok { color: #2a7a2a; }
   .err { color: #b00020; }
 </style>

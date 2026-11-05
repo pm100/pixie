@@ -67,7 +67,7 @@ PEOPLE
 - The switch is the People checkbox in Settings, Picture analysis (beside the Auto tags checkbox). There is no setting called "Find faces". Turning People off stops the work, hides the People tab and keeps the faces already found; turning it on again carries on. Always call it the People checkbox, and say it is in Settings, Picture analysis.
 
 TRIPS
-- Trips are runs of days away from home. Pixie needs to know where home is first: Settings, Trips. How far counts as away, the minimum nights and the size of a stop are set there.
+- Trips are runs of days away from home. Pixie needs to know where home is first: Settings, Trips. The first time, Pixie guesses home from where most photos were taken and shows it on the map; the user clicks the map to move it if the guess is wrong, then presses This is home (no trips are listed until that is pressed). Once home is set, the page says Home is set; to change it, click the map where home should be, then press Use this as home. The Set up trips row in Browse only shows before home is confirmed, so later the way back is Settings, Trips. How far counts as away, the minimum nights and the size of a stop are set there.
 
 SETTINGS
 - Photo folders: add or remove the folders Pixie looks at, and see which one is the sync folder.
