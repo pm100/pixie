@@ -22,6 +22,7 @@
   });
 
   const pick = (lat: number, lon: number) => { draft = { lat, lon }; guessed = false; };
+  const undo = () => { draft = prefs.home; };
   const confirm = () => { if (draft) onprefs(cleanTripPrefs({ ...prefs, home: draft, confirmed: true })); };
   // Distances are kept in kilometres and shown in miles where people use them (the UK, the US, ...).
   const unit = unitFor(typeof navigator === 'undefined' ? undefined : navigator.language);
@@ -39,7 +40,7 @@
 {:else if guessed}<p>Pixie guesses home is where most of your photos were taken, shown on the map. Click the map to move it if the guess is wrong, then press This is home to confirm. Trips appear only after you confirm.</p>
 {:else if guessFailed}<p>Pixie could not guess, because none of your photos has a position yet. Click the map where home is, then press This is home.</p>
 {:else}<p>Click the map where home is, then press This is home.</p>{/if}
-{#if changed}<p class="status"><button class="primary" onclick={confirm} title={prefs.confirmed ? 'Change home to the place on the map' : 'Confirm the place on the map as home'}>{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>{#if draft} <span class="where">{formatGps(draft.lat, draft.lon)}</span>{/if}</p>
+{#if changed}<p class="status"><button class="primary" onclick={confirm} title={prefs.confirmed ? 'Change home to the place on the map' : 'Confirm the place on the map as home'}>{prefs.confirmed ? 'Use this as home' : 'This is home'}</button>{#if prefs.confirmed}<button class="keep" onclick={undo} title="Put the map back to the home you had and forget this change">Keep current home</button>{/if}{#if draft} <span class="where">{formatGps(draft.lat, draft.lon)}</span>{/if}</p>
 {:else if prefs.confirmed}<p class="status"><span class="ok">Home is set.</span>{#if draft} <span class="where">{formatGps(draft.lat, draft.lon)}</span>{/if}</p>{/if}
 <HomePicker home={draft} radiusKm={prefs.radiusKm} onpick={pick} />
 {#if error}<p class="err">{error}</p>{/if}
@@ -68,7 +69,8 @@
   h3 { margin: 16px 0 6px; font-size: 14px; }
   .num { width: 5em; font: inherit; padding: 2px 4px; }
   .status { margin: 0 0 8px; }
-  .where { color: #555; font-size: 12px; }
+  .where { color: #555; font-size: 12px; margin-left: 12px; }
+  .keep { margin-left: 8px; }
   .ok { color: #2a7a2a; }
   .err { color: #b00020; }
 </style>
