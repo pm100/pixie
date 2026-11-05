@@ -221,7 +221,8 @@
   .head { position: absolute; left: 0; right: 0; display: flex; align-items: baseline; gap: 10px; padding: 14px 4px 4px; box-sizing: border-box; border-bottom: 1px solid #e4e4e8; }
   .head span { color: #777; font-size: 13px; }
   .cell { position: absolute; width: 180px; height: 180px; padding: 0; border: 0; background: #e8e8ec; border-radius: 6px; overflow: hidden; cursor: pointer; outline-offset: 0; }
-  .cell.sel { outline: 3px solid #2f6fed; }
+  /* Drawn inside the tile: outside it, the scroller clips the border on the left of the first column (and on top of the first row). */
+  .cell.sel { outline: 3px solid #2f6fed; outline-offset: -3px; }
   .cell.hid img { opacity: .4; }
   .hidmark { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgba(0, 0, 0, .6); color: #fff; }
   .hidmark svg { width: 16px; height: 16px; }
