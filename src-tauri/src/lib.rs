@@ -1386,12 +1386,15 @@ fn save_poster(state: tauri::State<AppState>, id: i64, bytes: Vec<u8>) -> Result
 /// The file a saved video frame was written to, by name (it sits in the video's folder).
 #[derive(Serialize)]
 struct SavedFrame {
+    /// The photo's id in the library (it is there when the save returns).
+    id: i64,
     name: String,
 }
 
 /// Save the frame on screen as a photo next to its video. The body is the JPEG the viewer drew from the player; the headers carry the video's
 /// id (`x-video-id`) and how far into it the frame is (`x-frame-ms`). The picture gets the video's date (plus that time), place and camera,
-/// never replaces a file, and the video's folder is scanned so it shows in Browse.
+/// and the tag "Video frame". It never replaces a file. It has its row in the library when this returns (the main window is told with
+/// `frame-saved`), and the pipeline is handed it ahead of the queue to hash and analyse it like any photo.
 #[tauri::command]
 fn save_video_frame(app: tauri::AppHandle, state: tauri::State<AppState>, request: tauri::ipc::Request<'_>) -> Result<SavedFrame, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else { return Err("No picture was sent.".into()) };
@@ -1416,22 +1419,23 @@ fn save_video_frame(app: tauri::AppHandle, state: tauri::State<AppState>, reques
         let when = std::time::UNIX_EPOCH + Duration::from_millis((photo.mtime.max(0) as u64).saturating_add(ms));
         let _ = std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(when));
     }
-    request_scan(&app, state.inner(), &[photo.folder_id]);
-    Ok(SavedFrame { name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() })
-}
-
-/// Shows a saved video frame in its folder, with the file picked out. `name` is a file name (no folder) in the video's folder.
-#[tauri::command]
-fn show_saved_frame(state: tauri::State<AppState>, id: i64, name: String) -> Result<(), String> {
-    let photo = match state.db.get_photo(id) {
-        Ok(Some(p)) => p,
-        _ => return Err("not in the library".into()),
-    };
-    if name.is_empty() || name.contains(['/', '\\']) {
-        return Err("not a file name".into());
+    // Not a scan of the whole folder (it waits for any scan that is running and walks every file in it), and not only a place in the
+    // pipeline's queue (each worker is busy with an analysis for seconds): the row is made here, from the file's own bytes, so the frame
+    // is in Browse at once. The pipeline then reads it ahead of the queue, which refreshes the row and does the analysis.
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let path_text = path.to_string_lossy().into_owned();
+    let mut meta = pixie_image::meta::read_meta_bytes(&path, &jpeg);
+    meta.kind = MediaKind::Photo;
+    if meta.taken_at.is_none() {
+        meta.taken_at = Some(mtime / 1000);
     }
-    let path = std::path::Path::new(&photo.path).parent().ok_or("its folder is not available")?.join(name);
-    show_in_folder_of(&path).map_err(|e| e.to_string())
+    let id = state.db.upsert_photo(photo.folder_id, &path_text, jpeg.len() as i64, mtime, &meta).map_err(|e| e.user_message())?;
+    if let Err(e) = state.db.tag_photos(&[id], "Video frame") {
+        eprintln!("[frames] cannot tag the saved frame: {}", e.user_message()); // (the frame is saved and listed all the same)
+    }
+    state.pipeline.enqueue_first(vec![pixie_index::Candidate { folder_id: photo.folder_id, path: path_text, size: jpeg.len() as i64, mtime, is_update: false, kind: MediaKind::Photo }]);
+    let _ = app.emit("frame-saved", ());
+    Ok(SavedFrame { id, name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() })
 }
 
 /// Opens a video in the default player of the system. The path comes from the database by id.
@@ -2195,7 +2199,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             add_folder, scan_folders, set_network_rescan, load_progress, facet_counts, list_folders, list_folder_info, remove_folder, open_viewer_window, list_photos, count_photos, list_day_groups, list_geo_points, max_photo_id, get_photo, start_scan, cancel_scan, analysis_status, analysis_set_paused, analysis_retry, search_photos, list_tags, tags_for, set_tag_filter, people_status, list_people, faces_for, rename_person, hide_person, confirm_person, assign_group, face_overview, unsorted_faces, confirm_faces, new_person_from_faces, split_group, tidy_faces, ignore_faces, unignore_faces, ignored_faces, suggest_for_faces, suggest_for_group, set_person_filter, set_camera_filter, set_missing_filter, get_master_folder, set_master_folder, get_sync_subfolder, set_sync_subfolder, set_folder_feeds, share_counts, set_share_filter, make_private, release_private, set_person_cover, hide_photos, unhide_photos, hidden_among, hidden_count, set_show_hidden, photo_share, copy_to_master, stop_master_copy, activity_snapshot, master_copy_status, location_counts, get_date_rules, set_date_rules, date_summary, active_filters, suggest_folders, is_debug_build, build_info, open_data_folder, list_trips, trip_route, suggest_home, rename_trip, list_face_people, faces_of_person, move_faces, reject_faces, unhide_person, print_page, place_for, save_poster, collage::collage_templates, collage::get_collage, collage::set_collage, collage::save_collage, mosaic::get_mosaic, mosaic::set_mosaic, mosaic::mosaic_index, mosaic::mosaic_draft, mosaic::mosaic_build, mosaic::mosaic_cancel, mosaic::get_mosaic_built, mosaic::mosaic_clear, mosaic::mosaic_status, mosaic::mosaic_save,
-            open_in_default_player, save_video_frame, show_saved_frame, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
+            open_in_default_player, save_video_frame, show_in_folder, email_photos, email_info, ask_pixie, ask_feedback, get_analysis_options, set_analysis_options, reset_library, pick_photo, pick_many, pick_all_matching, pick_ids, pick_video_count, tag_photos, untag_photos, user_tags, tag_usage, list_tagged, set_user_tag_filter, list_picked, list_picked_ids, list_tagged_ids, photos_among, kind_counts, clear_picks, folder_states, list_providers, get_mail_account, save_mail_account, delete_mail_account, list_contacts,
             save_contact, delete_contact, duplicate_groups, duplicate_status, remove_duplicates, set_duplicate_keeper, photos_at, photo_position, send_test_email, send_email
         ])
         .run(tauri::generate_context!())

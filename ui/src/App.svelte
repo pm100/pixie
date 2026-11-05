@@ -725,8 +725,23 @@
     view = { ...view, order: 'newest', search: hitsActive(activeTag, activePerson, activeCamera, activeUtag, activeMissing, activeShare), since: null, until: null, folderId: null, kind: null, bounds: null };
     savePref('kind', null);
     selected = null;
-    refresh(true).catch((e) => (message = String(e)));
+    await refresh(true).catch((e) => (message = String(e)));
     if (mode === 'map') { askFit('selection'); loadPoints(); }
+  }
+
+  /** The "Show in Browse" button on a saved video frame: close the viewer, go to Browse, drop the filters if one hides the frame, and select it. */
+  async function showFrame(id: number) {
+    closeViewer();
+    pickTab('browse');
+    void getCurrentWindow().setFocus();
+    let at = await photoPosition(id, shown).catch(() => null);
+    if (at === null) {
+      await showAll();
+      at = await photoPosition(id, shown).catch(() => null);
+    }
+    if (at === null) return;
+    selected = at;
+    reveal = { index: at, n: ++reveals };
   }
 
   /** Show only one year, month or day, or the items without a date (the same key again clears it). */
@@ -1499,6 +1514,14 @@
         void refreshFolderStates();
         if (phase === 'scanning') void finishScanPhase(e.payload.found);
       }),
+      // A frame was saved from a video (in the viewer, here or in its own window): it is in the library already, so the listing is read again
+      // (when the viewer closes, if it is open here).
+      listen('frame-saved', () => {
+        void loadUserTags(); // the tag "Video frame" may be new, and has one more photo
+        if (openIndex !== null || soloPhoto !== null) pendingRefresh = true;
+        else refresh().catch((e) => (message = String(e)));
+      }),
+      listen<{ id: number }>('show-frame', (e) => void showFrame(e.payload.id)),
       listen(POPOUT_READY, () => sendShow(false)),
       listen(POPOUT_CLOSED, () => { popoutOpen = false; }),
       listen(POPOUT_MOVED, (e) => {

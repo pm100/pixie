@@ -124,6 +124,29 @@ struct Intake {
     outstanding: HashMap<FolderId, (i64, i64)>,
 }
 
+impl Intake {
+    /// Adds files not already queued, at the back, or at the front (in the order given) for files the person is waiting for.
+    fn add(&mut self, files: Vec<Candidate>, front: bool) {
+        let files: Vec<Candidate> = if front { files.into_iter().rev().collect() } else { files };
+        for c in files {
+            if !self.queued.insert(c.path.clone()) {
+                continue;
+            }
+            let n = self.outstanding.entry(c.folder_id).or_default();
+            if c.kind == MediaKind::Video {
+                n.1 += 1;
+            } else {
+                n.0 += 1;
+            }
+            if front {
+                self.queue.push_front(c);
+            } else {
+                self.queue.push_back(c);
+            }
+        }
+    }
+}
+
 /// A file started and not yet finished.
 struct Flying {
     seq: u64,
@@ -924,23 +947,16 @@ impl PhotoPipeline {
     /// Newest first, so the newest photos appear first.
     pub fn enqueue(&self, mut files: Vec<Candidate>) {
         files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
-        {
-            let mut i = lock(&self.shared.intake);
-            for c in files {
-                if !i.queued.insert(c.path.clone()) {
-                    continue;
-                }
-                let n = i.outstanding.entry(c.folder_id).or_default();
-                if c.kind == MediaKind::Video {
-                    n.1 += 1;
-                } else {
-                    n.0 += 1;
-                }
-                i.queue.push_back(c);
-            }
-        }
+        lock(&self.shared.intake).add(files, false);
         self.kick();
         self.shared.report(); // the window learns at once that there is loading to do
+    }
+
+    /// Files the person is waiting to see (a frame just saved from a video): read next, ahead of everything queued by walks.
+    pub fn enqueue_first(&self, files: Vec<Candidate>) {
+        lock(&self.shared.intake).add(files, true);
+        self.kick();
+        self.shared.report();
     }
 
     /// The photos a walk found (in any folder) that are not stored yet: the analyses' totals include them, so a library
@@ -1033,6 +1049,17 @@ impl Drop for PhotoPipeline {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn files_put_first_are_started_before_the_ones_waiting_and_in_the_order_given() {
+        let c = |name: &str| Candidate { folder_id: 1, path: name.into(), size: 1, mtime: 1, is_update: false, kind: MediaKind::Photo };
+        let mut i = Intake::default();
+        i.add(vec![c("a"), c("b")], false);
+        i.add(vec![c("x"), c("y"), c("a")], true);
+        let order: Vec<&str> = i.queue.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(order, ["x", "y", "a", "b"], "a was already waiting, so it was not added again");
+        assert_eq!(i.outstanding[&1], (4, 0));
+    }
+
     use super::*;
     use crate::embedder::FakeEmbedder;
     use crate::faces::FakeFaceEngine;

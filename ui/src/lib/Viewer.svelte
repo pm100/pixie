@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { listPhotos, openInDefaultPlayer, saveVideoFrame, showSavedFrame, type Photo, type View } from './api';
+  import { emit } from '@tauri-apps/api/event';
+  import { listPhotos, openInDefaultPlayer, saveVideoFrame, type Photo, type View } from './api';
   import { filmRange } from './filmstrip';
   import { neighbors } from './neighbors';
   import PhotoCaption from './PhotoCaption.svelte';
@@ -108,8 +109,8 @@
   let vtime = $state(0);
   let fps = $state(30);
   let saving = $state(false);
-  /** What the last Save frame did: the file written (with the video it belongs to), or why it could not be. */
-  type Note = { text: string; id?: number; name?: string; preview?: string };
+  /** What the last Save frame did (with a preview of the frame and its photo id when it worked), or why it could not. */
+  type Note = { text: string; preview?: string; photo?: number };
   let note = $state<Note | null>(null);
   let noteTimer: ReturnType<typeof setTimeout> | undefined;
   function say(n: Note) {
@@ -166,7 +167,7 @@
       const blob = await new Promise<Blob | null>((done) => c.toBlob(done, 'image/jpeg', 0.95));
       if (!blob) throw new Error('The frame could not be drawn.');
       const saved = await saveVideoFrame(video.id, frameMs(time), new Uint8Array(await blob.arrayBuffer()));
-      say({ text: `Saved ${saved.name}. It joins your photos in a moment.`, id: video.id, name: saved.name, preview: URL.createObjectURL(blob) });
+      say({ text: 'Saved as a new photo, tagged “Video frame”.', preview: URL.createObjectURL(blob), photo: saved.id });
     } catch (e) {
       say({ text: String(e).replace(/^Error: /, '') });
     }
@@ -245,7 +246,7 @@
       <div class="note" role="status">
         {#if note.preview}<img class="snap" src={note.preview} alt="The saved frame" />{/if}
         <span>{note.text}</span>
-        {#if note.name && note.id !== undefined}<button onclick={() => showSavedFrame(note!.id!, note!.name!).catch(() => {})} title="Show the saved picture in its folder">Show</button>{/if}
+        {#if note.photo !== undefined}<button onclick={() => void emit('show-frame', { id: note!.photo })} title="Close the viewer and show the saved photo in Browse">Show in Browse</button>{/if}
       </div>
     {/if}
     {#if videoFailed}
@@ -296,7 +297,8 @@
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
   .framebar { position: absolute; z-index: 1; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .7); color: #fff; font-size: 14px; white-space: nowrap; max-width: calc(100% - 300px); overflow: hidden; }
   .framebar .at { font-variant-numeric: tabular-nums; min-width: 17ch; text-align: center; }
-  .note { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); top: 64px; display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-radius: 8px; background: #1f6feb; color: #fff; font-size: 15px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); max-width: calc(100% - 32px); }
+  .note { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); top: 64px; display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-radius: 8px; background: #1f6feb; color: #fff; font-size: 15px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); width: max-content; max-width: calc(100% - 32px); /* sized to its content: at left 50% it would otherwise get only half the window and fold */ }
+  .note button { flex: none; white-space: nowrap; }
   .note .snap { height: 90px; max-width: 160px; object-fit: contain; border-radius: 4px; background: #000; }
   .popout { position: absolute; z-index: 1; top: 12px; right: 60px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 7px 10px; color: #fff; font-size: 14px; cursor: pointer; }
   .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 56px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
