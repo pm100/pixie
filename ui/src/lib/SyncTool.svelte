@@ -36,7 +36,13 @@
 
 <div class="sync">
   <h2>Sync</h2>
-  <p class="hint">Keeps one folder, the sync folder, up to date with photos from your other folders: a family drive, say, or a drive on your own computer that gets what arrives in the cloud. Only photos you mark private are kept out. Originals are never changed or deleted. Until you choose a sync folder, none of this is used.</p>
+  <p class="hint">Keeps one folder, the sync folder, up to date with the photos in your other folders. A family drive is a good sync folder.</p>
+  <ul class="points">
+    <li>New photos are copied in, filed by year and date.</li>
+    <li>Photos you mark Private are never copied.</li>
+    <li>Your originals are never changed or deleted.</li>
+  </ul>
+  {#if master === null}<p class="hint">Choose a sync folder to turn this on.</p>{/if}
   <label class="opt">
     Sync folder:
     <select value={master ?? ''} disabled={folders.length === 0} title="Choose which of your folders photos are synced into, or None to go without one. No files are moved or deleted"
@@ -53,9 +59,9 @@
       <input type="text" bind:value={draft} placeholder="None: copy straight into the sync folder" spellcheck="false" aria-label="Subfolder of the sync folder" title="A folder inside the sync folder to put the copies in, such as paul_sync, so they stay apart from other files on the drive. Leave empty to copy straight into the sync folder. It is made when the first photo is copied" onchange={saveSub} />
     </label>
     {#if subError}<p class="err" role="alert">{subError}</p>{/if}
-    <p class="hint">Photos are copied into {target}, filed by year and date. Changing this does not move photos already copied.</p>
+    <p class="hint">Copies go into {target}. Changing this does not move photos already copied.</p>
     <h3>Sync from</h3>
-    <p class="hint">What is in a ticked folder is synced into the sync folder, except photos you mark private. Browse shows what is still to be synced under Sync, New, not yet synced.</p>
+    <p class="hint">Tick the folders to copy from. Browse lists what is still waiting under Sync, New.</p>
     <ul>
       {#each folders.filter((f) => f.path !== master) as f (f.id)}
         <li>
@@ -94,6 +100,7 @@
   h3 { margin: 16px 0 6px; font-size: 14px; }
   p { margin: 0 0 8px; }
   .hint { color: #666; max-width: 60ch; }
+  .points { list-style: disc; margin: 0 0 10px; padding-left: 20px; color: #666; max-width: 60ch; }
   .sub { display: flex; align-items: center; gap: 8px; margin: 12px 0 6px; }
   .sub input { flex: 0 1 360px; min-width: 0; padding: 5px 8px; font-size: 14px; }
   .err { color: #b00020; margin: 0 0 4px; }
