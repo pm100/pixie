@@ -4,7 +4,7 @@
 
 A desktop photo manager for everyday users, not professionals. Point it at the folders where your photos already live and browse them by date, folder and place. Pixie never moves or changes your originals.
 
-Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build runs on Apple silicon but is unsigned.
+Built with [Tauri 2](https://tauri.app), Rust and Svelte 5. It targets Windows and macOS. Today it is developed and tested on Windows only; the macOS build runs on Apple silicon and can be signed and notarized (see Release build).
 
 > **Status: early development.** Browsing, maps, trips, Auto tags, people and duplicate finding work. Collages work; slideshow and editing are designed but not built yet. See [What works today](#what-works-today) and the [issue tracker](https://github.com/pm100/pixie/issues).
 
@@ -104,7 +104,30 @@ npm run tauri build
 
 On Windows this produces a per-user NSIS installer (`just win-build` does the same with the vcpkg paths preset).
 
-On a Mac it produces `Pixie.app` and a `.dmg` (Apple silicon only for now), with libheif and libde265 bundled inside the app. `just mac-build` runs that build on a Mac reachable as `ssh mac` (from what is pushed to origin), copies the `.dmg` to `target/` and prints its checksum. The build is **not signed or notarized**, so Gatekeeper blocks a first launch: right-click the app and choose Open, or run `xattr -cr /Applications/Pixie.app`. Proper signing needs an Apple Developer ID. Windows code signing and Store submission are not set up yet.
+On a Mac, `npm run tauri build` produces `Pixie.app` and a `.dmg` (Apple silicon only for now), with libheif and libde265 bundled inside the app. That build is only ad-hoc signed, so a copy downloaded to another Mac shows "Pixie is damaged and can't be opened". It is fine for testing on the machine that built it. For a build to give to other people, make a signed and notarized one.
+
+#### Release build for macOS (signed and notarized)
+
+```sh
+just mac-build
+```
+
+This runs on the Windows machine and does the work on the Mac over `ssh mac`: it pulls what is **pushed to origin** (commit and push first), runs `just mac-release` there, and copies `Pixie_<version>_aarch64.dmg` to `target/` with its size and checksum. The steps of `mac-release` are:
+
+1. Build the app with `npm run tauri build -- --bundles app`, signed with the **Developer ID Application** certificate (the `signingIdentity` of `-` in `tauri.macos.conf.json` is overridden by `APPLE_SIGNING_IDENTITY`). Tauri signs the bundled libheif and libde265 and notarizes the app itself.
+2. Make the disk image with `hdiutil` (Tauri's own disk image step drives Finder, which fails in an ssh session), sign it, notarize it with `notarytool` and staple the ticket to it, then check it with `spctl`.
+
+What the Mac needs, once:
+- **The certificate.** "Developer ID Application: Paul Moore (9A4PVL859F)" in the `earring-build` keychain. A plain ssh session cannot use the login keychain (it fails with `errSecInternalComponent`), so the recipe unlocks that keychain with the password stored in `~/.config/earring/build-keychain-pass`. The setup is shared with the Ear Ring project; see its `AGENTS.md`. If signing starts failing again, the certificate was probably renewed or the keychain fell off the search list (`security list-keychains -d user`).
+- **The notarization key.** The App Store Connect API key at `~/.private_keys/AuthKey_<KeyID>.p8`. The key id and issuer id in the `justfile` are not secret; the `.p8` file is, and never goes in git. Override with `APP_STORE_KEY_ID` and `APP_STORE_ISSUER_ID`.
+- **The tools.** Node, Rust, `just` and the vcpkg clone for HEIC (see above), in the places `mac-release` expects. Use vcpkg, not Homebrew, for a build you ship: Homebrew's libheif includes the GPL x265 encoder.
+
+Things that bit us:
+- An unsigned or ad-hoc signed disk image downloaded from elsewhere always shows "damaged" on Apple silicon. Only the signed and notarized one opens normally; `xattr -cr` on the app is a workaround for testing, not for users.
+- Notarization takes a few minutes, and the recipe waits for the answer. If it is rejected, run `xcrun notarytool log <submission id> --key ...` on the Mac for the reason.
+- Version numbers come from `src-tauri/tauri.conf.json`; change it there before a release.
+
+Windows code signing and Store submission are not set up yet.
 
 ## Project layout
 
