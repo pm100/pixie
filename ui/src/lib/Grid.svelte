@@ -10,7 +10,7 @@
   import { retryDelay } from './retry';
   import { posterUrl, thumbUrl } from './url';
 
-  let { groups, version, view, selected, scrollTo, reveal = null, onopen, onselect, picks = new Set<number>(), onpick = () => {}, grouped = true, showHidden = false }: {
+  let { groups, version, view, selected, scrollTo, reveal = null, onopen, onselect, oncontext = () => {}, picks = new Set<number>(), onpick = () => {}, grouped = true, showHidden = false }: {
     groups: DayGroup[];
     version: number;
     view: View;
@@ -21,6 +21,8 @@
     reveal?: { index: number; n: number } | null;
     onopen: (index: number) => void;
     onselect: (index: number, mods: { ctrl: boolean; shift: boolean }) => void;
+    /** A right-click on a photo (its position): the app shows that photo's menu. */
+    oncontext?: (index: number, e: MouseEvent) => void;
     /** Quick pick: the picked photos (by id), and a click on the marker in a photo's top-left corner. */
     picks?: ReadonlySet<number>;
     onpick?: (id: number) => void;
@@ -88,9 +90,20 @@
 
   // Reset first, then load: both depend on `version`, and effects run in order,
   // so a version bump always refetches the visible pages.
+  // A bump for the same listing (photos still arriving while Pixie loads) keeps the thumbnails on show until the pages are read
+  // again; emptying them would blank every one at once and the whole grid would flash every second or two.
+  let listingKey = '';
+  let sameListing = false;
   $effect(() => {
     version;
-    untrack(() => { cache.reset(); broken = {}; nonce = {}; attempts = {}; });
+    untrack(() => {
+      const key = JSON.stringify([view.order, view.folderId, view.kind, view.bounds, view.since, view.until, view.search]);
+      sameListing = key === listingKey;
+      listingKey = key;
+      broken = {};
+      if (sameListing) { cache.refresh(); return; }
+      cache.reset(); nonce = {}; attempts = {};
+    });
   });
 
   $effect(() => {
@@ -109,7 +122,7 @@
   const asked = new Set<number>();
   $effect(() => {
     version;
-    untrack(() => { hiddenIds = new Set(); asked.clear(); });
+    untrack(() => { if (!sameListing) { hiddenIds = new Set(); asked.clear(); } });
   });
   $effect(() => {
     tick;
@@ -169,7 +182,7 @@
           <button class="cell" class:sel={selected === i} class:hid={p !== undefined && hiddenIds.has(p.id)}
                   style:top="{row.top}px" style:left="{k * (CELL + GAP)}px"
                   onclick={(e) => onselect(i, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
-                  ondblclick={() => onopen(i)} onkeydown={(e) => key(e, i)}
+                  ondblclick={() => onopen(i)} onkeydown={(e) => key(e, i)} oncontextmenu={(e) => oncontext(i, e)}
                   aria-label={p ? (p.kind === 'video' ? `video ${p.path}` : p.path) + (hiddenIds.has(p.id) ? ' (hidden)' : '') : 'photo'} aria-pressed={selected === i}>
             {#if p && p.kind === 'video'}
               {#if noPoster[p.id]}

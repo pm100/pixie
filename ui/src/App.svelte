@@ -6,7 +6,7 @@
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
     listPeople, faceOverview, peopleStatus, duplicateStatus, setPersonFilter, setCameraFilter, setMissingFilter, getMasterFolder, setMasterFolder, getSyncSubfolder, setSyncSubfolder, setFolderFeeds, shareCounts as fetchShareCounts, setShareFilter, copyToMaster, stopMasterCopy, masterCopyStatus, locationCounts, getDateRules, setDateRules, activeFilters, pickIds, pickAllMatching, pickVideoCount, pickPhoto, pickMany, clearPicks, getAnalysisOptions, setAnalysisOptions,
-    hiddenCount, hidePhotos, setShowHidden, unhidePhotos,
+    hiddenCount, hidePhotos, setShowHidden, unhidePhotos, openDataFolder, openInDefaultPlayer, showInFolder, makePrivate, releasePrivate, photoShare, hiddenAmong,
     facetCounts, onSuggestionCount, onSuggestionFound, onSuggestionLooking, onSuggestionsDone, loadProgress, scanFolders, suggestFolders, folderStates,
     type DayGroup, type Folder, type FolderInfo, type MediaKind, type Photo, type Route, type SortOrder, type Trip, type View,
   } from './lib/api';
@@ -16,7 +16,7 @@
   import { cleanTripPrefs, destinationOf, tripTitle, type TripPrefs } from './lib/trips';
   import { createLatest } from './lib/latest';
   import { hitsActive, tagLabel, type TagCount } from './lib/tagNav';
-  import { shouldRemind, type CopyStatus, type ShareChoice } from './lib/master';
+  import { SHARE_PRIVATE, shouldRemind, type CopyStatus, type ShareChoice } from './lib/master';
   import { personLabel, type PeopleStatus, type PersonInfo } from './lib/people';
   import PeopleTab from './lib/PeopleTab.svelte';
   import { directCount, parseBar } from './lib/actionBar';
@@ -71,6 +71,12 @@
   import { ALL_ON, clearsFilters, parseOptions, type AnalysisOptions } from './lib/analysisOptions';
   import { parseLimit } from './lib/emailSize';
   import { parseViewerMode, type ViewerMode } from './lib/viewerPref';
+  import { allCommands, contextModel, menuModel, onCommandsChanged } from './lib/commands';
+  import { registerAppCommands, registerGoCommands, type CommandContext } from './lib/appCommands';
+  import { commandForKey, isTextField } from './lib/shortcuts';
+  import { applyMenu, popupMenu, toSpec } from './lib/menuBar';
+  import { registerPhotoCommands, type PhotoCommandContext, type PhotoTarget } from './lib/photoCommands';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import Nav from './lib/Nav.svelte';
   import Viewer from './lib/Viewer.svelte';
   import SyncReminder from './lib/SyncReminder.svelte';
@@ -1225,6 +1231,105 @@
   }
   const openAnalysisDetails = () => { settingsPage = 'analysis'; pickTab('settings'); };
 
+  // The menu bar and the app's own shortcuts are made from the command registry (lib/commands.ts); this is what the commands need from the app.
+  const mac = navigator.userAgent.includes('Mac');
+  const isPaused = () => { const av = activityView(activity); return av.pill === 'paused' || av.held || scanPaused || syncPaused; };
+  const commandContext: CommandContext = {
+    mac,
+    tabs: () => tabs,
+    pickTab,
+    addFolders: chooseFolder,
+    rescan: () => { if (scanning) return; scanning = true; startScan(null).catch(() => (scanning = false)); },
+    syncNow: () => void copyNow(),
+    canSync: () => master !== null,
+    paused: isPaused,
+    canTogglePause: () => activityView(activity).running.length > 0 || scanPaused || syncPaused,
+    togglePause: () => pauseResume(!isPaused()),
+    openDataFolder: () => { openDataFolder().catch((e) => (message = String(e))); },
+    exit: () => { void getCurrentWindow().close(); },
+    pickAllShown: () => void pickAllShown(),
+    canPickAll: () => pickAll.enabled,
+    clearPicks: () => void clearAllPicks(),
+    anyPicked: () => picked.size > 0,
+    viewerMode: () => viewerMode,
+    setViewerMode,
+    showProcessing: () => (activityOpen = true),
+    toggleFullScreen: () => { const w = getCurrentWindow(); void w.isFullscreen().then((f) => w.setFullscreen(!f)); },
+    toggleHelp,
+    showAbout: () => { settingsPage = 'about'; pickTab('settings'); },
+    inTextField: () => isTextField(document.activeElement),
+    editText: (op) => { document.execCommand(op); },
+  };
+  let commandsVersion = $state(0);
+  let commandsChanges = 0; // a plain counter: `commandsVersion++` would read the state, and the effects that register commands would then depend on it and loop
+  $effect(() => onCommandsChanged(() => { commandsVersion = ++commandsChanges; }));
+  $effect(() => registerAppCommands(commandContext));
+  $effect(() => registerGoCommands(commandContext)); // reads the shown tabs, so it follows People turning on or off
+  // Rebuild the native menu whenever a command comes or goes, or a label or greyed-out state it read changes. The model is made here,
+  // synchronously, so every piece of state the commands read is tracked.
+  $effect(() => {
+    void commandsVersion;
+    const spec = toSpec(menuModel(allCommands()), mac);
+    applyMenu(spec, (id) => {
+      const c = allCommands().find((x) => x.id === id);
+      if (c) Promise.resolve(c.run(undefined)).catch((e) => (message = String(e)));
+    }, mac).catch((e) => console.error('The menu bar could not be built', e));
+  });
+  // Right-click on a photo in Browse. A photo among several Picked acts for all of them; any other photo is chosen first and acts alone.
+  async function setPickedIds(ids: number[], on: boolean) {
+    const next = new Set(picked);
+    for (const id of ids) { if (on) next.add(id); else next.delete(id); }
+    picked = next;
+    try { if (on) await pickMany(ids); else for (const id of ids) await pickPhoto(id, false); } catch (e) { message = String(e); await loadPicks(); }
+    if (activeUtag === 'picked') void utagChanged();
+  }
+  async function setHiddenIds(ids: number[], on: boolean) {
+    try { await (on ? hidePhotos(ids) : unhidePhotos(ids)); } catch (e) { message = String(e); }
+    await hiddenChanged();
+  }
+  const photoCommandContext: PhotoCommandContext = {
+    open: openItem,
+    setPicked: (ids, on) => void setPickedIds(ids, on),
+    openPlayer: (id) => { openInDefaultPlayer(id).catch((e) => (message = String(e))); },
+    showInFolder: (id) => { showInFolder(id).catch((e) => (message = String(e))); },
+    openTool,
+    setPrivate: async (id, on) => {
+      try { await (on ? makePrivate([id]) : releasePrivate([id])); } catch (e) { message = String(e); }
+      await sharePhotoChanged();
+    },
+    setHidden: (ids, on) => void setHiddenIds(ids, on),
+  };
+  $effect(() => registerPhotoCommands(photoCommandContext));
+  async function photoMenu(i: number, e: MouseEvent) {
+    e.preventDefault();
+    const v = shown; // the listing the position refers to
+    try {
+      const [p] = await listPhotos(i, 1, v.order, v.folderId, v.kind, v.bounds, v.maxId, v.since, v.until, v.search);
+      if (!p) return;
+      const group = picked.has(p.id) && picked.size > 1;
+      const ids = group ? [...picked] : [p.id];
+      if (!group) selected = i;
+      const single = ids.length === 1;
+      const hidden = await hiddenAmong(ids);
+      const target: PhotoTarget = {
+        ids, index: single ? i : null, kind: single ? p.kind : 'mixed',
+        picked: ids.every((id) => picked.has(id)),
+        private: single && master !== null ? (await photoShare(p.id)) === SHARE_PRIVATE : null,
+        hidden: hidden.length === ids.length,
+      };
+      await popupMenu(contextModel(allCommands(), 'photo', target), (id) => {
+        const c = allCommands().find((x) => x.id === id);
+        if (c) Promise.resolve(c.run(target)).catch((err) => (message = String(err)));
+      });
+    } catch (err) { message = String(err); }
+  }
+  function onAppKey(e: KeyboardEvent) {
+    const c = commandForKey(allCommands(), e, mac);
+    if (!c) return;
+    e.preventDefault();
+    void c.run(undefined);
+  }
+
   // While the analysing screen is showing, count how far its folders' photos have got once a second; while Settings,
   // Picture analysis is showing, count the people found. (The analyses' states arrive as events.)
   $effect(() => {
@@ -1416,7 +1521,7 @@
 
 <!-- The webview's own right-click menu (Share, Magnify image, ...) does nothing useful here, so it is off
      everywhere except in text fields, where copy and paste are wanted. -->
-<svelte:window oncontextmenu={noBrowserMenu} onkeydown={(e) => { if (e.key === 'F1' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) { e.preventDefault(); toggleHelp(); } }} />
+<svelte:window oncontextmenu={noBrowserMenu} onkeydown={onAppKey} />
 <main inert={phase !== 'off' || activityOpen}>
   <Tabs {tabs} active={tab} onpick={pickTab} onhelp={toggleHelp} {helpOpen} bind:helpButton={helpEl}>
     {#snippet status()}
@@ -1559,7 +1664,7 @@
                 {:else}
                   <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick} grouped={groupByDate} {showHidden}
                         onopen={openItem}
-                        onselect={selectItem} />
+                        onselect={selectItem} oncontext={photoMenu} />
                 {/if}
               </div>
             </div>
@@ -1568,7 +1673,7 @@
           {:else}
             <Grid {groups} {version} view={shown} {selected} {scrollTo} {reveal} picks={picked} onpick={togglePick} grouped={groupByDate} {showHidden}
                   onopen={openItem}
-                  onselect={selectItem} />
+                  onselect={selectItem} oncontext={photoMenu} />
           {/if}
         {/snippet}
         {#snippet right()}

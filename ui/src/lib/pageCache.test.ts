@@ -65,4 +65,31 @@ describe('PageCache', () => {
     h.cache.ensure(0, 10);
     expect(h.calls).toEqual([0, 0]);
   });
+
+  it('keeps the rows on show while a refresh fetches them again, then replaces them', async () => {
+    const h = harness();
+    h.cache.ensure(0, 10);
+    h.pending[0].resolve(['a', 'b']);
+    await tick();
+    const before = h.changes();
+    h.cache.refresh();
+    expect(h.cache.items[0]).toBe('a');
+    expect(h.changes()).toBe(before);
+    h.cache.ensure(0, 10);
+    expect(h.calls).toEqual([0, 0]);
+    h.pending[1].resolve(['x', 'y']);
+    await tick();
+    expect(h.cache.items[0]).toBe('x');
+    expect(h.cache.items[1]).toBe('y');
+  });
+
+  it('drops a response that arrives after a refresh was followed by a reset', async () => {
+    const h = harness();
+    h.cache.ensure(0, 10);
+    h.cache.refresh();
+    h.cache.reset();
+    h.pending[0].resolve(['late']);
+    await tick();
+    expect(h.cache.items[0]).toBeUndefined();
+  });
 });

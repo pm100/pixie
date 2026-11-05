@@ -21,6 +21,13 @@ export class PageCache<T> {
     this.onChange();
   }
 
+  /** Starts a new generation like `reset`, but leaves the rows on show until the pages are fetched again and replace them (the caller must `ensure` the pages in view).
+   *  For a listing that only grew: emptying it would blank every thumbnail at once. */
+  refresh(): void {
+    this.generation++;
+    this.requested.clear();
+  }
+
   /** Make sure every page overlapping [first, endExclusive) is loaded or loading. */
   ensure(first: number, endExclusive: number): void {
     if (endExclusive <= first) return;
