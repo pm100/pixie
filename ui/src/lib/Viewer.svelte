@@ -109,12 +109,18 @@
   let fps = $state(30);
   let saving = $state(false);
   /** What the last Save frame did: the file written (with the video it belongs to), or why it could not be. */
-  let note = $state<{ text: string; id?: number; name?: string } | null>(null);
+  type Note = { text: string; id?: number; name?: string; preview?: string };
+  let note = $state<Note | null>(null);
   let noteTimer: ReturnType<typeof setTimeout> | undefined;
-  function say(n: { text: string; id?: number; name?: string }) {
+  function say(n: Note) {
+    if (note?.preview) URL.revokeObjectURL(note.preview);
     note = n;
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => (note = null), 8000);
+    noteTimer = setTimeout(() => clearNote(), n.preview ? 15000 : 8000);
+  }
+  function clearNote() {
+    if (note?.preview) URL.revokeObjectURL(note.preview);
+    note = null;
   }
   // The time of the frame on screen, and the frame rate worked out from the gaps between the frames as they play.
   $effect(() => {
@@ -147,8 +153,10 @@
   /** Save the frame on screen as a photo next to the video. */
   async function saveFrame() {
     const v = player, video = current;
-    if (!v || !video || video.kind !== 'video' || saving || !videoLoaded || !v.videoWidth || !v.videoHeight) return;
+    if (!v || !video || video.kind !== 'video' || saving) return;
+    if (!videoLoaded || !v.videoWidth || !v.videoHeight) return say({ text: 'The video is not ready yet; try again in a moment.' });
     saving = true;
+    say({ text: 'Saving the frame…' });
     try {
       const time = v.currentTime;
       const c = document.createElement('canvas');
@@ -158,7 +166,7 @@
       const blob = await new Promise<Blob | null>((done) => c.toBlob(done, 'image/jpeg', 0.95));
       if (!blob) throw new Error('The frame could not be drawn.');
       const saved = await saveVideoFrame(video.id, frameMs(time), new Uint8Array(await blob.arrayBuffer()));
-      say({ text: `Saved ${saved.name}`, id: video.id, name: saved.name });
+      say({ text: `Saved ${saved.name}. It joins your photos in a moment.`, id: video.id, name: saved.name, preview: URL.createObjectURL(blob) });
     } catch (e) {
       say({ text: String(e).replace(/^Error: /, '') });
     }
@@ -230,11 +238,12 @@
         <span class="at" title="Where the frame on screen is in the video">{timecode(vtime)} · frame {frameNumber(vtime, fps).toLocaleString()}</span>
         <button onclick={() => stepFrame(1)} title="Go forward one frame (.)" aria-label="Forward one frame">frame ▶</button>
         <button onclick={() => stepSeconds(1)} title="Go forward one second">+1 s</button>
-        <button class="primary" disabled={saving} onclick={() => void saveFrame()} title="Save the frame on screen as a photo next to the video, with the video's date and place (S)">Save frame</button>
+        <button class="primary" disabled={saving} onclick={() => void saveFrame()} title="Save the frame on screen as a photo next to the video, with the video's date and place (S)">{saving ? 'Saving…' : 'Save frame'}</button>
       </div>
     {/if}
     {#if note}
       <div class="note" role="status">
+        {#if note.preview}<img class="snap" src={note.preview} alt="The saved frame" />{/if}
         <span>{note.text}</span>
         {#if note.name && note.id !== undefined}<button onclick={() => showSavedFrame(note!.id!, note!.name!).catch(() => {})} title="Show the saved picture in its folder">Show</button>{/if}
       </div>
@@ -287,7 +296,8 @@
   .close { position: absolute; z-index: 1; top: 12px; right: 16px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 2px 10px; color: #fff; font-size: 22px; cursor: pointer; }
   .framebar { position: absolute; z-index: 1; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .7); color: #fff; font-size: 14px; white-space: nowrap; max-width: calc(100% - 300px); overflow: hidden; }
   .framebar .at { font-variant-numeric: tabular-nums; min-width: 17ch; text-align: center; }
-  .note { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 130px; display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-radius: 8px; background: rgba(0, 0, 0, .8); color: #fff; font-size: 14px; max-width: calc(100% - 32px); }
+  .note { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); top: 64px; display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-radius: 8px; background: #1f6feb; color: #fff; font-size: 15px; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); max-width: calc(100% - 32px); }
+  .note .snap { height: 90px; max-width: 160px; object-fit: contain; border-radius: 4px; background: #000; }
   .popout { position: absolute; z-index: 1; top: 12px; right: 60px; background: rgba(0, 0, 0, .55); border: 0; border-radius: 6px; padding: 7px 10px; color: #fff; font-size: 14px; cursor: pointer; }
   .film { position: absolute; z-index: 1; left: 50%; transform: translateX(-50%); bottom: 56px; display: flex; gap: 4px; padding: 6px; background: rgba(0, 0, 0, .45); border-radius: 8px; max-width: calc(100% - 32px); overflow: hidden; }
   .cell { width: 54px; height: 54px; padding: 0; border: 2px solid transparent; border-radius: 4px; background: #222; cursor: pointer; flex: none; overflow: hidden; }
