@@ -268,7 +268,42 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX idx_photos_kind_oldest ON photos(kind, missing, dup, hidden, (taken_at IS NULL), taken_at ASC, id ASC);",
     // V31: the face the user chose to show a person by (NULL: Pixie picks, see `people::cover_face`).
     "ALTER TABLE people ADD COLUMN cover_face INTEGER;",
+    // V32: a folder is the person's own (`library`) or a temporary `source` (a card, stick or folder looked at before anything is copied from it:
+    // `source_key` says which drive it is, `label` what to call it). A photo in a source is `hidden = 2` (`HIDDEN_SOURCE`), set by this trigger in the
+    // statement that adds it, so there is no moment it is listed: everything that leaves out hidden items leaves sources out.
+    "ALTER TABLE folders ADD COLUMN kind TEXT NOT NULL DEFAULT 'library';
+     ALTER TABLE folders ADD COLUMN source_key TEXT;
+     ALTER TABLE folders ADD COLUMN label TEXT;
+     CREATE TRIGGER photos_in_source AFTER INSERT ON photos
+       WHEN (SELECT kind FROM folders WHERE id = NEW.folder_id) = 'source'
+       BEGIN UPDATE photos SET hidden = 2 WHERE id = NEW.id; END;",
+    // V33: what Import kept from which source. A batch is one Keep run from one source into one folder; the log has one row for each item kept, by
+    // the source's key and the item's path below the source (so a card is known again whatever drive letter it gets), size and modified time.
+    "CREATE TABLE import_batch (
+        id          INTEGER PRIMARY KEY,
+        started     INTEGER NOT NULL,
+        source_key  TEXT NOT NULL,
+        label       TEXT NOT NULL,
+        dest_folder INTEGER NOT NULL,
+        items       INTEGER NOT NULL DEFAULT 0,
+        bytes       INTEGER NOT NULL DEFAULT 0
+     );
+     CREATE TABLE import_log (
+        batch      INTEGER NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+        source_key TEXT NOT NULL,
+        path       TEXT NOT NULL,
+        size       INTEGER NOT NULL,
+        mtime      INTEGER NOT NULL,
+        hash       TEXT,
+        dest_path  TEXT NOT NULL
+     );
+     CREATE INDEX idx_import_log ON import_log(source_key, path, size, mtime);",
 ];
+
+/// `photos.hidden`: the person hid it (Hide, Show hidden).
+pub const HIDDEN_BY_USER: i64 = 1;
+/// `photos.hidden`: it is on a temporary source, never part of the library (see `source.rs`).
+pub const HIDDEN_SOURCE: i64 = 2;
 
 /// An item the copier has yet to copy.
 #[derive(Debug, Clone, PartialEq)]
@@ -491,10 +526,15 @@ impl Filter {
     fn sql(&self) -> String {
         // Extra copies of a duplicate are not listed: one item stands for each set of identical files.
         let mut s = String::from(" AND dup = 0");
-        // Nor are the items the user hid, unless asked for.
-        if !self.show_hidden {
-            s.push_str(" AND hidden = 0");
-        }
+        // Nor are the items the user hid, unless asked for, and never the items on a temporary source (hidden = 2): those are listed
+        // only when asking for their own folder. A library folder never holds a source's photos and a source holds nothing else, so a
+        // folder query only needs to say which kind it wants (a constant to the planner, so the listing indexes still serve it).
+        s.push_str(match (self.show_hidden, self.folder.is_some()) {
+            (false, false) => " AND hidden = 0",
+            (false, true) => " AND hidden = (SELECT CASE kind WHEN 'source' THEN 2 ELSE 0 END FROM folders WHERE id = :folder)",
+            (true, false) => " AND hidden < 2",
+            (true, true) => "",
+        });
         if self.folder.is_some() {
             s.push_str(" AND folder_id = :folder");
         }
@@ -565,7 +605,7 @@ fn list_sql(q: &PhotoQuery, f: &Filter) -> String {
 /// group and filter by the tidied name.
 fn sync_camera_names(c: &Connection) -> Result<()> {
     let raws: Vec<String> = {
-        let mut s = c.prepare("SELECT DISTINCT camera FROM photos WHERE camera IS NOT NULL AND camera != ''").map_err(db_err)?;
+        let mut s = c.prepare("SELECT DISTINCT camera FROM photos WHERE hidden < 2 AND camera IS NOT NULL AND camera != ''").map_err(db_err)?;
         let rows = s.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<String>, _>>().map_err(db_err)?;
         rows
     };
@@ -718,6 +758,12 @@ impl Db {
     }
 
     pub fn add_folder(&self, path: &str) -> Result<FolderId> {
+        // A folder that was only open as a temporary source becomes the person's own: the source's rows (hidden, never analysed) go, and the
+        // folder is scanned afresh as a library folder.
+        let source: Option<FolderId> = self.conn().query_row("SELECT id FROM folders WHERE path = ?1 AND kind = 'source'", params![path], |r| r.get(0)).optional().map_err(db_err)?;
+        if let Some(id) = source {
+            self.remove_source(id)?;
+        }
         let c = self.conn();
         c.execute("INSERT OR IGNORE INTO folders(path) VALUES (?1)", params![path]).map_err(db_err)?;
         c.query_row("SELECT id FROM folders WHERE path = ?1", params![path], |r| r.get(0)).map_err(db_err)
@@ -734,7 +780,7 @@ impl Db {
 
     pub fn list_folders(&self) -> Result<Vec<Folder>> {
         let c = self.conn();
-        let mut s = c.prepare("SELECT id, path FROM folders ORDER BY path").map_err(db_err)?;
+        let mut s = c.prepare("SELECT id, path FROM folders WHERE kind = 'library' ORDER BY path").map_err(db_err)?;
         let rows = s
             .query_map([], |r| Ok(Folder { id: r.get(0)?, path: r.get(1)? }))
             .map_err(db_err)?
@@ -749,6 +795,7 @@ impl Db {
             .prepare(
                 "SELECT f.id, f.path, COUNT(p.id), f.feeds_master FROM folders f
                  LEFT JOIN photos p ON p.folder_id = f.id AND p.missing = 0
+                 WHERE f.kind = 'library'
                  GROUP BY f.id ORDER BY f.path",
             )
             .map_err(db_err)?;
@@ -850,7 +897,7 @@ impl Db {
                            (?1 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)) AS need_embed,
                            (?2 IS NOT NULL AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?2)) AS need_faces,
                            (?3 AND EXISTS (SELECT 1 FROM faces f WHERE f.photo_id = p.id AND f.art IS NULL)) AS need_art
-                      FROM photos p WHERE p.missing = 0 AND p.dup = 0 AND p.kind = 0)
+                      FROM photos p WHERE p.missing = 0 AND p.dup = 0 AND p.hidden < 2 AND p.kind = 0)
                   WHERE need_hash OR need_embed OR need_faces OR need_art
                   ORDER BY id DESC LIMIT ?4"
             ))
@@ -898,7 +945,7 @@ impl Db {
     pub fn unhashed_twins(&self, id: PhotoId, size: i64, mtime: i64) -> Result<Vec<(PhotoId, String)>> {
         let c = self.conn();
         let mut s = c
-            .prepare("SELECT id, path FROM photos WHERE size = ?2 AND id != ?1 AND ABS(mtime - ?3) <= 2000 AND missing = 0 AND kind = 0 AND hash IS NULL")
+            .prepare("SELECT id, path FROM photos WHERE size = ?2 AND id != ?1 AND ABS(mtime - ?3) <= 2000 AND missing = 0 AND hidden < 2 AND kind = 0 AND hash IS NULL")
             .map_err(db_err)?;
         let rows = s.query_map(params![id, size, mtime], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_err)
@@ -1132,7 +1179,7 @@ impl Db {
             let c = self.conn();
             let mut s = c
                 .prepare(&format!(
-                    "SELECT n.name, COUNT(CASE WHEN p.id IN ({}) THEN 1 END) AS cnt FROM photos p JOIN camera_norm n ON n.raw = p.camera WHERE p.missing = 0 AND p.dup = 0 GROUP BY n.name ORDER BY cnt DESC, n.name",
+                    "SELECT n.name, COUNT(CASE WHEN p.id IN ({}) THEN 1 END) AS cnt FROM photos p JOIN camera_norm n ON n.raw = p.camera WHERE p.missing = 0 AND p.dup = 0 AND p.hidden < 2 GROUP BY n.name ORDER BY cnt DESC, n.name",
                     base.sql
                 ))
                 .map_err(db_err)?;
@@ -1158,7 +1205,7 @@ impl Db {
     /// Live items of this kind (0 photo, 1 video) not yet given a quick key, newest first: (id, path).
     pub fn photos_needing_quick_key(&self, kind: i64, limit: i64) -> Result<Vec<(PhotoId, String)>> {
         let c = self.conn();
-        let mut s = c.prepare("SELECT id, path FROM photos WHERE missing = 0 AND kind = ?1 AND quick_key IS NULL ORDER BY id DESC LIMIT ?2").map_err(db_err)?;
+        let mut s = c.prepare("SELECT id, path FROM photos WHERE missing = 0 AND hidden < 2 AND kind = ?1 AND quick_key IS NULL ORDER BY id DESC LIMIT ?2").map_err(db_err)?;
         let rows = s.query_map(params![kind, limit], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
         Ok(rows)
     }
@@ -1174,7 +1221,7 @@ impl Db {
         let mut s = c
             .prepare(
                 "SELECT p.id, p.path FROM photos p
-                 WHERE p.missing = 0 AND p.kind = ?1 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
+                 WHERE p.missing = 0 AND p.hidden < 2 AND p.kind = ?1 AND p.hash IS NULL AND p.quick_key IS NOT NULL AND substr(p.quick_key, 1, 1) != '!'
                    AND p.quick_key IN (SELECT quick_key FROM photos WHERE kind = ?1 AND missing = 0 AND quick_key IS NOT NULL GROUP BY quick_key HAVING count(*) > 1)
                  ORDER BY p.id DESC LIMIT ?2",
             )
@@ -1303,13 +1350,13 @@ impl Db {
     pub fn dup_status(&self) -> Result<DupStatus> {
         let sync = self.sync_folder_id()?.unwrap_or(0);
         let c = self.conn();
-        let total: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let total: i64 = c.query_row("SELECT count(*) FROM photos WHERE missing = 0 AND hidden < 2", [], |r| r.get(0)).map_err(db_err)?;
         // Still to do: no quick key yet, or a shared quick key without a full hash.
         let todo: i64 = c
             .query_row(
                 // The shared quick keys are found once, as a group: asking per photo ("does another photo share this
                 // key?") makes SQLite compare every photo with every other, which took seconds.
-                "SELECT count(*) FROM photos p WHERE p.missing = 0 AND (
+                "SELECT count(*) FROM photos p WHERE p.missing = 0 AND p.hidden < 2 AND (
                     (p.kind = 0 AND p.hash IS NULL AND coalesce(substr(p.quick_key, 1, 1), '') != '!')
                     OR (p.kind = 1 AND (p.quick_key IS NULL OR (
                         p.hash IS NULL AND substr(p.quick_key, 1, 1) != '!'
@@ -1815,7 +1862,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND kind = 0
+                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND hidden < 2 AND kind = 0
                    AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model_version = ?1)
                  ORDER BY id DESC LIMIT ?2"
             ))
@@ -1827,11 +1874,11 @@ impl Db {
     /// (photos with a row for this model version, photos that should have one).
     pub fn embedding_counts(&self, model_version: &str) -> Result<(i64, i64)> {
         let c = self.conn();
-        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND hidden < 2 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
         let done: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM embeddings e JOIN photos p ON p.id = e.photo_id
-                  WHERE e.model_version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.kind = 0",
+                  WHERE e.model_version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.hidden < 2 AND p.kind = 0",
                 params![model_version],
                 |r| r.get(0),
             )
@@ -2273,7 +2320,7 @@ impl Db {
         let c = self.conn();
         let mut s = c
             .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND dup = 0 AND kind = 0
+                "SELECT {PHOTO_COLS} FROM photos p WHERE missing = 0 AND dup = 0 AND hidden < 2 AND kind = 0
                    AND NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.version = ?1)
                  ORDER BY id DESC LIMIT ?2"
             ))
@@ -2286,11 +2333,11 @@ impl Db {
     /// copy Browse shows is scanned instead.
     pub fn face_counts(&self, version: &str) -> Result<(i64, i64)> {
         let c = self.conn();
-        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
+        let total: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE missing = 0 AND dup = 0 AND hidden < 2 AND kind = 0", [], |r| r.get(0)).map_err(db_err)?;
         let done: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM face_scans s JOIN photos p ON p.id = s.photo_id
-                  WHERE s.version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.kind = 0",
+                  WHERE s.version = ?1 AND p.missing = 0 AND p.dup = 0 AND p.hidden < 2 AND p.kind = 0",
                 params![version],
                 |r| r.get(0),
             )
