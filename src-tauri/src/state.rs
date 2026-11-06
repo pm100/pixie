@@ -35,4 +35,6 @@ pub struct AppState {
     pub import: Arc<crate::importer::ImportState>,
     /// Where the thumbnails are kept.
     pub thumbs_dir: std::path::PathBuf,
+    /// The Inbox: where what was extracted from zip files waits to be kept or discarded.
+    pub inbox_dir: std::path::PathBuf,
 }

@@ -1,4 +1,4 @@
-import type { FolderInfo, KeepLayout, KeepProgress, KeepReport, KeepWhich, SourceSummary } from './api';
+import type { FolderInfo, KeepLayout, KeepProgress, KeepReport, KeepWhich, SourceSummary, ZipLook } from './api';
 import { formatBytes, plural } from './format';
 
 /** How kept photos are filed inside the folder they go to. */
@@ -44,4 +44,34 @@ export function keepPercent(p: KeepProgress | null): number {
 export function defaultDestination(folders: FolderInfo[], master: string | null, lastUsed: number | null): number | null {
   if (lastUsed !== null && folders.some((f) => f.id === lastUsed)) return lastUsed;
   return folders.find((f) => f.path === master)?.id ?? folders[0]?.id ?? null;
+}
+
+/** What a zip holds, in a sentence: the photos and videos that will be extracted, and the other files that will be left out. */
+export function zipLine(z: ZipLook): string {
+  if (z.photos + z.videos === 0) return 'There are no photos or videos in this zip.';
+  const parts = [z.photos > 0 ? plural(z.photos, 'photo') : null, z.videos > 0 ? plural(z.videos, 'video') : null].filter((p): p is string => p !== null);
+  const held = `${parts.join(' and ')}, ${formatBytes(z.bytes)}.`;
+  return z.other > 0 ? `${held} ${plural(z.other, 'other file')} will be left out.` : held;
+}
+
+/** What extracting the zip needs and what is free where the Inbox is (nothing when there is nothing to extract). */
+export function spaceLine(z: ZipLook): string {
+  if (z.photos + z.videos === 0) return '';
+  return z.fits ? `Needs ${formatBytes(z.bytes)}. ${formatBytes(z.free)} is free where the Inbox is.` : `Needs ${formatBytes(z.bytes)} but only ${formatBytes(z.free)} is free where the Inbox is.`;
+}
+
+/** Each kind of entry that will be skipped, as a sentence. */
+export function zipProblems(z: ZipLook): string[] {
+  const entries = (n: number) => plural(n, 'entry', 'entries');
+  const out: string[] = [];
+  if (z.unsafe_names > 0) out.push(`${entries(z.unsafe_names)} ${z.unsafe_names === 1 ? 'has an unsafe name' : 'have unsafe names'} and will be skipped.`);
+  if (z.encrypted > 0) out.push(`${entries(z.encrypted)} ${z.encrypted === 1 ? 'is' : 'are'} encrypted and will be skipped.`);
+  if (z.too_big > 0) out.push(`${entries(z.too_big)} ${z.too_big === 1 ? 'expands' : 'expand'} far more than ${z.too_big === 1 ? 'it' : 'they'} should and will be skipped.`);
+  if (z.archives > 0) out.push(`${plural(z.archives, 'zip')} inside this zip will not be opened.`);
+  return out;
+}
+
+/** How far an extraction has got. */
+export function extractLine(done: number, total: number): string {
+  return total > 0 ? `Extracting ${done.toLocaleString()} of ${total.toLocaleString()}…` : 'Extracting…';
 }

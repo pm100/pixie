@@ -13,6 +13,11 @@ walkdir = { workspace = true }
 serde = { workspace = true }
 sha2 = "0.10"
 serde_json = "1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 pixie-testutil = { path = "../pixie-testutil" }

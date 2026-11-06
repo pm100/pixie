@@ -21,7 +21,7 @@ pub struct SourceInfo {
 }
 
 /// A path as compared for overlap: forward slashes, no trailing slash, and lower case where the file system ignores case.
-fn plain(path: &str) -> String {
+pub(crate) fn plain(path: &str) -> String {
     let p = path.replace('\\', "/");
     let p = p.trim_end_matches('/');
     if cfg!(any(windows, target_os = "macos")) { p.to_lowercase() } else { p.to_string() }
@@ -118,6 +118,14 @@ impl Db {
         }
         c.execute("DELETE FROM folders WHERE id = ?1 AND kind = 'source'", params![id]).map_err(db_err)?;
         Ok(ids)
+    }
+
+    /// Forgets one item of a source (its row, picks and everything kept about it), after it was kept by a move. Does nothing to a library photo.
+    pub fn forget_source_photo(&self, id: PhotoId) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM photos WHERE id = ?1 AND folder_id IN (SELECT id FROM folders WHERE kind = 'source')", params![id])
+            .map_err(db_err)?;
+        Ok(())
     }
 
     /// Removes every source whose key is not in `present` (its drive is gone), at start-up and when a drive is unplugged. Returns the removed

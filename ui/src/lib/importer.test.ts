@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { FolderInfo, KeepReport, SourceSummary } from './api';
-import { LAYOUTS, defaultDestination, keepLine, keepPercent, keepWords, summaryLine } from './importer';
+import type { FolderInfo, KeepReport, SourceSummary, ZipLook } from './api';
+import { LAYOUTS, defaultDestination, extractLine, keepLine, keepPercent, keepWords, spaceLine, summaryLine, zipLine, zipProblems } from './importer';
 
 const MB = 1024 ** 2;
 const GB = 1024 ** 3;
@@ -82,5 +82,59 @@ describe('defaultDestination', () => {
 describe('LAYOUTS', () => {
   it('offers the three filings, the date one first', () => {
     expect(LAYOUTS.map((l) => l.id)).toEqual(['year-date', 'year-month', 'flat']);
+  });
+});
+
+const zip = (over: Partial<ZipLook> = {}): ZipLook => ({ name: 'Trip.zip', photos: 0, videos: 0, other: 0, archives: 0, encrypted: 0, unsafe_names: 0, too_big: 0, bytes: 0, free: 100 * GB, fits: true, ...over });
+
+describe('zipLine', () => {
+  it('says what is in the zip and what will be left out', () => {
+    expect(zipLine(zip({ photos: 412, videos: 18, bytes: 6.1 * GB, other: 3 }))).toBe('412 photos and 18 videos, 6.1 GB. 3 other files will be left out.');
+    expect(zipLine(zip({ photos: 1, bytes: 2 * MB, other: 1 }))).toBe('1 photo, 2.0 MB. 1 other file will be left out.');
+    expect(zipLine(zip({ videos: 2, bytes: 3 * MB }))).toBe('2 videos, 3.0 MB.');
+  });
+
+  it('says so when there is nothing to extract', () => {
+    expect(zipLine(zip())).toBe('There are no photos or videos in this zip.');
+    expect(zipLine(zip({ other: 4 }))).toBe('There are no photos or videos in this zip.');
+  });
+});
+
+describe('spaceLine', () => {
+  it('says what it needs and what is free', () => {
+    expect(spaceLine(zip({ photos: 1, bytes: 6.1 * GB, free: 41 * GB }))).toBe('Needs 6.1 GB. 41.0 GB is free where the Inbox is.');
+  });
+
+  it('refuses in words when it does not fit', () => {
+    expect(spaceLine(zip({ photos: 1, bytes: 6.1 * GB, free: 2 * GB, fits: false }))).toBe('Needs 6.1 GB but only 2.0 GB is free where the Inbox is.');
+  });
+
+  it('says nothing when nothing is to be extracted', () => {
+    expect(spaceLine(zip())).toBe('');
+  });
+});
+
+describe('zipProblems', () => {
+  it('is empty when all is well', () => {
+    expect(zipProblems(zip({ photos: 3, bytes: 3 }))).toEqual([]);
+  });
+
+  it('names each kind of entry that will be skipped, one or many', () => {
+    expect(zipProblems(zip({ unsafe_names: 1 }))).toEqual(['1 entry has an unsafe name and will be skipped.']);
+    expect(zipProblems(zip({ unsafe_names: 2, encrypted: 1, too_big: 3, archives: 2 }))).toEqual([
+      '2 entries have unsafe names and will be skipped.',
+      '1 entry is encrypted and will be skipped.',
+      '3 entries expand far more than they should and will be skipped.',
+      '2 zips inside this zip will not be opened.',
+    ]);
+    expect(zipProblems(zip({ encrypted: 2 }))).toEqual(['2 entries are encrypted and will be skipped.']);
+    expect(zipProblems(zip({ archives: 1 }))).toEqual(['1 zip inside this zip will not be opened.']);
+  });
+});
+
+describe('extractLine', () => {
+  it('counts how far the extraction has got', () => {
+    expect(extractLine(3, 400)).toBe('Extracting 3 of 400…');
+    expect(extractLine(0, 0)).toBe('Extracting…');
   });
 });

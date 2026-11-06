@@ -1622,7 +1622,7 @@
             <button onclick={() => setAreaOnly(false)} aria-label="Show everything, not just the map area" title="Show everything, not just the map area">✕</button></span>
         {/if}
         {#if view.folderId !== null}
-          <span class="filter">{imports.sources.find((s) => s.id === view.folderId) ? 'Card' : 'Folder'} “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : (imports.sources.find((s) => s.id === view.folderId)?.label ?? 'unknown')}”
+          <span class="filter">{imports.sources.find((s) => s.id === view.folderId) ? 'Source' : 'Folder'} “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : (imports.sources.find((s) => s.id === view.folderId)?.label ?? 'unknown')}”
             <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
         {/if}
         {#if tripKey !== null}

@@ -3,6 +3,7 @@ pub mod copier;
 pub mod db;
 pub mod dupes;
 pub mod import;
+pub mod inbox;
 pub mod keep;
 pub mod mosaic;
 pub mod people;
@@ -13,6 +14,7 @@ pub mod source;
 pub mod suggest;
 pub mod trips;
 pub mod utags;
+pub mod zipsrc;
 pub mod working;
 
 pub use db::{Db, FacetAsk, PhotoStat, WorkItem, HIDDEN_BY_USER, HIDDEN_SOURCE};

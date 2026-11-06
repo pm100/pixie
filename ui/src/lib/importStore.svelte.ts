@@ -1,6 +1,6 @@
 // What Import shares between the tool and the Browse tree: the sources that are open, the drives that could be opened, the scan and
 // the Keep in progress. Kept in one place so both show the same thing, and the events and the polling run once.
-import { importAvailable, importSources, onImportDone, onImportProgress, onImportScan, onImportScanDone, type KeepDone, type KeepProgress, type OpenSource, type Removable, type ScanEvent } from './api';
+import { importAvailable, importSources, onImportDone, onImportExtract, onImportExtractDone, onImportProgress, onImportScan, onImportScanDone, type ExtractDone, type ExtractProgress, type KeepDone, type KeepProgress, type OpenSource, type Removable, type ScanEvent } from './api';
 
 export const imports = $state({
   /** The sources that are open (indexed where they are). */
@@ -14,6 +14,9 @@ export const imports = $state({
   progress: null as KeepProgress | null,
   /** How the last Keep ended (cleared when another starts). */
   done: null as KeepDone | null,
+  /** How far extracting a zip into the Inbox has got, and how the last one ended. */
+  extract: null as ExtractProgress | null,
+  extractDone: null as ExtractDone | null,
   /** The last thing that went wrong, in words. */
   error: '',
 });
@@ -45,6 +48,13 @@ export function startImportEvents(): () => void {
       void refreshSources();
     }),
     onImportProgress((p) => { imports.progress = p; }),
+    onImportExtract((p) => { imports.extract = p; }),
+    onImportExtractDone((d) => {
+      imports.extract = null;
+      imports.extractDone = d;
+      if (d.error !== null) imports.error = d.error;
+      void refreshSources();
+    }),
     onImportDone((d) => {
       imports.keeping = null;
       imports.progress = null;

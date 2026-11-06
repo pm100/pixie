@@ -8,6 +8,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// What Keep does with the source's file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Copy it; the source is only read (a card).
+    Copy,
+    /// Move it: once the copy is checked, the file and its row leave the source (what is in the Inbox).
+    Move,
+}
+
 /// How kept photos are filed inside the folder they go to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
@@ -103,10 +112,27 @@ pub struct KeepReport {
 /// How many problems a report keeps to show.
 const PROBLEMS_SHOWN: usize = 5;
 
+/// After a photo was kept: in move mode the source's file and row go (a failure to remove the file is a problem, and the row stays).
+fn leave(db: &Db, p: &pixie_core::Photo, mode: Mode, report: &mut KeepReport) -> Result<()> {
+    if mode != Mode::Move {
+        return Ok(());
+    }
+    match fs::remove_file(&p.path) {
+        Ok(()) => db.forget_source_photo(p.id),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => db.forget_source_photo(p.id),
+        Err(e) => {
+            if report.problems.len() < PROBLEMS_SHOWN {
+                report.problems.push(format!("{}: kept, but could not be removed from the Inbox ({e})", Path::new(&p.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Keeps these photos of a source: each is copied safely (see `copy_file_into`) into the library folder `dest_folder`, filed by `layout`, and logged
 /// as kept (a batch of the import log), so it is known next time. A photo that cannot be read is a problem and the rest go on. Stopping, or the
 /// destination failing, ends the run; what was not reached is still new. The card is only read.
-pub fn run_keep(db: &Db, source: FolderId, ids: &[PhotoId], dest_folder: FolderId, layout: Layout, stop: &AtomicBool, mut progress: impl FnMut(&KeepProgress)) -> Result<KeepReport> {
+pub fn run_keep(db: &Db, source: FolderId, ids: &[PhotoId], dest_folder: FolderId, layout: Layout, mode: Mode, stop: &AtomicBool, mut progress: impl FnMut(&KeepProgress)) -> Result<KeepReport> {
     let src = db.list_sources()?.into_iter().find(|s| s.id == source).ok_or_else(|| PixieError::Invalid("That is not an open source.".into()))?;
     let dest = db.list_folders()?.into_iter().find(|f| f.id == dest_folder).ok_or_else(|| PixieError::Invalid("Choose one of your library folders to keep into.".into()))?;
     let dest_root = PathBuf::from(&dest.path);
@@ -146,10 +172,12 @@ pub fn run_keep(db: &Db, source: FolderId, ids: &[PhotoId], dest_folder: FolderI
                 report.copied += 1;
                 report.bytes += copied;
                 db.log_kept(batch, &src.key, &rel, p.size, p.mtime, None, &to.to_string_lossy())?;
+                leave(db, p, mode, &mut report)?;
             }
             Ok(Kept::AlreadyThere(to)) => {
                 report.already += 1;
                 db.log_kept(batch, &src.key, &rel, p.size, p.mtime, None, &to.to_string_lossy())?;
+                leave(db, p, mode, &mut report)?;
             }
             Err(e) if e == "stopped" => {
                 report.stopped = true;
@@ -279,7 +307,7 @@ mod tests {
 
     fn keep_all(k: &Kit, stop: &AtomicBool) -> KeepReport {
         let ids = k.db.source_new_ids(k.src).unwrap();
-        run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, stop, |_| {}).unwrap()
+        run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, Mode::Copy, stop, |_| {}).unwrap()
     }
 
     #[test]
@@ -311,7 +339,7 @@ mod tests {
     fn only_the_chosen_photos_are_kept_and_files_go_to_the_layouts_folder() {
         let k = kit(3);
         let ids = k.db.source_new_ids(k.src).unwrap();
-        let report = run_keep(&k.db, k.src, &ids[..1], k.dest, Layout::YearDate, &AtomicBool::new(false), |_| {}).unwrap();
+        let report = run_keep(&k.db, k.src, &ids[..1], k.dest, Layout::YearDate, Mode::Copy, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(report.copied, 1);
         let p = k.db.get_photo(ids[0]).unwrap().unwrap();
         let expected = Layout::YearDate.dir(k.lib.path(), p.meta.taken_at).join(Path::new(&p.path).file_name().unwrap());
@@ -325,7 +353,7 @@ mod tests {
         let ids = k.db.source_new_ids(k.src).unwrap();
         let gone = k.db.get_photo(ids[1]).unwrap().unwrap().path;
         std::fs::remove_file(&gone).unwrap();
-        let report = run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, &AtomicBool::new(false), |_| {}).unwrap();
+        let report = run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, Mode::Copy, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!((report.copied, report.failed), (2, 1));
         assert!(report.problems[0].contains("IMG_"), "{:?}", report.problems);
         assert!(!k.db.source_new_ids(k.src).unwrap().is_empty(), "the one that failed is still new, to try again");
@@ -346,7 +374,41 @@ mod tests {
     fn something_that_is_not_a_source_or_a_library_folder_is_refused() {
         let k = kit(1);
         let ids = k.db.source_new_ids(k.src).unwrap();
-        assert!(run_keep(&k.db, k.dest, &ids, k.dest, Layout::Flat, &AtomicBool::new(false), |_| {}).is_err(), "the library folder is not a source");
-        assert!(run_keep(&k.db, k.src, &ids, k.src, Layout::Flat, &AtomicBool::new(false), |_| {}).is_err(), "nor is a source a place to keep into");
+        assert!(run_keep(&k.db, k.dest, &ids, k.dest, Layout::Flat, Mode::Copy, &AtomicBool::new(false), |_| {}).is_err(), "the library folder is not a source");
+        assert!(run_keep(&k.db, k.src, &ids, k.src, Layout::Flat, Mode::Copy, &AtomicBool::new(false), |_| {}).is_err(), "nor is a source a place to keep into");
+    }
+
+    #[test]
+    fn moving_keeps_into_the_library_folder_and_removes_the_source_file_and_row() {
+        let k = kit(3);
+        let ids = k.db.source_new_ids(k.src).unwrap();
+        let report = run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, Mode::Move, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((report.copied, report.already, report.failed), (3, 0, 0));
+        assert_eq!(names(k.lib.path()), vec!["IMG_0.jpg", "IMG_1.jpg", "IMG_2.jpg"]);
+        assert!(names(&k.card.path().join("DCIM")).is_empty(), "the files left the source");
+        assert_eq!(k.db.list_sources().unwrap()[0].count, 0, "and so did their rows");
+        let logged: i64 = k.db.conn().query_row("SELECT COUNT(*) FROM import_log", [], |r| r.get(0)).unwrap();
+        assert_eq!(logged, 3, "what was kept is still remembered");
+    }
+
+    #[test]
+    fn a_move_of_a_file_that_is_already_there_still_removes_the_source_copy() {
+        let k = kit(2);
+        std::fs::copy(k.card.path().join("DCIM/IMG_0.jpg"), k.lib.path().join("IMG_0.jpg")).unwrap();
+        let ids = k.db.source_new_ids(k.src).unwrap();
+        let report = run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, Mode::Move, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((report.copied, report.already), (1, 1));
+        assert!(names(&k.card.path().join("DCIM")).is_empty());
+    }
+
+    #[test]
+    fn a_move_that_fails_leaves_the_source_file_and_row_alone() {
+        let k = kit(2);
+        let ids = k.db.source_new_ids(k.src).unwrap();
+        let gone = k.db.get_photo(ids[0]).unwrap().unwrap().path;
+        std::fs::remove_file(&gone).unwrap();
+        let report = run_keep(&k.db, k.src, &ids, k.dest, Layout::Flat, Mode::Move, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((report.copied, report.failed), (1, 1));
+        assert_eq!(k.db.list_sources().unwrap()[0].count, 1, "the one that could not be read is still there");
     }
 }

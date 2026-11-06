@@ -92,7 +92,12 @@ export const copyToClipboard = (ids: number[], form: 'photo' | 'files' | 'image'
 export interface Removable { path: string; label: string; key: string; card: boolean }
 export interface SourceSummary { photos: number; videos: number; bytes: number; new: number; kept_before: number; looks_same: number; first: number | null; last: number | null }
 /** A source that is open: a drive or folder indexed where it is (nothing is copied or analysed). */
-export interface OpenSource { id: number; path: string; label: string; key: string; scanning: boolean; summary: SourceSummary }
+export interface OpenSource { id: number; path: string; label: string; key: string; scanning: boolean; extracting: boolean; inbox: boolean; summary: SourceSummary }
+/** What a zip holds (read from its directory, nothing extracted), and whether it fits where the Inbox is. */
+export interface ZipLook { name: string; photos: number; videos: number; other: number; archives: number; encrypted: number; unsafe_names: number; too_big: number; bytes: number; free: number; fits: boolean }
+export interface ExtractProgress { source: number; done: number; total: number; bytes_done: number; bytes_total: number }
+export interface ExtractReport { extracted: number; bytes: number; failed: number; problems: string[]; stopped: boolean }
+export interface ExtractDone { source: number; error: string | null; report: ExtractReport | null }
 export interface KeepProgress { done: number; total: number; bytes_done: number; bytes_total: number }
 export interface KeepReport { batch: number; copied: number; already: number; failed: number; problems: string[]; bytes: number; stopped: boolean }
 export interface ScanEvent { source: number; seen: number; indexed: number; to_index: number }
@@ -103,6 +108,13 @@ export type KeepLayout = 'year-date' | 'year-month' | 'flat';
 export const importAvailable = () => invoke<Removable[]>('import_available');
 export const importSources = () => invoke<OpenSource[]>('import_sources');
 /** Opens a drive or folder as a source and starts reading its list; answers with the source's id. */
+export const importZipLook = (path: string) => invoke<ZipLook>('import_zip_look', { path });
+/** Extracts the photos and videos of a zip into the Inbox, where they become a source; answers with the source's id at once. */
+export const importZipExtract = (path: string) => invoke<number>('import_zip_extract', { path });
+/** Deletes what is left of an Inbox source (never a card). */
+export const importDiscard = (id: number) => invoke<void>('import_discard', { id });
+export const onImportExtract = (f: (p: ExtractProgress) => void) => listen<ExtractProgress>('import-extract', (e) => f(e.payload));
+export const onImportExtractDone = (f: (d: ExtractDone) => void) => listen<ExtractDone>('import-extract-done', (e) => f(e.payload));
 export const importOpen = (path: string, label?: string) => invoke<number>('import_open', { path, label: label ?? null });
 export const importRescan = (id: number) => invoke<void>('import_rescan', { id });
 export const importClose = (id: number) => invoke<void>('import_close', { id });
