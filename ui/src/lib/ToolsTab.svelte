@@ -14,6 +14,7 @@
   import MosaicTool from './MosaicTool.svelte';
   import PrintTool from './PrintTool.svelte';
   import Resizer from './Resizer.svelte';
+  import ImportTool from './ImportTool.svelte';
   import SyncTool from './SyncTool.svelte';
   import ToolsGrid from './ToolsGrid.svelte';
   import Viewer from './Viewer.svelte';
@@ -23,7 +24,7 @@
   import { firstTool, GROUPS, toolsIn, worksOnWholeLibrary, type ToolGroup } from './tools';
   import { COLLAGE_MAX, PRINT_MAX } from './toolLimits';
 
-  let { group, tool = null, active, source = $bindable(), photo, browse, shownCount, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind }: {
+  let { group, tool = null, active, source = $bindable(), photo, browse, shownCount, picks, onunpick, onclear, emailLimitMb, userTags, onchange, onduplicates, dateRules, ondaterules, onshowundated, folders, master, onmaster, subfolder, onsubfolder, copyStatus, oncopy, onstopcopy, onfeeds, remind, onremind, onimportbrowse = () => {} }: {
     group: ToolGroup;
     /** The tool to open at; otherwise the one used last in this tab, or the first. */
     tool?: string | null;
@@ -50,6 +51,8 @@
     onduplicates: () => void;
     /** Which dates count as missing and when the file's date stands in (Missing dates), a change to that, and "show the items with no date" in Browse. */
     dateRules: DateRules; ondaterules: (r: DateRules) => void; onshowundated: () => void;
+    /** Import: look at a source (a card, a stick or a folder that was opened) in Browse. */
+    onimportbrowse?: (source: number) => void;
     /** Sync: the watched folders, the sync folder (null while there is none) and choosing it, what is waiting to be copied, and the controls to copy. */
     folders: FolderInfo[]; master: string | null; onmaster: (path: string | null) => void;
     subfolder: string; onsubfolder: (name: string) => Promise<void>;
@@ -156,7 +159,7 @@
 </script>
 
 <div class="page">
-  {#if whole && current.id !== 'mosaic'}
+  {#if whole && current.id !== 'mosaic' && current.id !== 'import'}
     <div class="scope"><b>Whole library.</b> {current.label} works on every photo, not on the ones you picked.</div>
   {:else if !whole}
     <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={ids.length} {onclear} {error} />
@@ -180,6 +183,8 @@
           <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
         {:else if current.id === 'mosaic'}
           <MosaicTool photo={here} {browse} filteredCount={shownCount} pickedCount={picks.size} {userTags} {onclear} {active} defaultDir={master ?? folders[0]?.path ?? null} />
+        {:else if current.id === 'import'}
+          <ImportTool {folders} {master} {picks} onbrowse={onimportbrowse} />
         {:else if current.id === 'sync'}
           <SyncTool {folders} {master} {onmaster} {subfolder} {onsubfolder} {copyStatus} {oncopy} {onstopcopy} {onfeeds} {remind} {onremind} />
         {:else}

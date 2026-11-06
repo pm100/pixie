@@ -66,7 +66,14 @@ impl Db {
             return Err(PixieError::Invalid(if kind == "source" {
                 format!("{} is already open (it overlaps this folder). Close it first.", other_label.unwrap_or(other))
             } else {
-                format!("{path} is, or is inside, or holds, {other}, which is already in your library.")
+                let (inside, holds) = (plain(path).starts_with(&format!("{}/", plain(&other))), plain(&other).starts_with(&format!("{}/", plain(path))));
+                if inside {
+                    format!("That folder is inside {other}, which is already in your library. Look at it in Browse instead.")
+                } else if holds {
+                    format!("That folder holds {other}, which is already in your library, so it cannot be opened as a source.")
+                } else {
+                    format!("{other} is already in your library. Look at it in Browse instead.")
+                }
             }));
         }
         drop(s);

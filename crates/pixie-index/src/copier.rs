@@ -148,7 +148,7 @@ fn numbered(dir: &Path, name: &OsStr, n: u32) -> PathBuf {
 }
 
 /// Why a file was not copied: the original is the trouble (skip it, try again next run), or the master is (stop).
-enum Trouble {
+pub(crate) enum Trouble {
     Source(io::Error),
     /// The master could not be written to or read at this path.
     Master(io::Error, PathBuf),
@@ -157,7 +157,7 @@ enum Trouble {
     Stopped,
 }
 
-enum Step {
+pub(crate) enum Step {
     /// Copied; the size in bytes.
     Copied(PathBuf, u64),
     AlreadyThere(PathBuf),
@@ -240,7 +240,7 @@ fn checked_hash(path: &Path, on_bytes: &mut dyn FnMut(u64) -> bool) -> std::resu
 }
 
 /// Copy one item into `dir`. `on` is told how far each phase has got (bytes), and says false to stop.
-fn copy_into(src: &Path, dir: &Path, name: &OsStr, temp: &Path, on: &mut dyn FnMut(Phase, u64) -> bool) -> std::result::Result<Step, Trouble> {
+pub(crate) fn copy_into(src: &Path, dir: &Path, name: &OsStr, temp: &Path, on: &mut dyn FnMut(Phase, u64) -> bool) -> std::result::Result<Step, Trouble> {
     fs::create_dir_all(dir).map_err(|e| Trouble::Master(e, dir.to_path_buf()))?;
     let meta = fs::metadata(src).map_err(Trouble::Source)?;
     let size = meta.len();

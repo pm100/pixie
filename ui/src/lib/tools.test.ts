@@ -7,7 +7,7 @@ describe('tools', () => {
     expect(toolsIn('create').map((t) => t.id)).toEqual(['collage', 'mosaic', 'gif', 'edit']);
     expect(toolsIn('organize').map((t) => t.id)).toEqual(['tags', 'dates', 'hide', 'move']);
     expect(toolsIn('cleanup').map((t) => t.id)).toEqual(['duplicates', 'missing-dates', 'bursts', 'thumbnails']);
-    expect(toolsIn('transfer').map((t) => t.id)).toEqual(['sync']);
+    expect(toolsIn('transfer').map((t) => t.id)).toEqual(['import', 'sync']);
   });
 
   it('has the Collage built, as the first tool of Create', () => {

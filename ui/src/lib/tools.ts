@@ -56,6 +56,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'thumbnails', group: 'cleanup', label: 'Thumbnails and cache', built: false, blurb: 'Remove thumbnails left behind by folders you took out, or clear them all to rebuild later.',
     mock: [{ label: 'Space used', value: '1.2 GB' }, { label: 'Left behind', value: '310 MB' }], action: 'Clean up' },
 
+  { id: 'import', group: 'transfer', label: 'Import', built: true, blurb: '' },
   { id: 'sync', group: 'transfer', label: 'Sync', built: true, blurb: '' },
 ];
 

@@ -86,6 +86,35 @@ export const saveVideoFrame = (id: number, ms: number, bytes: Uint8Array) =>
   untilReady(() => tauriInvoke<{ id: number; name: string }>('save_video_frame', bytes, { headers: { 'x-video-id': String(id), 'x-frame-ms': String(ms) } }));
 /** Put photos on the system clipboard: `photo` (the files, and for one photo its picture too), `files` (only the files), `image` (only one photo's picture) or `paths` (as text, one per line). */
 export const copyToClipboard = (ids: number[], form: 'photo' | 'files' | 'image' | 'paths') => invoke<void>('copy_to_clipboard', { ids, form });
+
+// ---- Import: a card, stick or folder looked at where it is, then kept into a library folder ----
+/** A drive to import from: a card, a USB stick, or a drive with a DCIM folder. */
+export interface Removable { path: string; label: string; key: string; card: boolean }
+export interface SourceSummary { photos: number; videos: number; bytes: number; new: number; kept_before: number; looks_same: number; first: number | null; last: number | null }
+/** A source that is open: a drive or folder indexed where it is (nothing is copied or analysed). */
+export interface OpenSource { id: number; path: string; label: string; key: string; scanning: boolean; summary: SourceSummary }
+export interface KeepProgress { done: number; total: number; bytes_done: number; bytes_total: number }
+export interface KeepReport { batch: number; copied: number; already: number; failed: number; problems: string[]; bytes: number; stopped: boolean }
+export interface ScanEvent { source: number; seen: number; indexed: number; to_index: number }
+export interface ScanDone { source: number; error: string | null; summary: SourceSummary | null }
+export interface KeepDone { source: number; error: string | null; report: KeepReport | null }
+export type KeepWhich = 'new' | 'picked';
+export type KeepLayout = 'year-date' | 'year-month' | 'flat';
+export const importAvailable = () => invoke<Removable[]>('import_available');
+export const importSources = () => invoke<OpenSource[]>('import_sources');
+/** Opens a drive or folder as a source and starts reading its list; answers with the source's id. */
+export const importOpen = (path: string, label?: string) => invoke<number>('import_open', { path, label: label ?? null });
+export const importRescan = (id: number) => invoke<void>('import_rescan', { id });
+export const importClose = (id: number) => invoke<void>('import_close', { id });
+export const importPickedCount = (source: number) => invoke<number>('import_picked_count', { source });
+export const importSummary = (id: number) => invoke<SourceSummary>('import_summary', { id });
+/** Keeps what is new, or what is picked, from a source into a library folder; progress and the end arrive as events. */
+export const importKeep = (source: number, which: KeepWhich, dest: number, layout: KeepLayout) => invoke<void>('import_keep', { source, which, dest, layout });
+export const importStop = () => invoke<void>('import_stop');
+export const onImportScan = (f: (e: ScanEvent) => void) => listen<ScanEvent>('import-scan', (e) => f(e.payload));
+export const onImportScanDone = (f: (e: ScanDone) => void) => listen<ScanDone>('import-scan-done', (e) => f(e.payload));
+export const onImportProgress = (f: (p: KeepProgress) => void) => listen<KeepProgress>('import-progress', (e) => f(e.payload));
+export const onImportDone = (f: (d: KeepDone) => void) => listen<KeepDone>('import-done', (e) => f(e.payload));
 export const savePoster = (id: number, bytes: Uint8Array) => invoke<void>('save_poster', { id, bytes: Array.from(bytes) });
 export const openViewerWindow = () => invoke<void>('open_viewer_window');
 /** Whether each watched folder can be reached right now. */

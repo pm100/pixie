@@ -31,4 +31,8 @@ pub struct AppState {
     pub activity: Arc<pixie_core::activity::Activity>,
     /// The Photomosaic tool: one run at a time, and where the picture it built is kept.
     pub mosaic: Arc<crate::mosaic::MosaicJob>,
+    /// Import: one Keep at a time and the scan of the source being read.
+    pub import: Arc<crate::importer::ImportState>,
+    /// Where the thumbnails are kept.
+    pub thumbs_dir: std::path::PathBuf,
 }

@@ -17,7 +17,7 @@ pub enum ItemState {
     LooksSame { library_path: String },
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SourceSummary {
     pub photos: i64,
     pub videos: i64,
@@ -104,6 +104,21 @@ impl Db {
                 (id, state)
             })
             .collect())
+    }
+
+    /// The picked items of a folder (a source's, to keep what the person picked), in the order they were picked.
+    pub fn picked_in(&self, folder: FolderId) -> Result<Vec<PhotoId>> {
+        let c = self.conn();
+        let mut s = c
+            .prepare("SELECT k.photo_id FROM picks k JOIN photos p ON p.id = k.photo_id WHERE p.folder_id = ?1 AND p.missing = 0 ORDER BY k.picked_at, k.rowid")
+            .map_err(db_err)?;
+        let rows = s.query_map(params![folder], |r| r.get(0)).map_err(db_err)?.collect::<std::result::Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// The items of a source that are new (not kept before, not looking like a library photo): what "Keep all new" keeps.
+    pub fn source_new_ids(&self, folder: FolderId) -> Result<Vec<PhotoId>> {
+        Ok(self.source_item_states(folder)?.into_iter().filter(|(_, state)| *state == ItemState::New).map(|(id, _)| id).collect())
     }
 
     /// What a source holds, and how much of it is new: for the line under the Look step ("412 photos and 18 videos, 6.1 GB, 380 new").
@@ -251,6 +266,23 @@ mod tests {
         );
         let empty = db.add_source("/empty", "K3", "Empty").unwrap();
         assert_eq!(db.source_summary(empty).unwrap(), SourceSummary::default());
+    }
+
+    #[test]
+    fn the_picked_photos_of_a_source_are_only_its_own() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = db.add_folder("/lib").unwrap();
+        let l = db.upsert_photo(lib, "/lib/a.jpg", 1, 1, &meta(1)).unwrap();
+        let src = db.add_source("/card", "K", "Card").unwrap();
+        let a = db.upsert_photo(src, "/card/a.jpg", 1, 1, &meta(1)).unwrap();
+        let b = db.upsert_photo(src, "/card/b.jpg", 1, 1, &meta(2)).unwrap();
+        db.set_picks(&[l, b]).unwrap();
+        assert_eq!(db.picked_in(src).unwrap(), vec![b]);
+        db.set_picks(&[a]).unwrap();
+        let mut both = db.picked_in(src).unwrap();
+        both.sort();
+        assert_eq!(both, vec![a, b], "both picks are there, in the order they were picked");
+        assert!(db.picked_in(lib).unwrap().len() == 1, "a library folder's own picks work the same");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
   import { emit, listen } from '@tauri-apps/api/event';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import {
     activitySnapshot, onActivity, analysisRetry, analysisSetPaused, analysisStatus, cancelScan, countPhotos, getMaxPhotoId, photoPosition, openViewerWindow, listDayGroups, listFolderInfo, listFolders, listGeoPoints, listPhotos,
     listTags, removeFolder, setTagFilter, setUserTagFilter, userTags as fetchUserTags, type UserTagCount, startScan, setNetworkRescan, listTrips, renameTrip, tripRoute, placeFor,
@@ -75,6 +75,7 @@
   import { registerAppCommands, registerGoCommands, type CommandContext } from './lib/appCommands';
   import { commandForKey, isTextField } from './lib/shortcuts';
   import { applyMenu, popupMenu, toSpec } from './lib/menuBar';
+  import { imports, startImportEvents } from './lib/importStore.svelte';
   import { registerPhotoCommands, type PhotoCommandContext, type PhotoTarget } from './lib/photoCommands';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Nav from './lib/Nav.svelte';
@@ -1295,6 +1296,22 @@
       if (c) Promise.resolve(c.run(undefined)).catch((e) => (message = String(e)));
     }, mac).catch((e) => console.error('The menu bar could not be built', e));
   });
+  // Import: the cards, sticks and folders that are open, and how a Keep is going, are reported by events; a source can be looked at in Browse
+  // (it is its own folder in the tree), and when the one being looked at goes (a card pulled out) Browse goes back to everything.
+  $effect(() => startImportEvents());
+  function showSource(id: number) {
+    pickTab('browse');
+    if (view.folderId !== id) setFolder(id);
+  }
+  let sourceIds = new Set<number>();
+  $effect(() => {
+    const now = new Set(imports.sources.map((s) => s.id));
+    const gone = view.folderId !== null && sourceIds.has(view.folderId) && !now.has(view.folderId);
+    const closed = [...sourceIds].some((id) => !now.has(id));
+    sourceIds = now;
+    if (gone) untrack(() => setFolder(null));
+    if (closed) untrack(() => void loadPicks()); // (the picks on a source's photos went with it)
+  });
   // Right-click on a photo in Browse. A photo among several Picked acts for all of them; any other photo is chosen first and acts alone.
   async function setPickedIds(ids: number[], on: boolean) {
     const next = new Set(picked);
@@ -1605,7 +1622,7 @@
             <button onclick={() => setAreaOnly(false)} aria-label="Show everything, not just the map area" title="Show everything, not just the map area">✕</button></span>
         {/if}
         {#if view.folderId !== null}
-          <span class="filter">Folder “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : 'unknown'}”
+          <span class="filter">{imports.sources.find((s) => s.id === view.folderId) ? 'Card' : 'Folder'} “{folderInfos.find((f) => f.id === view.folderId) ? folderName(folderInfos.find((f) => f.id === view.folderId)!.path) : (imports.sources.find((s) => s.id === view.folderId)?.label ?? 'unknown')}”
             <button onclick={() => setFolder(null)} aria-label="Clear folder" title="Clear folder">✕</button></span>
         {/if}
         {#if tripKey !== null}
@@ -1668,6 +1685,7 @@
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} {master} onopensync={() => openTool('sync', 'picked')} shareCounts={shareState} share={activeShare} onshare={setShare} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
+               sources={imports.sources.map((s) => ({ id: s.id, label: s.label, path: s.path, count: s.summary.photos + s.summary.videos }))}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
                onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />
@@ -1720,7 +1738,7 @@
     {#if isToolGroup(tab)}
       {#key tab}
         <div class="page-over">
-          <ToolsTab {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} browse={shown} shownCount={total} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
+          <ToolsTab onimportbrowse={showSource} {dateRules} ondaterules={changeDateRules} onshowundated={showUndated} group={tab} tool={toolStart} active bind:source={workSource} photo={selectedPhoto} browse={shown} shownCount={total} picks={picked} onunpick={togglePick} onclear={clearAllPicks} {emailLimitMb} userTags={userTagList} onchange={(t) => void utagChanged(t)}
                     folders={folderInfos} {master} onmaster={chooseMaster} subfolder={syncSub} onsubfolder={chooseSyncSub} {copyStatus} oncopy={copyNow} onstopcopy={() => void stopMasterCopy()} onfeeds={feedsMaster} remind={remindSync} onremind={setRemindSync} onduplicates={() => { duplicateStatus().then((s) => { dupState = s; dupHiddenShown = s.hidden; }).catch(() => {}); refresh().catch((e) => (message = String(e))); loadFolderInfos(); }} />
         </div>
       {/key}

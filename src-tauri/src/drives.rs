@@ -82,6 +82,89 @@ pub fn volume_label(root: &Path) -> Option<String> {
     (!label.trim().is_empty()).then_some(label)
 }
 
+/// A drive Import can read from: a card in a card reader, a USB stick, or any other drive with a `DCIM` folder (a camera's own storage).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Removable {
+    /// Such as `E:\` or `/Volumes/SONY`.
+    pub path: String,
+    /// What to call it: "SONY (E:)".
+    pub label: String,
+    /// Which drive it is (the volume's serial number on Windows, its name on a Mac), so it is known again when plugged in again.
+    pub key: String,
+    /// It has a `DCIM` folder, so it is a camera card.
+    pub card: bool,
+}
+
+/// How a drive is named for people: its label and where it is, or what kind of drive it is when it has no label.
+#[cfg(any(windows, test))]
+fn drive_title(label: Option<&str>, letter: char, card: bool) -> String {
+    let name = match label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => l.to_string(),
+        None if card => "Camera card".to_string(),
+        None => "Removable drive".to_string(),
+    };
+    format!("{name} ({}:)", letter.to_ascii_uppercase())
+}
+
+/// The volume's serial number: the same for a drive whatever letter it gets.
+#[cfg(windows)]
+fn volume_serial(root: &Path) -> Option<u32> {
+    let path = wide(&root.to_string_lossy());
+    let mut serial = 0u32;
+    // SAFETY: `path` is NUL-terminated and `serial` is a writable u32; the other outputs are optional and passed as null.
+    let ok = unsafe { GetVolumeInformationW(path.as_ptr(), std::ptr::null_mut(), 0, &mut serial, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+    (ok != 0).then_some(serial)
+}
+
+/// The drives to offer for Import: removable ones, and fixed ones with a `DCIM` folder. A network drive is not looked into (that can take a
+/// long time). May block (it asks drives for their labels): call it off the UI thread.
+#[cfg(windows)]
+pub fn removable_roots() -> Vec<Removable> {
+    // SAFETY: takes no arguments and only returns a bit mask.
+    let mask = unsafe { GetLogicalDrives() };
+    ('A'..='Z')
+        .filter_map(|c| {
+            let kind = drive_kind(c, mask)?;
+            let root = PathBuf::from(format!("{c}:\\"));
+            let removable = kind == 2;
+            if !removable && !is_fixed(kind) {
+                return None;
+            }
+            let card = root.join("DCIM").is_dir();
+            if !removable && !card {
+                return None;
+            }
+            // (a removable drive with no medium in it, such as an empty card reader, has no volume: it is not offered)
+            let serial = volume_serial(&root)?;
+            Some(Removable { path: root.to_string_lossy().into_owned(), label: drive_title(volume_label(&root).as_deref(), c, card), key: format!("vol:{serial:08x}"), card })
+        })
+        .collect()
+}
+
+/// The volumes under `/Volumes` other than the startup disk and network shares.
+#[cfg(target_os = "macos")]
+pub fn removable_roots() -> Vec<Removable> {
+    let Ok(entries) = std::fs::read_dir("/Volumes") else { return Vec::new() };
+    let mut out: Vec<Removable> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if std::fs::canonicalize(&path).ok()? == Path::new("/") || is_network_path(&path) {
+                return None;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            Some(Removable { card: path.join("DCIM").is_dir(), path: path.to_string_lossy().into_owned(), label: name.clone(), key: format!("vol:{name}") })
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn removable_roots() -> Vec<Removable> {
+    Vec::new()
+}
+
 /// What a path's form alone says about where it is: a UNC path (`\\server\share`) is on the network, a path that starts
 /// with a drive letter needs the system's say-so (None), anything else is not a Windows network path.
 #[cfg(any(windows, test))]
@@ -157,6 +240,13 @@ pub fn volume_label(_root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_drive_is_named_by_its_label_and_letter_or_by_what_it_is() {
+        assert_eq!(super::drive_title(Some("SONY"), 'e', true), "SONY (E:)");
+        assert_eq!(super::drive_title(Some("  "), 'f', true), "Camera card (F:)");
+        assert_eq!(super::drive_title(None, 'g', false), "Removable drive (G:)");
+    }
+
     use super::*;
 
     #[test]

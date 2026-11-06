@@ -17,7 +17,7 @@
   import { countOf, emptyLast, tripsHeld, type Facets } from './facets';
   import { sharingRows, type ShareChoice, type ShareCounts } from './master';
 
-  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, missing = null, onmissing = () => {}, noLocation = 0, master = null, shareCounts = { unsynced: 0, private: 0 }, share = null, onshare = () => {}, onopensync = () => {}, libMissing = { location: false, date: false }, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle }: {
+  let { facets = null, groups, kind, recent, period, recentText, tags, tag, people, facesFound, person, cameras = [], camera = null, oncamera = () => {}, missing = null, onmissing = () => {}, noLocation = 0, master = null, shareCounts = { unsynced: 0, private: 0 }, share = null, onshare = () => {}, onopensync = () => {}, libMissing = { location: false, date: false }, userTags = [], utag = null, onutag = () => {}, analysisOn = { tags: true, faces: true }, onopenanalysis = () => {}, folders, folderStates = {}, folderId, trips, tripsReady, trip, destinations, onvisibletrips, collapsed, onperiod, onkind, onrecent, ontag, onperson, onfolder, ontrip, onrenametrip, onsettrips, onnamepeople, ontoggle, sources = [] }: {
     /** The counts under the filters in force (each section counted without its own filter); null until known, when the
      *  counts the entries came with are shown. An entry that comes to 0 is dimmed, not hidden, so the list does not move. */
     facets?: Facets | null;
@@ -49,6 +49,8 @@
     /** Your own tags with their photo counts, and the one chosen (`tag:<name>`; Picked is chosen in Browse's top line). */
     userTags?: UserTagCount[]; utag?: string | null; onutag?: (key: string | null) => void;
     folders: FolderInfo[]; folderId: number | null; onfolder: (id: number | null) => void;
+    /** Cards, sticks and folders that were opened to import from (they are not in the library): choosing one shows only its photos, through `onfolder`. */
+    sources?: { id: number; label: string; path: string; count: number }[];
     /** Which folders cannot be reached right now (their drive is unplugged, say). */
     folderStates?: FolderStates;
     /** Trips away from home. `tripsReady` is false until the user has confirmed where home is. `trip` is the chosen one's `since`. */
@@ -116,6 +118,7 @@
   const chosen = $derived<Record<SectionId, string>>({
     library: kind === 'photo' ? 'Photos only' : kind === 'video' ? 'Videos only' : '',
     folders: folders.find((f) => f.id === folderId) ? folderName(folders.find((f) => f.id === folderId)!.path) : '',
+    sources: sources.find((s) => s.id === folderId)?.label ?? '',
     people: people.find((p) => p.id === person) ? personLabel(people.find((p) => p.id === person)!) : '',
     trips: trips.find((t) => t.since === trip) ? tripTitle(trips.find((t) => t.since === trip)!) : '',
     mytags: utag === null || utag === 'picked' ? '' : utag.replace(/^tag:/, ''),
@@ -282,6 +285,17 @@
         {@const note = folderNote(folderStates[f.id])}
         <button class="item" class:active={folderId === f.id} class:zero={facets && n === 0 && folderId !== f.id} class:offline={note !== null} aria-pressed={folderId === f.id} title={note ? `${f.path} — ${note}` : f.path} onclick={() => onfolder(folderId === f.id ? null : f.id)}>
           <span class="mark">{#if folderId === f.id}<Check />{/if}</span><span class="grow">{folderName(f.path)}</span>{#if note}<span class="offnote">{note}</span>{/if}<span class="n">{n.toLocaleString()}</span>
+        </button>
+      {/each}
+    {/if}
+  {/if}
+
+  {#if sources.length > 0}
+    {@render head('sources', 'Cards and drives', 'Cards, sticks and folders opened in Import. They are only looked at: nothing is in your library until you keep it.')}
+    {#if !folded('sources')}
+      {#each sources as s (s.id)}
+        <button class="item" class:active={folderId === s.id} aria-pressed={folderId === s.id} title={folderId === s.id ? `Stop showing only ${s.label}` : `Show only the photos on ${s.label} (${s.path})`} onclick={() => onfolder(folderId === s.id ? null : s.id)}>
+          <span class="mark">{#if folderId === s.id}<Check />{/if}</span><span class="grow" use:clipTitle>{s.label}</span><span class="n">{s.count.toLocaleString()}</span>
         </button>
       {/each}
     {/if}
