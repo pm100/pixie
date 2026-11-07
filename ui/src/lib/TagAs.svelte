@@ -5,7 +5,7 @@
   import { dismiss, placeBeside } from './popover';
   import { enterChoice, tagAsRows } from './userTags';
 
-  let { ids, onchange, floating = true, inline = false, ondone }: {
+  let { ids, onchange, floating = true, inline = false, ondone, onchoose, disabled }: {
     /** The photos to tag. */
     ids: number[];
     /** The box opens over what is below the + (as beside the tag pills); false: it opens in the flow, as in a narrow column. */
@@ -16,6 +16,10 @@
     inline?: boolean;
     /** Inline only: a tag was chosen or Escape was pressed, so the popover can close. */
     ondone?: () => void;
+    /** Choose a tag without giving it to anything (Import: the photos do not exist yet): the box closes and this is told the name instead of `ids` being tagged. */
+    onchoose?: (tag: string) => void;
+    /** Off even when there are photos (or, with `onchoose`, always on unless this says so). */
+    disabled?: boolean;
   } = $props();
 
   let open = $state(untrack(() => inline));
@@ -58,6 +62,11 @@
   });
 
   async function apply(name: string) {
+    if (onchoose) {
+      close();
+      onchoose(name);
+      return;
+    }
     let stored: string;
     try {
       stored = await tagPhotos(ids, name);
@@ -80,7 +89,7 @@
 <!-- A press anywhere else closes the box; as it is fixed to the window it also closes when the window changes size or something else scrolls. Inline, the popover that holds it closes it. -->
 <div class="tagas" class:floating={floating && !inline} class:inline use:dismiss={{ active: open && !inline, close, closeOnMove: floating }}>
   {#if !inline}
-    <button bind:this={plus} class="plus" aria-label="Add a tag" title="Add a tag" aria-expanded={open} disabled={ids.length === 0} onclick={() => (open ? close() : void show())}>+</button>
+    <button bind:this={plus} class="plus" aria-label={onchoose ? 'Choose a tag' : 'Add a tag'} title={onchoose ? 'Choose a tag to give every photo you import' : 'Add a tag'} aria-expanded={open} disabled={disabled ?? (!onchoose && ids.length === 0)} onclick={() => (open ? close() : void show())}>+</button>
   {/if}
   {#if open}
     <div class="drop" style={floating && !inline ? dropStyle : undefined}>

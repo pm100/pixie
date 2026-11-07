@@ -61,6 +61,20 @@ impl Db {
         Ok(name)
     }
 
+    /// Give the file at `path` this tag: now if the library has it, otherwise as soon as it does (see `pending_tags`). Used by Import, which puts
+    /// a file in a library folder before the scan has made its photo. Returns the name it is stored under.
+    pub fn tag_path_when_known(&self, path: &str, tag: &str) -> Result<String> {
+        let id: Option<PhotoId> = self.conn().query_row("SELECT id FROM photos WHERE path = ?1", params![path], |r| r.get(0)).optional().map_err(db_err)?;
+        if let Some(id) = id {
+            return self.tag_photos(&[id], tag);
+        }
+        let name = normalize_tag(tag).ok_or_else(|| PixieError::Invalid("Type a name for the tag, up to 60 characters.".into()))?;
+        let c = self.conn();
+        let name = c.query_row("SELECT tag FROM user_tags WHERE tag = ?1 LIMIT 1", params![name], |r| r.get::<_, String>(0)).optional().map_err(db_err)?.unwrap_or(name);
+        c.execute("INSERT OR REPLACE INTO pending_tags(path, tag) VALUES (?1, ?2)", params![path, name]).map_err(db_err)?;
+        Ok(name)
+    }
+
     /// Take the tag off all of these photos.
     pub fn untag_photos(&self, ids: &[PhotoId], tag: &str) -> Result<()> {
         let mut c = self.conn();
@@ -189,6 +203,37 @@ mod tests {
         assert_eq!(db.tag_photos(&[p[0]], "Holiday").unwrap(), "Holiday");
         assert_eq!(db.tag_photos(&[p[1]], " #holiday ").unwrap(), "Holiday");
         assert_eq!(db.user_tags().unwrap(), vec![count("Holiday", 2)]);
+    }
+
+    fn tags_on(db: &Db, id: PhotoId) -> Vec<String> {
+        let c = db.conn();
+        let mut s = c.prepare("SELECT tag FROM user_tags WHERE photo_id = ?1 ORDER BY tag").unwrap();
+        let rows = s.query_map(params![id], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        rows
+    }
+
+    #[test]
+    fn a_tag_for_a_file_the_library_does_not_know_yet_is_given_when_its_photo_appears() {
+        let (db, ids) = photos(1);
+        db.tag_photos(&ids, "Holiday").unwrap();
+        let f = db.add_folder("/lib").unwrap();
+        assert_eq!(db.tag_path_when_known("/lib/a.jpg", "holiday").unwrap(), "Holiday", "the spelling already in use is kept");
+        let n: i64 = db.conn().query_row("SELECT COUNT(*) FROM pending_tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "waiting for the photo");
+        let id = db.upsert_photo(f, "/lib/a.jpg", 1, 1, &PhotoMeta::default()).unwrap();
+        assert_eq!(tags_on(&db, id), vec!["Holiday"]);
+        let n: i64 = db.conn().query_row("SELECT COUNT(*) FROM pending_tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "nothing is left waiting");
+        let again = db.upsert_photo(f, "/lib/a.jpg", 1, 1, &PhotoMeta::default()).unwrap();
+        assert_eq!(tags_on(&db, again), vec!["Holiday"], "a rescan changes nothing");
+    }
+
+    #[test]
+    fn a_tag_for_a_file_the_library_has_is_given_at_once() {
+        let (db, ids) = photos(1);
+        assert_eq!(db.tag_path_when_known("/p/0.jpg", "Trip").unwrap(), "Trip");
+        assert_eq!(tags_on(&db, ids[0]), vec!["Trip"]);
+        assert!(db.tag_path_when_known("/p/0.jpg", "   ").is_err(), "a blank is not a tag");
     }
 
     #[test]

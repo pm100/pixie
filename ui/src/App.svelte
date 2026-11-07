@@ -592,9 +592,13 @@
   // While photos are still being found and stored, the counts beside the folders follow along (every 3 seconds), not
   // only when a scan ends.
   let countsBusy = false;
+  let wasWorking = false;
   $effect(() => {
     const t = setInterval(async () => {
       const working = scanning || (analysis !== null && analysis.done < analysis.total);
+      // Your tags too: a tag chosen in Import lands on each photo as the scan makes it, and once more when the work ends.
+      if (working || wasWorking) void loadUserTags();
+      wasWorking = working;
       if (!working || countsBusy || document.visibilityState !== 'visible') return;
       countsBusy = true;
       try { folderInfos = await listFolderInfo(); } catch { /* the next time */ }
@@ -1525,6 +1529,7 @@
       listen<{ folders: number; found: number }>('scan-done', (e) => {
         cancelling = false;
         loadTags();
+        void loadUserTags();
         refreshLocations();
         loadPeople();
         scanning = false;

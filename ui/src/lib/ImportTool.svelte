@@ -2,6 +2,7 @@
   /** Import/Export > Import: read photos from a camera card, a USB stick or any folder, look at them in Browse, and keep the ones you want in one
    *  of your folders. A source is only read: nothing is copied until Keep, and nothing on the card is ever changed. */
   import { open } from '@tauri-apps/plugin-dialog';
+  import TagAs from './TagAs.svelte';
   import { importClose, importDiscard, importKeep, importOpen, importPickedCount, importStop, importZipExtract, importZipLook, type FolderInfo, type KeepWhich, type OpenSource, type ZipLook } from './api';
   import { plural } from './format';
   import { KEEP_LAYOUT, defaultDestination, extractLine, folderLabel, keepLine, keepPercent, showPath, spaceLine, summaryRows, workingRows, zipLine, zipProblems } from './importer';
@@ -21,6 +22,8 @@
 
   let dest = $state<number | null>(null);
   let error = $state('');
+  /** The tag every photo imported in this window gets, if one was chosen (forgotten when the window is done). */
+  let tag = $state<string | null>(null);
   let pickedIn = $state<Record<number, number>>({});
   /** A zip that was chosen and looked at, waiting for the person to extract it (or not). */
   /** The zip was chosen to be extracted and the Inbox is being set up for it. */
@@ -53,6 +56,9 @@
   const showSource = $derived(source !== null && zip === null);
   /** Done is not offered while it would pull the rug from under work in progress: Stop comes first. */
   const doneTitle = (s: OpenSource) => (canFinish(s) ? 'Finish and clean up (Esc)' : 'Stop what is running first (Stop, in the bar at the top)');
+  $effect(() => {
+    if (source === null) tag = null; // whichever way the window went, the next import starts without a tag
+  });
   const canFinish = (s: OpenSource) => imports.keeping !== s.id && !s.extracting && !(s.inbox && s.scanning);
   /** What to load from: each card or stick found, a folder, or a zip file. Choosing one loads it at once, then the list goes back to "Choose…". */
   let choice = $state('');
@@ -119,7 +125,7 @@
     imports.keeping = s.id;
     savePref('import.dest', dest);
     try {
-      await importKeep(s.id, which, dest, KEEP_LAYOUT);
+      await importKeep(s.id, which, dest, KEEP_LAYOUT, tag);
     } catch (e) {
       imports.keeping = null;
       error = String(e);
@@ -129,6 +135,7 @@
   async function finish(s: OpenSource) {
     if (!canFinish(s)) return;
     error = '';
+    tag = null;
     try {
       if (s.inbox) await importDiscard(s.id);
       else await importClose(s.id);
@@ -146,15 +153,15 @@
   <h2>Import</h2>
   <p class="lead">Bring photos and videos in from a camera card, a USB stick, a zip file or any folder.</p>
   <ul class="points">
-    <li>You can select which photos get imported.</li>
+    <li>You can select which files get imported.</li>
     <li>A card or folder is only read: your originals are never changed or deleted.</li>
   </ul>
   {#if error}<p class="err" role="alert">{error}</p>{:else if imports.error}<p class="err" role="alert">{imports.error}</p>{/if}
 
   <div class="row">
     <label class="opt">
-      Load from:
-      <select bind:value={choice} onchange={(e) => { choice = e.currentTarget.value; void load(); }} disabled={hasSource} aria-label="Where to load photos from" title={hasSource ? 'Import or discard the photos that are loaded first' : 'Choose a card or stick that was found, a folder, or a zip file. It is read at once; nothing is copied or changed until you import photos'}>
+      Import from:
+      <select bind:value={choice} onchange={(e) => { choice = e.currentTarget.value; void load(); }} disabled={hasSource} aria-label="Where to import from" title={hasSource ? 'Import or discard the photos that are loaded first' : 'Choose a card or stick that was found, a folder, or a zip file. It is read at once; nothing is copied or changed until you import photos'}>
         <option value="" disabled>Choose&hellip;</option>
         {#each choices as c (c.id)}<option value={c.id}>{c.label}</option>{/each}
       </select>
@@ -216,6 +223,14 @@
           {@const nothingNew = s.summary.new === 0}
           <p class="how">Browse to pick the ones to import, or click All to import all new files.</p>
           <div class="form">
+            <div class="tagrow" role="group" aria-labelledby="imp-tag">
+              <span id="imp-tag" class="note">You can tag the imported files:</span>
+              {#if tag !== null}
+                <span class="pill">{tag}<button class="pillx" disabled={busy} aria-label="Do not tag" title="Do not tag the photos you import" onclick={() => (tag = null)}>&times;</button></span>
+              {:else}
+                <TagAs ids={[]} onchoose={(t) => (tag = t)} onchange={() => {}} disabled={working || busy || nothingNew} />
+              {/if}
+            </div>
             <span id="imp-do">Import:</span>
             <div class="actions" role="group" aria-labelledby="imp-do">
               <button disabled={working || busy || nothingNew || dest === null || pickedHere === 0} onclick={() => keep(s, 'picked')}
@@ -264,7 +279,7 @@
   .lead { margin: 0 0 8px; }
   .how { color: #555; font-size: 13px; margin: 0 0 12px; }
   /* Everything between the two light lines is centred in the room there is. */
-  .body { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; padding-top: 36px; }
+  .body { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; padding: 36px 0 12px; }
   .outcome { min-height: 36px; } /* room for the result line below, matched above so the controls stay in the middle */
   .facts { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 12px; margin: 12px 0; }
   .facts dt { color: #666; }
@@ -277,12 +292,16 @@
   .scrim { position: fixed; inset: 0; z-index: 1400; display: grid; place-items: center; background: rgba(0, 0, 0, .4); }
   .dlg { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 18px 20px; border-radius: 8px; background: #fff; color: #111; box-shadow: 0 8px 30px rgba(0, 0, 0, .35); font-size: 14px; }
   /* The import window keeps one size while it is used, so it never resizes under the person: the buttons stay at the bottom. (The zip's first screen is a window of its own, smaller.) */
-  .dlg.wide { width: min(540px, calc(100vw - 32px)); height: min(430px, calc(100vh - 68px)); display: flex; flex-direction: column; }
+  .dlg.wide { width: min(540px, calc(100vw - 32px)); height: min(490px, calc(100vh - 68px)); display: flex; flex-direction: column; }
   .dlg > h3 { margin-bottom: 10px; }
   header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   .x { padding: 0 8px; font-size: 18px; line-height: 1.3; }
   .form { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 10px; margin: 8px 0 12px; }
   .form select { min-width: 0; max-width: 100%; }
+  .tagrow { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .note { color: #555; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 8px; border-radius: 4px; background: #e3ecff; color: #2a3f7a; font-size: 12px; }
+  .pillx { border: 0; background: none; padding: 0 4px; font: inherit; line-height: 1; cursor: pointer; color: inherit; }
   .actions { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; }
   .actions.end { justify-content: flex-end; margin-top: 16px; }
   .gap { flex: 1; }

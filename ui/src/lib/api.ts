@@ -121,7 +121,7 @@ export const importClose = (id: number) => invoke<void>('import_close', { id });
 export const importPickedCount = (source: number) => invoke<number>('import_picked_count', { source });
 export const importSummary = (id: number) => invoke<SourceSummary>('import_summary', { id });
 /** Keeps what is new, or what is picked, from a source into a library folder; progress and the end arrive as events. */
-export const importKeep = (source: number, which: KeepWhich, dest: number, layout: KeepLayout) => invoke<void>('import_keep', { source, which, dest, layout });
+export const importKeep = (source: number, which: KeepWhich, dest: number, layout: KeepLayout, tag: string | null = null) => invoke<void>('import_keep', { source, which, dest, layout, tag });
 export const importStop = () => invoke<void>('import_stop');
 export const onImportScan = (f: (e: ScanEvent) => void) => listen<ScanEvent>('import-scan', (e) => f(e.payload));
 export const onImportScanDone = (f: (e: ScanDone) => void) => listen<ScanDone>('import-scan-done', (e) => f(e.payload));

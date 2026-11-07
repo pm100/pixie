@@ -291,7 +291,7 @@ pub fn import_picked_count(state: State<AppState>, source: i64) -> Result<usize,
 /// the library and earlier imports do not already have) or `picked` (the photos of this source that are picked). Copies safely, one file at a time, and sends `import-progress` while it goes and `import-done` at the end. The
 /// folder is then scanned so the copies join the library.
 #[tauri::command]
-pub fn import_keep(app: AppHandle, state: State<AppState>, source: i64, which: String, dest: i64, layout: String) -> Result<(), PixieError> {
+pub fn import_keep(app: AppHandle, state: State<AppState>, source: i64, which: String, dest: i64, layout: String, tag: Option<String>) -> Result<(), PixieError> {
     let layout = Layout::parse(&layout).ok_or_else(|| PixieError::Invalid("That way of filing photos is not known.".into()))?;
     if which != "new" && which != "picked" {
         return Err(PixieError::Invalid("Choose to keep what is new or what is picked.".into()));
@@ -310,7 +310,7 @@ pub fn import_keep(app: AppHandle, state: State<AppState>, source: i64, which: S
         let ids = if which == "picked" { state.db.picked_in(source) } else { state.db.source_new_ids(source) };
         let result = ids.and_then(|ids| {
             let events = app.clone();
-            run_keep(&state.db, source, &ids, dest, layout, mode, job.job.stop_flag(), |p: &KeepProgress| {
+            run_keep(&state.db, source, &ids, dest, layout, mode, tag.as_deref(), job.job.stop_flag(), |p: &KeepProgress| {
                 let _ = events.emit("import-progress", *p);
             })
         });

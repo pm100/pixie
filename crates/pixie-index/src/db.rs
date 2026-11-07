@@ -298,6 +298,9 @@ const MIGRATIONS: &[&str] = &[
         dest_path  TEXT NOT NULL
      );
      CREATE INDEX idx_import_log ON import_log(source_key, path, size, mtime);",
+    // V34: a tag chosen for an import, waiting for the library to learn of the file it is for (the scan makes the photo's row some time after the
+    // copy is put in place). It is given to the photo the moment its row is made.
+    "CREATE TABLE pending_tags (path TEXT PRIMARY KEY, tag TEXT NOT NULL);",
 ];
 
 /// `photos.hidden`: the person hid it (Hide, Show hidden).
@@ -858,7 +861,7 @@ impl Db {
             .map_err(db_err)?;
         }
         refresh_people(&c, &affected)?;
-        c
+        let id: PhotoId = c
             .query_row(
                 "INSERT INTO photos (folder_id, path, size, mtime, width, height, taken_at, camera, gps_lat, gps_lon, missing, kind, duration_ms, exif_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)
@@ -877,7 +880,13 @@ impl Db {
                 params![folder_id, path, size, mtime, meta.width, meta.height, meta.taken_at, meta.camera, meta.gps_lat, meta.gps_lon, if meta.kind == MediaKind::Video { 1i64 } else { 0 }, meta.duration_ms, exif_at],
                 |r| r.get(0),
             )
-            .map_err(db_err)
+            .map_err(db_err)?;
+        // A tag chosen for this file when it was imported goes on now that the photo exists (a small table, looked up by its key).
+        let tagged = c.execute("INSERT OR IGNORE INTO user_tags(photo_id, tag) SELECT ?1, tag FROM pending_tags WHERE path = ?2", params![id, path]).map_err(db_err)?;
+        if tagged > 0 {
+            c.execute("DELETE FROM pending_tags WHERE path = ?1", params![path]).map_err(db_err)?;
+        }
+        Ok(id)
     }
 
     // ---- copies of the same file ----
