@@ -304,6 +304,9 @@ const MIGRATIONS: &[&str] = &[
 pub const HIDDEN_BY_USER: i64 = 1;
 /// `photos.hidden`: it is on a temporary source, never part of the library (see `source.rs`).
 pub const HIDDEN_SOURCE: i64 = 2;
+/// `photos.hidden`: it is on a temporary source and was kept before or looks the same as a library photo, so Browse of the source leaves it out
+/// (only what is new is shown). Set by `refresh_source_seen`.
+pub const HIDDEN_SOURCE_SEEN: i64 = 3;
 
 /// An item the copier has yet to copy.
 #[derive(Debug, Clone, PartialEq)]

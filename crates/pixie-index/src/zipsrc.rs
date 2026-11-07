@@ -239,6 +239,9 @@ pub struct ExtractProgress {
     pub total: usize,
     pub bytes_done: u64,
     pub bytes_total: u64,
+    /// How many photos and how many videos are extracted so far.
+    pub photos: usize,
+    pub videos: usize,
 }
 
 /// What an extraction did.
@@ -342,17 +345,18 @@ pub fn extract_zip(zip: &Path, listing: &ZipListing, dest: &Path, stop: &AtomicB
     let bytes_total: u64 = todo.iter().map(|e| e.size).sum();
     let mut report = ExtractReport::default();
     let mut bytes_before = 0u64;
+    let (mut photos, mut videos) = (0usize, 0usize);
     let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
     for (i, entry) in todo.iter().enumerate() {
         if stop.load(Ordering::Acquire) {
             report.stopped = true;
             break;
         }
-        progress(&ExtractProgress { done: i, total: todo.len(), bytes_done: bytes_before, bytes_total });
+        progress(&ExtractProgress { done: i, total: todo.len(), bytes_done: bytes_before, bytes_total, photos, videos });
         let result = extract_one(&mut archive, entry, dest, stop, &mut |n| {
             if last.elapsed() >= std::time::Duration::from_millis(150) {
                 last = std::time::Instant::now();
-                progress(&ExtractProgress { done: i, total: todo.len(), bytes_done: (bytes_before + n).min(bytes_total), bytes_total });
+                progress(&ExtractProgress { done: i, total: todo.len(), bytes_done: (bytes_before + n).min(bytes_total), bytes_total, photos, videos });
             }
         });
         match result {
@@ -360,6 +364,7 @@ pub fn extract_zip(zip: &Path, listing: &ZipListing, dest: &Path, stop: &AtomicB
                 report.extracted += 1;
                 report.bytes += written;
                 bytes_before += entry.size;
+                if entry.kind == Some(MediaKind::Video) { videos += 1 } else { photos += 1 }
             }
             Err(Stopped::Stop) => {
                 report.stopped = true;
@@ -374,7 +379,7 @@ pub fn extract_zip(zip: &Path, listing: &ZipListing, dest: &Path, stop: &AtomicB
             }
         }
     }
-    progress(&ExtractProgress { done: if report.stopped { report.extracted + report.failed } else { todo.len() }, total: todo.len(), bytes_done: bytes_before, bytes_total });
+    progress(&ExtractProgress { done: if report.stopped { report.extracted + report.failed } else { todo.len() }, total: todo.len(), bytes_done: bytes_before, bytes_total, photos, videos });
     Ok(report)
 }
 
@@ -629,11 +634,12 @@ mod tests {
 
     #[test]
     fn progress_counts_entries_and_bytes_and_ends_complete() {
-        let (_d, zip) = make_zip(&[("a.jpg", b"12345"), ("b.jpg", b"1234567")]);
+        let (_d, zip) = make_zip(&[("a.jpg", b"12345"), ("b.jpg", b"1234567"), ("c.mp4", b"12")]);
         let out = tempfile::tempdir().unwrap();
         let l = list_zip(&zip).unwrap();
         let mut last = ExtractProgress::default();
         extract_zip(&zip, &l, out.path(), &std::sync::atomic::AtomicBool::new(false), |p| last = *p).unwrap();
-        assert_eq!((last.done, last.total, last.bytes_done, last.bytes_total), (2, 2, 12, 12));
+        assert_eq!((last.done, last.total, last.bytes_done, last.bytes_total), (3, 3, 14, 14));
+        assert_eq!((last.photos, last.videos), (2, 1), "the photos and videos extracted so far are counted as it goes");
     }
 }

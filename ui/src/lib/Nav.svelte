@@ -291,7 +291,7 @@
   {/if}
 
   {#if sources.length > 0}
-    {@render head('sources', 'Cards, drives and zips', 'Cards, sticks and folders opened in Import. They are only looked at: nothing is in your library until you keep it.')}
+    {@render head('sources', 'Cards, drives and zips', 'Cards, sticks and folders opened in Import. They are only looked at: nothing is in your library until you import it.')}
     {#if !folded('sources')}
       {#each sources as s (s.id)}
         <button class="item" class:active={folderId === s.id} aria-pressed={folderId === s.id} title={folderId === s.id ? `Stop showing only ${s.label}` : `Show only the photos on ${s.label} (${s.path})`} onclick={() => onfolder(folderId === s.id ? null : s.id)}>

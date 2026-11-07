@@ -17,7 +17,7 @@ pub mod utags;
 pub mod zipsrc;
 pub mod working;
 
-pub use db::{Db, FacetAsk, PhotoStat, WorkItem, HIDDEN_BY_USER, HIDDEN_SOURCE};
+pub use db::{Db, FacetAsk, PhotoStat, WorkItem, HIDDEN_BY_USER, HIDDEN_SOURCE, HIDDEN_SOURCE_SEEN};
 pub use dupes::DupeService;
 pub use queue::ScanQueue;
 pub use scanner::{finish_walk, scan_folder, scan_folder_with, walk_folder, walk_folder_streaming, Candidate, LatestItem, ScanGate, ScanGuard, ScanMode, ScanProgress, ScanStats, Walk};

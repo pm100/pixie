@@ -799,7 +799,7 @@
   let trips = $state<Trip[]>([]);
 
   /** What the grid says when nothing matches. */
-  const emptyMessage = $derived(view.search ? (activeShare === 'new' ? 'Nothing here is waiting to be synced.' : activeShare === 'private' ? 'Nothing here is private.' : activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
+  const emptyMessage = $derived(view.folderId !== null && imports.sources.some((s) => s.id === view.folderId) ? 'Nothing new here: everything from this source was imported before.' : view.search ? (activeShare === 'new' ? 'Nothing here is waiting to be synced.' : activeShare === 'private' ? 'Nothing here is private.' : activeMissing !== null ? 'No photos or videos here are missing a location.' : activeUtag === 'picked' ? 'Nothing is picked.' : activeTag === null && activeUtag === null ? 'No photos of this person here.' : 'No photos with this tag here.') : periodKey !== null ? 'No photos or videos from this period here.' : tripKey !== null ? 'No photos or videos from this trip here.' : view.since !== null ? `No photos or videos in the ${recentLabel(recentDays).toLowerCase()}.` : `No ${view.kind === 'video' ? 'videos' : view.kind === 'photo' ? 'photos' : 'photos or videos'} here yet.`);
 
   /** The filters in force, as the pills read (the date is the chosen period or Last 30 days). */
   const activeNames = $derived(filterNames({
@@ -1685,7 +1685,7 @@
                people={peopleList} facesFound={(peopleState?.done ?? 0) > 0} person={activePerson} onperson={setPerson}
                cameras={facets?.cameras ?? []} camera={activeCamera} oncamera={setCamera} missing={activeMissing} onmissing={setMissing} noLocation={facets?.noLocation ?? 0} {master} onopensync={() => openTool('sync', 'picked')} shareCounts={shareState} share={activeShare} onshare={setShare} libMissing={{ location: (libLocations?.without ?? 0) > 0, date: (libLocations?.undated ?? 0) > 0 }} analysisOn={analysisOptions} onopenanalysis={openAnalysisDetails}
                folders={folderInfos} folderStates={folderStateMap} folderId={view.folderId} onfolder={setFolder}
-               sources={imports.sources.map((s) => ({ id: s.id, label: s.label, path: s.path, count: s.summary.photos + s.summary.videos }))}
+               sources={imports.sources.map((s) => ({ id: s.id, label: s.label, path: s.path, count: s.summary.new }))}
                {trips} tripsReady={tripPrefs.confirmed} trip={tripKey} ontrip={setTrip} {destinations} onvisibletrips={(l) => void resolveDestinations(l)} onrenametrip={renameTripTo} onsettrips={openTripSettings} onnamepeople={() => pickTab('faces')}
                {collapsed} ontoggle={toggleNav}
                onperiod={setPeriod} onkind={setKind} onrecent={setRecent} />

@@ -1,4 +1,4 @@
-use crate::db::{db_err, Db};
+use crate::db::{db_err, Db, HIDDEN_SOURCE, HIDDEN_SOURCE_SEEN};
 use crate::source::relative_to;
 use pixie_core::{FolderId, PhotoId, PixieError, Result};
 use rusqlite::params;
@@ -106,6 +106,19 @@ impl Db {
             .collect())
     }
 
+    /// Browse of a source shows only what is new: the items kept before, or that look the same as a library photo, are marked `HIDDEN_SOURCE_SEEN`
+    /// (and anything new is `HIDDEN_SOURCE` again). Run after a source is read and after a Keep.
+    pub fn refresh_source_seen(&self, folder: FolderId) -> Result<()> {
+        let states = self.source_item_states(folder)?;
+        let ids = |new: bool| serde_json::to_string(&states.iter().filter(|(_, s)| (*s == ItemState::New) == new).map(|(id, _)| *id).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
+        let mut c = self.conn();
+        let tx = c.transaction().map_err(db_err)?;
+        for (new, to) in [(true, HIDDEN_SOURCE), (false, HIDDEN_SOURCE_SEEN)] {
+            tx.execute("UPDATE photos SET hidden = ?2 WHERE hidden IN (2, 3) AND hidden <> ?2 AND id IN (SELECT value FROM json_each(?1))", params![ids(new), to]).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)
+    }
+
     /// The picked items of a folder (a source's, to keep what the person picked), in the order they were picked.
     pub fn picked_in(&self, folder: FolderId) -> Result<Vec<PhotoId>> {
         let c = self.conn();
@@ -166,6 +179,25 @@ mod tests {
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    #[test]
+    fn browsing_a_source_shows_only_what_is_new() {
+        let db = Db::open_in_memory().unwrap();
+        let src = db.add_source("/card", "K", "Card").unwrap();
+        db.upsert_photo(src, "/card/DCIM/a.jpg", 100, 5000, &meta(1)).unwrap();
+        let fresh = db.upsert_photo(src, "/card/DCIM/b.jpg", 200, 6000, &meta(2)).unwrap();
+        let own = pixie_core::PhotoQuery { folder_id: Some(src), ..Default::default() };
+        let shown = |db: &Db| db.list_photos_in(&own, 0, 10).unwrap().into_iter().map(|p| p.id).collect::<Vec<_>>();
+        db.refresh_source_seen(src).unwrap();
+        assert_eq!(shown(&db).len(), 2, "nothing was kept yet");
+        let dest = db.add_folder("/lib").unwrap();
+        let batch = db.start_batch("K", "Card", dest).unwrap();
+        db.log_kept(batch, "K", "DCIM/a.jpg", 100, 5000, None, "/lib/a.jpg").unwrap();
+        db.refresh_source_seen(src).unwrap();
+        assert_eq!(shown(&db), vec![fresh], "what was kept before is left out of Browse");
+        assert_eq!(db.source_summary(src).unwrap().photos, 2, "but the summary still counts it");
+        assert_eq!(db.count_photos_in(&own).unwrap(), 1);
     }
 
     #[test]

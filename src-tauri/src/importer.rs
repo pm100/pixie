@@ -144,6 +144,14 @@ fn in_inbox(state: &AppState, id: i64) -> bool {
     state.db.list_sources().unwrap_or_default().iter().any(|s| s.id == id && inbox::is_in_inbox(&state.inbox_dir, &s.path))
 }
 
+/// One import at a time: refuses to open anything while another source is open (the same one again is fine).
+fn only_one_open(state: &AppState, key: &str) -> Result<(), PixieError> {
+    if state.db.list_sources()?.iter().any(|s| s.key != key) {
+        return Err(PixieError::Invalid("Another import is open. Keep or discard its photos first.".into()));
+    }
+    Ok(())
+}
+
 /// Closes the sources whose drive or folder is no longer there (a card pulled out, a stick unplugged), also at start-up.
 pub fn prune_sources(state: &AppState) {
     for s in state.db.list_sources().unwrap_or_default() {
@@ -166,6 +174,7 @@ pub async fn import_sources(app: AppHandle) -> Result<Vec<OpenSource>, PixieErro
             .list_sources()?
             .into_iter()
             .map(|s| {
+                let _ = state.db.refresh_source_seen(s.id); // a source from an earlier run shows only what is new too
                 Ok(OpenSource {
                     summary: state.db.source_summary(s.id)?,
                     scanning: scanning == Some(s.id),
@@ -203,6 +212,7 @@ pub async fn import_open(app: AppHandle, path: String, label: Option<String>) ->
                     (format!("folder:{path}"), name)
                 }
             };
+            only_one_open(&state, &key)?;
             state.db.add_source(&path, &key, &name)
         })
         .await
@@ -231,7 +241,10 @@ fn scan(app: AppHandle, id: i64) {
         });
         *state.import.scanning.lock().unwrap_or_else(|p| p.into_inner()) = None;
         let (error, summary) = match result {
-            Ok(_) => (None, state.db.source_summary(id).ok()),
+            Ok(_) => {
+                let _ = state.db.refresh_source_seen(id); // Browse of the source then shows only what is new
+                (None, state.db.source_summary(id).ok())
+            }
             Err(e) => (Some(e.user_message()), None),
         };
         let _ = app.emit("import-scan-done", ScanDone { source: id, error, summary });
@@ -302,6 +315,7 @@ pub fn import_keep(app: AppHandle, state: State<AppState>, source: i64, which: S
             })
         });
         job.job.finish();
+        let _ = state.db.refresh_source_seen(source);
         let done = match result {
             Ok(report) => {
                 if report.copied + report.already > 0 {
@@ -363,6 +377,7 @@ fn prepare_zip(state: &AppState, path: &str) -> Result<Prepared, PixieError> {
     if let Some(open) = state.db.list_sources()?.into_iter().find(|s| s.key == key) {
         return Ok(Prepared { id: open.id, listing, dir: std::path::PathBuf::new(), already_open: true });
     }
+    only_one_open(state, &key)?;
     if listing.bytes == 0 {
         return Err(PixieError::Invalid("There are no photos or videos in this zip.".into()));
     }

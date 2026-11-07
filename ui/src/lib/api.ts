@@ -95,7 +95,7 @@ export interface SourceSummary { photos: number; videos: number; bytes: number; 
 export interface OpenSource { id: number; path: string; label: string; key: string; scanning: boolean; extracting: boolean; inbox: boolean; summary: SourceSummary }
 /** What a zip holds (read from its directory, nothing extracted), and whether it fits where the Inbox is. */
 export interface ZipLook { name: string; photos: number; videos: number; other: number; archives: number; encrypted: number; unsafe_names: number; too_big: number; bytes: number; free: number; fits: boolean }
-export interface ExtractProgress { source: number; done: number; total: number; bytes_done: number; bytes_total: number }
+export interface ExtractProgress { source: number; done: number; total: number; bytes_done: number; bytes_total: number; photos: number; videos: number }
 export interface ExtractReport { extracted: number; bytes: number; failed: number; problems: string[]; stopped: boolean }
 export interface ExtractDone { source: number; error: string | null; report: ExtractReport | null }
 export interface KeepProgress { done: number; total: number; bytes_done: number; bytes_total: number }

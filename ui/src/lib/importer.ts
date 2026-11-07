@@ -1,37 +1,54 @@
 import type { FolderInfo, KeepLayout, KeepProgress, KeepReport, KeepWhich, SourceSummary, ZipLook } from './api';
-import { formatBytes, plural } from './format';
+import { folderName, formatBytes, plural } from './format';
 
-/** How kept photos are filed inside the folder they go to. */
-export const LAYOUTS: { id: KeepLayout; label: string; title: string }[] = [
-  { id: 'year-date', label: 'Year and date (2024/2024-03-05)', title: 'File each photo in a folder for its year and a folder inside that for its day, the same as Sync does' },
-  { id: 'year-month', label: 'Year and month (2024/2024-03)', title: 'File each photo in a folder for its year and a folder inside that for its month' },
-  { id: 'flat', label: 'All in the folder', title: 'Put every photo straight into the chosen folder, with no folders inside it' },
-];
+/** Kept photos are filed by year and day inside the folder, the same as Sync does. (The backend can also file by month, or not at all.) */
+export const KEEP_LAYOUT: KeepLayout = 'year-date';
 
-/** The line under a source once it is read: what it holds, and how much of it is new. */
-export function summaryLine(s: SourceSummary): string {
-  if (s.photos + s.videos === 0) return 'No photos or videos found.';
-  const parts = [s.photos > 0 ? plural(s.photos, 'photo') : null, s.videos > 0 ? plural(s.videos, 'video') : null].filter((p): p is string => p !== null);
-  const held = `${parts.join(' and ')}, ${formatBytes(s.bytes)}.`;
-  if (s.new === 0) return `${held} Nothing is new: all of it was kept before or is already in your library.`;
-  return `${held} ${s.new.toLocaleString()} ${s.new === 1 ? 'is' : 'are'} new.`;
+/** How a folder shows in the Into list: its name and where it is, or just where it is when the name says the same (a drive root). */
+export function folderLabel(path: string): string {
+  const name = folderName(path);
+  return name === path ? path : `${name} (${path})`;
 }
 
-/** The label of a Keep button: what it will keep (the count is left out while it is not known, or none). */
-export function keepWords(which: KeepWhich, count: number): string {
-  if (which === 'picked') return count > 0 ? `Keep ${plural(count, 'picked item')}` : 'Keep picked items';
-  return `Keep ${plural(count, 'new item')}`;
+/** What is known of a source, one fact to a row: what was found, how much is new, and the picked ones. */
+export function summaryRows(s: SourceSummary, picked = 0): { label: string; value: string }[] {
+  if (s.photos + s.videos === 0) return [{ label: 'Found', value: 'No photos or videos' }];
+  const parts = [s.photos > 0 ? plural(s.photos, 'photo') : null, s.videos > 0 ? plural(s.videos, 'video') : null].filter((p): p is string => p !== null);
+  const rows = [
+    { label: 'Found', value: `${parts.join(', ')} (${formatBytes(s.bytes)})` },
+    { label: 'New', value: s.new.toLocaleString() },
+  ];
+  if (picked > 0) rows.push({ label: 'Picked', value: picked.toLocaleString() });
+  return rows;
+}
+
+/** The rows while a source is still being extracted or read: what has been found so far, counting up, and the new count still to come. */
+export function workingRows(extract: { photos: number; videos: number; bytes_done: number; bytes_total: number } | null, seen = 0): { label: string; value: string }[] {
+  let found = 'Starting…';
+  if (extract !== null) {
+    const parts = [extract.photos > 0 ? plural(extract.photos, 'photo') : null, extract.videos > 0 ? plural(extract.videos, 'video') : null].filter((p): p is string => p !== null);
+    if (parts.length > 0) found = `${parts.join(', ')} (${formatBytes(extract.bytes_done)} of ${formatBytes(extract.bytes_total)})`;
+  } else if (seen > 0) {
+    found = plural(seen, 'photo or video', 'photos or videos');
+  }
+  return [{ label: 'Found', value: found }, { label: 'New', value: '…' }];
+}
+
+/** Whether to show where a source is: not when its name already says it (a drive: "Photos (G:)" is at G:\). */
+export function showPath(label: string, path: string): boolean {
+  const bare = path.replace(/[\\/]+$/, '').toLowerCase();
+  return bare !== '' && !label.toLowerCase().includes(bare);
 }
 
 /** What a Keep did, in a sentence or two. */
 export function keepLine(r: KeepReport): string {
-  const done = r.copied > 0 ? `Kept ${plural(r.copied, 'item')} (${formatBytes(r.bytes)}).` : null;
+  const done = r.copied > 0 ? `Imported ${plural(r.copied, 'item')} (${formatBytes(r.bytes)}).` : null;
   const already = r.already > 0 ? `${r.already.toLocaleString()} ${r.already === 1 ? 'was' : 'were'} already in your folder.` : null;
-  const failed = r.failed > 0 ? `${r.failed.toLocaleString()} could not be kept.` : null;
-  if (r.stopped && done === null && already === null) return 'Stopped before anything was kept.';
+  const failed = r.failed > 0 ? `${r.failed.toLocaleString()} could not be imported.` : null;
+  if (r.stopped && done === null && already === null) return 'Stopped before anything was imported.';
   const lead = r.stopped ? 'Stopped.' : null;
   const text = [lead, done, already, failed].filter((p): p is string => p !== null).join(' ');
-  return text === '' ? 'Nothing was kept.' : text;
+  return text === '' ? 'Nothing was imported.' : text;
 }
 
 /** How far a Keep has got, 0 to 100, by the bytes. */
