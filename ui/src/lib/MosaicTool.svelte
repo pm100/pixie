@@ -15,20 +15,16 @@
   import { isStale, mosaicDpi, mosaicPageMm, mosaicSavePath, MAX_GAP, MAX_TILE_MM, MIN_TILE_MM, parseMosaicDoc, serializeMosaicDoc, sourceLine, tileCount, type MosaicDoc } from './mosaic';
   import MosaicViewer from './MosaicViewer.svelte';
   import { thumbUrl } from './url';
-  import WorkingOn from './WorkingOn.svelte';
 
-  let { photo, browse, pickedCount, userTags, filteredCount, onclear, defaultDir = null, active }: {
+  let { photo, browse, userTags, source = $bindable('filtered'), defaultDir = null, active }: {
+    /** Where the tiles come from (`picked`, `filtered` or `tag:<name>`): chosen in the "Tiles from" line at the top of the tab, kept with the settings. */
+    source?: string;
     /** The photo chosen in Browse, if any: the photo the mosaic rebuilds. */
     photo: Photo | null;
     /** The listing Browse shows now (for "Filtered"). */
     browse: View;
-    /** How many photos are picked, and take them all off Picked. */
-    pickedCount: number;
-    onclear: () => void;
     /** Your tags with their counts. */
     userTags: UserTagCount[];
-    /** How many photos Browse shows now. */
-    filteredCount: number;
     /** Where the save dialog starts: the sync folder, or else the first watched folder (null when there is none). */
     defaultDir?: string | null;
     active: boolean;
@@ -79,8 +75,6 @@
     if (!loaded || chosen || id === null || kept?.id === id) return;
     getPhoto(id).then((p) => { if (p && !p.missing && p.kind === 'photo' && doc.target === p.id) kept = p; }).catch(() => {});
   });
-  /** How many photos "Tiles from" gives. */
-  const poolCount = $derived(doc.source === 'picked' ? pickedCount : doc.source.startsWith('tag:') ? (userTags.find((t) => `tag:${t.name}` === doc.source)?.count ?? 0) : filteredCount);
 
   function sourceArg(source: string): MosaicSource {
     if (source === 'picked') return { which: 'picked' };
@@ -90,7 +84,7 @@
   const args = $derived<MosaicArgs | null>(
     target === null || problem
       ? null
-      : { source: sourceArg(doc.source), target: target.id, focus_x: doc.focusX, focus_y: doc.focusY, zoom: doc.zoom, paper_w_mm: mm.w, paper_h_mm: mm.h, dpi, tile_mm: doc.tileMm, gap: doc.gap, blend: doc.blend },
+      : { source: sourceArg(source), target: target.id, focus_x: doc.focusX, focus_y: doc.focusY, zoom: doc.zoom, paper_w_mm: mm.w, paper_h_mm: mm.h, dpi, tile_mm: doc.tileMm, gap: doc.gap, blend: doc.blend },
   );
 
   // ---- keeping the settings ----
@@ -99,6 +93,7 @@
   onMount(async () => {
     try {
       doc = parseMosaicDoc(await getMosaic(), locale);
+      source = doc.source;
       built = await getMosaicBuilt();
       if (built) view = 'built';
     } catch (e) {
@@ -137,7 +132,7 @@
   let pending: string | null = null;
   $effect(() => {
     if (!loaded) return;
-    const text = serializeMosaicDoc(doc);
+    const text = serializeMosaicDoc({ ...doc, source });
     pending = text;
     const timer = setTimeout(() => { pending = null; setMosaic(text).catch((e) => (error = String(e))); }, 400);
     return () => clearTimeout(timer);
@@ -156,7 +151,7 @@
   });
   // A tag that has no photos left is gone from the list: go back to what Browse shows.
   $effect(() => {
-    if (loaded && doc.source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === doc.source)) doc = { ...doc, source: 'filtered' };
+    if (loaded && source.startsWith('tag:') && !userTags.some((t) => `tag:${t.name}` === source)) source = 'filtered';
   });
 
   // ---- the draft ----
@@ -287,7 +282,7 @@
     error = ''; note = ''; saved = false;
     try {
       await mosaicClear();
-      doc = { ...parseMosaicDoc(null, locale), source: doc.source, target: target?.id ?? null };
+      doc = { ...parseMosaicDoc(null, locale), target: target?.id ?? null };
       built = null; draft = null; preview = null; view = 'draft';
     } catch (e) {
       error = String(e);
@@ -302,7 +297,6 @@
 </script>
 
 <div class="tool">
-  <WorkingOn tiles bind:source={doc.source} {pickedCount} hasPhoto={photo !== null} {userTags} count={poolCount} {onclear} />
   <div class="body">
   <div class="opts">
     <section>

@@ -73,6 +73,11 @@
   const current = $derived(list.find((t) => t.id === chosenId) ?? firstTool(group));
   // Clean up and Import/Export look after the whole library; so does the Photomosaic, which takes its tiles from it (or from what Browse shows, or the picks) by itself.
   const whole = $derived(worksOnWholeLibrary(group) || current.id === 'mosaic');
+  /** Where the Photomosaic takes its tiles from; the tool keeps it with its settings. Its "Tiles from" line stands at the top like "Working on" does for the other Create tools. */
+  let mosaicSource = $state('filtered');
+  const mosaicCount = $derived(mosaicSource === 'picked' ? picks.size : mosaicSource.startsWith('tag:') ? (userTags.find((t) => `tag:${t.name}` === mosaicSource)?.count ?? 0) : shownCount);
+  /** What the scope line says for a tool that looks after the whole library. */
+  const scopeLine = $derived(current.id === 'import' ? 'Import adds photos to your library from a card, a folder or a zip file.' : `${current.label} works on every photo, not on the ones you picked.`);
   function choose(id: string) {
     chosenId = id;
     savePref(`tools.tool.${group}`, id);
@@ -159,9 +164,11 @@
 </script>
 
 <div class="page">
-  {#if whole && current.id !== 'mosaic' && current.id !== 'import'}
-    <div class="scope"><b>Whole library.</b> {current.label} works on every photo, not on the ones you picked.</div>
-  {:else if !whole}
+  {#if current.id === 'mosaic'}
+    <WorkingOn tiles bind:source={mosaicSource} pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={mosaicCount} {onclear} />
+  {:else if whole}
+    <div class="scope"><b>Whole library.</b> {scopeLine}</div>
+  {:else}
     <WorkingOn bind:source pickedCount={picks.size} hasPhoto={here !== null} {userTags} count={ids.length} {onclear} {error} />
   {/if}
   <div class="body" style:grid-template-columns={whole || wide ? `${navW}px 5px minmax(0, 1fr)` : `${navW}px 5px ${sideW}px 5px minmax(0, 1fr)`}>
@@ -182,7 +189,7 @@
         {:else if current.id === 'missing-dates'}
           <MissingDatesTool rules={dateRules} onrules={ondaterules} {active} onshow={onshowundated} />
         {:else if current.id === 'mosaic'}
-          <MosaicTool photo={here} {browse} filteredCount={shownCount} pickedCount={picks.size} {userTags} {onclear} {active} defaultDir={master ?? folders[0]?.path ?? null} />
+          <MosaicTool photo={here} {browse} {userTags} bind:source={mosaicSource} {active} defaultDir={master ?? folders[0]?.path ?? null} />
         {:else if current.id === 'import'}
           <ImportTool {folders} {master} {picks} onbrowse={onimportbrowse} />
         {:else if current.id === 'sync'}
