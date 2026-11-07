@@ -44,6 +44,8 @@
   let indexing = $state<MosaicProgress | null>(null);
   let building = $state<MosaicProgress | null>(null);
   let drafting = $state(false);
+  /** Nothing is made until Preview is pressed; after that the draft follows the settings (but never prepares photos by itself). */
+  let armed = $state(false);
   /** Something started before the window was last away is still running: the window only shows how far it is, and waits. */
   let external = $state(false);
   /** The mosaic so far, while it is being built (a small JPEG, base64). */
@@ -193,12 +195,20 @@
   }
 
   $effect(() => {
-    if (!loaded || !active || args === null || external) return;
+    if (!loaded || !active || !armed || args === null || external) return;
     const a = args;
+    if (prepared !== JSON.stringify(a.source)) return; // a new source needs its photos prepared: wait for Preview
     const mine = ++gen;
     const timer = setTimeout(() => void redraw(a, mine), 250);
     return () => clearTimeout(timer);
   });
+
+  /** Preview: make the draft now, preparing the photos first if they need it. */
+  function makePreview() {
+    if (!args) return;
+    armed = true;
+    void redraw(args, ++gen);
+  }
 
   // ---- build and save ----
 
@@ -345,6 +355,7 @@
       <span class="summary">{summary}</span>
       <span class="grow"></span>
       <button class="danger" onclick={() => (confirmNew = true)} disabled={busy || (!built && !draft)} title="Start a new mosaic: the settings go back to how they start and the built picture is thrown away. Your photos are not touched">New mosaic</button>
+      <button onclick={makePreview} disabled={busy || drafting || !args} title={!args ? 'Choose a photo in Browse first: it is the photo the mosaic rebuilds' : 'Make a quick draft from your settings; photos that have not been prepared are prepared first. Nothing happens until you press this'}>Preview</button>
       <button class:on={view === 'draft'} onclick={() => (view = 'draft')} title="Show the quick draft that follows your settings">Draft</button>
       <button class:on={view === 'built'} disabled={!built} onclick={() => (view = 'built')} title={built ? 'Look at the picture that was built, and zoom in on it' : 'Nothing has been built yet'}>Built picture</button>
       {#if busy}
@@ -355,7 +366,7 @@
     </div>
 
     <div class="stage">
-      {#if busy}
+      {#if building || (indexing && indexing.total > 0)}
         {@const p = building ?? indexing}
         <div class="working" role="status">
           <div class="card">
@@ -375,7 +386,7 @@
       {:else if drafting}
         <p class="msg" role="status">Making the draft…</p>
       {:else}
-        <p class="msg">{args === null ? (problem ?? (photo && !chosen ? 'The photo chosen in Browse is a video. Choose a picture: the mosaic rebuilds it.' : 'Choose a photo in Browse: the mosaic rebuilds it.')) : (error || '')}</p>
+        <p class="msg">{args === null ? (problem ?? (photo && !chosen ? 'The photo chosen in Browse is a video. Choose a picture: the mosaic rebuilds it.' : 'Choose a photo in Browse: the mosaic rebuilds it.')) : (error || (armed ? '' : 'Press Preview to make a quick draft.'))}</p>
       {/if}
     </div>
 
